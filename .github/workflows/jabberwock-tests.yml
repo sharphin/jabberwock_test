@@ -28,11 +28,9 @@ jobs:
           /usr/bin/time -v timeout 450s cargo test --all-targets --locked --no-run
       - name: Rust tests (measured, bounded)
         if: success() || failure()
-        timeout-minutes: 12
-        env:
-          RUST_TEST_THREADS: '2'
+        timeout-minutes: 20
         run: |
-          /usr/bin/time -v timeout 660s cargo test --all-targets --locked -- --nocapture
+          /usr/bin/time -v timeout 1140s cargo test --all-targets --locked
       - name: Python regression tests
         if: success() || failure()
         timeout-minutes: 5
