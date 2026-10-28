@@ -138,20 +138,23 @@ def main():
                     prefix = "JabberwockFormal." + ("Jwc" if compiler == "jwc" else "Rust") + "."
                     if not obligation["module"].startswith(prefix) or any(not t.startswith(prefix) for t in obligation.get("theorems", [])):
                         raise ValueError("proof module belongs to another compiler")
+                    module = obligation["module"]
+                    all_theorems = sorted({t for o in manifest["goals"].values() if o.get("module") == module for t in o.get("theorems", [])})
+                    if any(not t.startswith(prefix) for t in all_theorems):
+                        raise ValueError("theorem belongs to another compiler")
+                    key = (compiler, module, tuple(all_theorems))
+                    if key not in audit_cache:
+                        print("VERIFY " + compiler + " " + module, flush=True)
+                        audit_cache[key] = audit_module(module, all_theorems)
+                    record["proof_check"] = dict(audit_cache[key])
+                    # A stale source binding must not suppress the independent
+                    # Lean kernel audit, nor become a passing compiler proof.
                     if obligation.get("implementation_sha256") != identity["sha256"]:
-                        record["proof_check"] = {"status": "STALE", "reason": "proof binding differs from current compiler sources"}
+                        record["proof_check"]["source_binding"] = "STALE"
+                        record["proof_check"]["reason"] = "proof binding differs from current compiler sources"
                     else:
-                        module = obligation["module"]
-                        all_theorems = sorted({t for o in manifest["goals"].values() if o.get("module") == module for t in o.get("theorems", [])})
-                        if any(not t.startswith(prefix) for t in all_theorems):
-                            raise ValueError("theorem belongs to another compiler")
-                        key = (compiler, module, tuple(all_theorems))
-                        if key not in audit_cache:
-                            print("VERIFY " + compiler + " " + module, flush=True)
-                            audit_cache[key] = audit_module(module, all_theorems)
-                        record["proof_check"] = audit_cache[key]
-                        # Kernel success does not establish that a formalization describes the actual implementation.
-                        record["reason"] = "implementation correspondence and scope require review; kernel success alone is not whole-compiler proof"
+                        record["proof_check"]["source_binding"] = "MATCH"
+                    record["reason"] = "implementation correspondence and scope require review; kernel success alone is not whole-compiler proof"
                 print(record["id"] + ": " + record["proof_check"]["status"] + " / NOT_PROVEN", flush=True)
                 save()
         if args.abstract_model:
@@ -188,7 +191,7 @@ def main():
         return 2
     if args.require_full:
         return 1  # Whole-compiler correspondence remains unproved.
-    return int(len(report["goals"]) != len(selected) * len(GOALS) or any(g["proof_check"]["status"] != "KERNEL_CHECKED" for g in report["goals"])
+    return int(len(report["goals"]) != len(selected) * len(GOALS) or any(g["proof_check"]["status"] != "KERNEL_CHECKED" or g["proof_check"].get("source_binding") != "MATCH" for g in report["goals"])
                or (args.abstract_model and report["abstract_model"]["status"] != "MODEL_PASS"))
 
 if __name__ == "__main__":
