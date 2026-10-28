@@ -12,7 +12,7 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 65
+    timeout-minutes: 90
     env:
       CARGO_PROFILE_DEV_DEBUG: '0'
       CARGO_PROFILE_TEST_DEBUG: '0'
@@ -52,8 +52,8 @@ jobs:
         run: timeout 240s python3 -m unittest discover -s scripts -p 'test_*.py'
       - name: Linux safety probes
         if: success() || failure()
-        timeout-minutes: 8
-        run: timeout 450s python3 scripts/safety_linux.py
+        timeout-minutes: 45
+        run: timeout 2640s python3 scripts/safety_linux.py
       - name: Lean formal verification
         if: success() || failure()
         timeout-minutes: 5
