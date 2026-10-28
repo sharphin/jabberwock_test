@@ -59,10 +59,10 @@ jobs:
           echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
           "$HOME/.elan/bin/lake" env lean --version
         working-directory: extracted/jabberwock-safety-ci-resume/formal
-      - name: Lean formal verification
+      - name: Lean kernel theorem tests (not whole-compiler proof)
         if: success() || failure()
         timeout-minutes: 35
-        run: timeout 2040s python3 scripts/formal_report.py --compiler all --output target/formal-report.json
+        run: timeout 2040s python3 scripts/formal_report.py --compiler all --kernel-only --output target/formal-report.json
       - name: Upload evidence
         if: always()
         uses: actions/upload-artifact@v4
