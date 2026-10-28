@@ -26,6 +26,8 @@ alice build --release         # target/release/app を作る（変わってい�
 alice test                    # tests/*.jw を動かし、tests/名前.out があれば出力と比べる
 ```
 
+ライブラリ開発の現状・設計書一覧・jwc対応の順序は [ライブラリシステム](docs/library-system.md) にまとめています。
+
 ## 安全性テスト・形式検証
 
 リポジトリ直下から実行する。Windows:
