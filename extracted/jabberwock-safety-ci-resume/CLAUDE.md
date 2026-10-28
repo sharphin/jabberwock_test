@@ -342,3 +342,11 @@ jwcを最優先に12項目×コンパイラ＋5目標の実用検査を分離。
 WindowsはInspector/UBSan+LLVM verifier/Dr. Memoryの接続口、LinuxはTSan/UBSan+LLVM verifier/MSan。
 未導入・非対応・負例検出失敗を合格にしない。詳細と実行コマンドは `docs/provisional-detectors.md`。
 専用版は暫定版との検出能力比較後に置き換え、コンパイラ別12項目と5目標の区別を保つ。
+
+## 仕様に基づく安全性判定（2026-10-28）
+
+① `scripts/safety_scope.py`、② `scripts/safety_correspondence.py`、③ `scripts/safety_acceptance.py` を追加。
+`python scripts/formal_tool.py` で独立再検証とjwc/Rust別5目標の受入判定を実行する。
+仕様上の非違反と、実装で必要な保護条件を区別する。詳細・コマンドは `docs/safety-judgement-mechanisms.md`。
+利用者の指示により公開Actionsで既存テストと判定機構を検査する。
+工程の正常終了と実装の証明成立は別。未解決の条件・合成証明を合格扱いしない。

@@ -1,0 +1,300 @@
+{
+  "schema_version": 1,
+  "specifications": {
+    "docs/spec.md": "041eca8538c7d2905b0c615fe63e7cf5cf3446ec93367a0bbff2bf498bb8e700",
+    "docs/language-safety-contract.md": "b7ed7d4f6a485472e8459750ff9e6ecf157f62ac1c85672ecca6da2c68d4e31e"
+  },
+  "conditions": [
+    {
+      "id": "behavior-preservation",
+      "statement": "仕様が定める値・評価順・外部効果・拒否・安全な停止が、対象処理系の実行で保存される。",
+      "goals": [
+        "semantics"
+      ],
+      "routes": [
+        "preservation"
+      ],
+      "spec_refs": [
+        {
+          "path": "docs/language-safety-contract.md",
+          "quote": "- **コンパイル/実行の全経路:** インタプリタ、Rust製コンパイラ、セルフホスト版、生成コード、ランタイム、最適化を跨いで対象の保証が保持されることを目標とする。"
+        }
+      ]
+    },
+    {
+      "id": "typing-and-permission",
+      "statement": "受理した操作の型・メモリ表現・書込み権限が仕様に適合し、許可されない操作は実行前に拒否される。",
+      "goals": [
+        "types",
+        "memory",
+        "ownership"
+      ],
+      "routes": [
+        "static_rejection",
+        "invariant"
+      ],
+      "spec_refs": [
+        {
+          "path": "docs/spec.md",
+          "quote": "- 違反は実行前のエラー。"
+        },
+        {
+          "path": "docs/language-safety-contract.md",
+          "quote": "- **型と演算:** 型付けされた操作のメモリ表現との整合性を維持し、整数オーバーフロー・ゼロ除算などは言語仕様で挙動を規定する。未規定の挙動を「安全」と見なさない。"
+        }
+      ]
+    },
+    {
+      "id": "reference-access",
+      "statement": "無効なrefの存在ではなく、無効なrefによるpayloadアクセスを拒否する。省略する場合は実アクセス時の有効性が必要。",
+      "goals": [
+        "memory",
+        "ownership",
+        "checks"
+      ],
+      "routes": [
+        "safe_stop",
+        "elision_witness",
+        "unreachable"
+      ],
+      "spec_refs": [
+        {
+          "path": "docs/spec.md",
+          "quote": "- ref の型に寿命は書かない。借りた先が解放されたあとに ref を使うと、**必ず**実行時エラーになる。エラーは「借りた → 解放された → 使った」の時系列で出る。"
+        }
+      ]
+    },
+    {
+      "id": "owner-transition",
+      "statement": "move/drop/上書き/途中終了を通して所有責任を保ち、旧所有者による不正操作や二重解放を防ぐ。",
+      "goals": [
+        "ownership",
+        "memory"
+      ],
+      "routes": [
+        "invariant",
+        "safe_stop",
+        "unreachable"
+      ],
+      "spec_refs": [
+        {
+          "path": "docs/spec.md",
+          "quote": "- own を値として読むとムーブする（代入・引数・return・構造体に入れる）。ムーブした変数を使うと実行時エラー（どこでムーブしたかを示す）。"
+        },
+        {
+          "path": "docs/spec.md",
+          "quote": "- 持ち主がスコープを抜ける・`drop` される・上書きされると、中身は解放される。中にある own も連鎖して解放される。"
+        }
+      ]
+    },
+    {
+      "id": "generation-retirement",
+      "statement": "世代をあふれる前に扱い、退役識別子を再利用せず、古いrefを復活させない。移行できなければ資源エラーで停止する。",
+      "goals": [
+        "memory",
+        "ownership",
+        "checks"
+      ],
+      "routes": [
+        "invariant",
+        "safe_stop"
+      ],
+      "spec_refs": [
+        {
+          "path": "docs/spec.md",
+          "quote": "  退役した区画の識別子は再利用せず、世代値が一致してもそこへのrefは無効とする。"
+        },
+        {
+          "path": "docs/spec.md",
+          "quote": "  生きた値の使用を続ける必要があれば新しい区画へ所有責任を移し、安全に移せない場合は資源エラーで停止する。"
+        }
+      ]
+    },
+    {
+      "id": "metadata-lifetime",
+      "statement": "refの検査と診断に必要なmetadataへのアクセス自体が、解放済み領域を参照しない。",
+      "goals": [
+        "memory",
+        "checks"
+      ],
+      "routes": [
+        "invariant"
+      ],
+      "spec_refs": [
+        {
+          "path": "docs/spec.md",
+          "quote": "  古いrefが読む検査用metadataは、そのrefを使用できる間は安全に保持する。詳細と証明範囲は [退役の規則](formal-semantics.md#有限世代と退役の規則)。"
+        }
+      ]
+    },
+    {
+      "id": "bounds-and-layout",
+      "statement": "添字・型レイアウトが許された範囲にあり、範囲外なら不正アクセスより前に仕様どおり拒否する。",
+      "goals": [
+        "memory",
+        "types",
+        "checks"
+      ],
+      "routes": [
+        "static_rejection",
+        "safe_stop",
+        "elision_witness",
+        "unreachable"
+      ],
+      "spec_refs": [
+        {
+          "path": "docs/spec.md",
+          "quote": "- 添字はどの整数型でもよい。範囲の外は実行時エラー。"
+        },
+        {
+          "path": "docs/spec.md",
+          "quote": "- 配列 1 つの大きさは 1 MiB まで（`i64[131072]` まで）。値なので、実行ファイルではスタックに置くため。中の構造体・enum の大きさも数える。"
+        }
+      ]
+    },
+    {
+      "id": "check-elision",
+      "statement": "省略された各チェックについて、そこへ到達する全実行で、そのチェックが不要となる安全条件が成立する。",
+      "goals": [
+        "checks",
+        "memory",
+        "semantics"
+      ],
+      "routes": [
+        "elision_witness",
+        "unreachable"
+      ],
+      "spec_refs": [
+        {
+          "path": "docs/language-safety-contract.md",
+          "quote": "3. 最適化は安全性を弱めてはならない。実行時検査の省略には、対象アクセスでの有効性を裏付ける証明が必要である。"
+        }
+      ]
+    },
+    {
+      "id": "thread-transfer",
+      "statement": "送信型の制約と所有権移動・ref無効化が実際の送受信経路で守られる。",
+      "goals": [
+        "types",
+        "memory",
+        "ownership"
+      ],
+      "routes": [
+        "static_rejection",
+        "invariant",
+        "safe_stop"
+      ],
+      "spec_refs": [
+        {
+          "path": "docs/spec.md",
+          "quote": "  中に ref・関数の値・型の引数・interface を含まないもの。ref を渡そうとすると実行前のエラー。"
+        },
+        {
+          "path": "docs/spec.md",
+          "quote": "  書き換えられるデータの持ち主はムーブして渡し、送った側に残る ref は無効にするので、そのデータを両方のスレッドから触ることはできない。"
+        }
+      ]
+    },
+    {
+      "id": "shared-state",
+      "statement": "許された共有操作の同期と回収がデータ競合を起こさない。共有やaliasの存在自体を違反としない。",
+      "goals": [
+        "memory",
+        "ownership"
+      ],
+      "routes": [
+        "invariant"
+      ],
+      "spec_refs": [
+        {
+          "path": "docs/spec.md",
+          "quote": "  ただし `chan` はコピーを通じてスレッド間で共有でき、その操作は実装側で同期する。"
+        }
+      ]
+    },
+    {
+      "id": "safe-failure-and-initialization",
+      "statement": "資源失敗・規定エラーは安全に停止し、エラー経路も含め不正な未初期化使用・アクセス・回収を起こさない。",
+      "goals": [
+        "memory",
+        "ownership",
+        "semantics"
+      ],
+      "routes": [
+        "invariant",
+        "safe_stop",
+        "unreachable"
+      ],
+      "spec_refs": [
+        {
+          "path": "docs/language-safety-contract.md",
+          "quote": "- **メモリ安全性:** 不正な参照外し、use-after-free、double-free、範囲外の読み書き、未初期化領域の不正使用を起こさせない。拒否はコンパイルエラーまたは仕様化された実行時エラーとする。"
+        },
+        {
+          "path": "docs/spec.md",
+          "quote": "- スレッドを作れないとき（OS のスレッドの数かメモリが足りない）は、spawn の位置で実行時エラー。"
+        }
+      ]
+    }
+  ],
+  "non_violations": [
+    {
+      "id": "expired-reference-exists",
+      "statement": "借りた先の寿命後もrefが存在すること自体は違反ではない。使用時の保護は必要。",
+      "requires": [
+        "reference-access",
+        "metadata-lifetime",
+        "generation-retirement"
+      ],
+      "spec_refs": [
+        {
+          "path": "docs/spec.md",
+          "quote": "- ref の型に寿命は書かない。借りた先が解放されたあとに ref を使うと、**必ず**実行時エラーになる。エラーは「借りた → 解放された → 使った」の時系列で出る。"
+        }
+      ]
+    },
+    {
+      "id": "mutable-reference-aliases",
+      "statement": "複数のref mutやrefとの共存自体は仕様上許される。アクセス権限・寿命・並行性の保護は必要。",
+      "requires": [
+        "typing-and-permission",
+        "reference-access",
+        "shared-state"
+      ],
+      "spec_refs": [
+        {
+          "path": "docs/spec.md",
+          "quote": "- `ref mut` はいくつ同時にあってもよい。同じ場所を指す `ref` と `ref mut` も共存できる。"
+        }
+      ]
+    },
+    {
+      "id": "explicit-narrowing-wrap",
+      "statement": "明示した整数縮小変換の仕様どおりの周回は違反ではない。世代・レイアウト・他の算術への一般化は禁止。",
+      "requires": [
+        "behavior-preservation",
+        "typing-and-permission"
+      ],
+      "spec_refs": [
+        {
+          "path": "docs/spec.md",
+          "quote": "- 欠けうる変換は `x as u8` と書く。範囲の外の値は一周する（`300 as u8` は `44`）。"
+        }
+      ]
+    },
+    {
+      "id": "specified-safe-failure",
+      "statement": "規定の安全な停止自体は安全性違反ではない。違反前の停止と停止処理自体の安全性は必要。",
+      "requires": [
+        "safe-failure-and-initialization",
+        "behavior-preservation"
+      ],
+      "spec_refs": [
+        {
+          "path": "docs/language-safety-contract.md",
+          "quote": "上記の保証目標はアプリケーションが終了すること、資源が枯渇しないこと、すべての実行が成功することを意味しない。"
+        }
+      ]
+    }
+  ]
+}

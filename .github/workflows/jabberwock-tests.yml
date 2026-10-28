@@ -6,6 +6,8 @@ on:
       - '.github/workflows/jabberwock-tests.yml'
       - 'extracted/jabberwock-safety-ci-resume/src/**'
       - 'extracted/jabberwock-safety-ci-resume/tests/**'
+      - 'extracted/jabberwock-safety-ci-resume/scripts/**'
+      - 'extracted/jabberwock-safety-ci-resume/formal/**'
   workflow_dispatch:
 permissions:
   contents: read
@@ -117,3 +119,75 @@ jobs:
           name: safety-linux-${{ matrix.compiler }}
           path: extracted/jabberwock-safety-ci-resume/target/safety-linux-${{ matrix.compiler }}*
           if-no-files-found: ignore
+
+  specification-judgement:
+    name: Specification judgement infrastructure (jwc and Rust)
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    defaults:
+      run:
+        working-directory: extracted/jabberwock-safety-ci-resume
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Clang
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq clang
+          clang --version
+      - name: Install pinned Lean 4.24.0
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/lean-4.24.0-linux.tar.zst"
+          lean_root="$RUNNER_TEMP/jw-lean"
+          curl --fail --location --silent --show-error --retry 3 --max-time 300 \
+            -o "$archive" https://github.com/leanprover/lean4/releases/download/v4.24.0/lean-4.24.0-linux.tar.zst
+          printf '%s  %s\n' b14f5e5159219dd1a1956c3b806813319f5e94ccd5bdfd56f54520609a5bb5ec "$archive" | sha256sum -c -
+          mkdir -p "$lean_root"
+          tar --zstd -xf "$archive" -C "$lean_root" --strip-components=1
+          echo "$lean_root/bin" >> "$GITHUB_PATH"
+      - name: Run formal runner including all three judgement stages
+        shell: bash
+        run: |
+          set +e
+          python scripts/formal_tool.py --output target/formal-tool
+          code=$?
+          set -e
+          if [ "$code" -ne 0 ] && [ "$code" -ne 1 ]; then
+            echo "Formal runner failed: $code"
+            cat target/formal-tool/*.stderr.log || true
+            cat target/formal-tool/summary.json || true
+            exit 2
+          fi
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          result = json.loads(Path('target/formal-tool/summary.json').read_text())
+          judgement = result.get('safety_acceptance', {})
+          print('Infrastructure:', result.get('infrastructure_status'))
+          print('Whole compiler proof:', result.get('status'))
+          print('Specification judgement:', judgement.get('status'))
+          print('Per compiler:', judgement.get('summary', {}).get('by_compiler'))
+          if result.get('infrastructure_status') != 'OPERATIONAL':
+              raise SystemExit('Formal infrastructure failed')
+          if judgement.get('verification') != 'INDEPENDENT_LOCAL_REPLAY':
+              raise SystemExit('Missing independent replay')
+          if judgement.get('summary', {}).get('required_goals') != 10:
+              raise SystemExit('Missing compiler goals')
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as out:
+              out.write('Infrastructure: **OPERATIONAL**\n\n')
+              out.write('Whole compiler proof: **' + result['status'] + '**\n\n')
+              out.write('Specification judgement: **' + judgement['status'] + '**\n\n')
+              for compiler, counts in judgement['summary']['by_compiler'].items():
+                  out.write(f"- {compiler}: {counts['accepted']}/{counts['required']} goals accepted\n")
+          PY
+      - name: Upload specification judgement evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: specification-judgement-evidence
+          path: extracted/jabberwock-safety-ci-resume/target/formal-tool/
+          if-no-files-found: warn

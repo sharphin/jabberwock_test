@@ -174,6 +174,8 @@ def main(argv: list[str] | None = None) -> int:
     py = sys.executable
     scripts = ROOT / "scripts"
     plans = [
+        ("safety-scope", [py, str(scripts / "safety_scope.py"),
+                          "--compiler", "all", "--output", str(output / "safety-scope.json")]),
         ("inventory", [py, str(scripts / "whole_compiler_proof.py"),
                        "--output", str(output / "inventory.json")]),
         ("lean-axioms", [py, str(scripts / "check_formal.py")]),
@@ -196,6 +198,15 @@ def main(argv: list[str] | None = None) -> int:
         ("runtime-generation-proof", [py, str(scripts / "runtime_generation_proof.py"),
                                        "--output", str(output / "runtime-generation-proof.json"),
                                        "--timeout", str(args.stage_timeout)]),
+        ("safety-correspondence", [py, str(scripts / "safety_correspondence.py"),
+                                   "--scope", str(output / "safety-scope.json"),
+                                   "--output", str(output / "safety-correspondence.json"),
+                                   "--timeout", str(args.stage_timeout)]),
+        ("safety-acceptance", [py, str(scripts / "safety_acceptance.py"),
+                              "--scope", str(output / "safety-scope.json"),
+                              "--correspondence", str(output / "safety-correspondence.json"),
+                              "--output", str(output / "safety-acceptance.json"),
+                              "--timeout", str(args.stage_timeout)]),
     ]
     if args.lean_manifest:
         plans.append(("lean-evidence", [py, str(scripts / "lean_evidence_engine.py"),
@@ -228,6 +239,9 @@ def main(argv: list[str] | None = None) -> int:
     # the gate. The optional kernel manifest report has no "kind" field yet;
     # its status and compiler_refinement fields remain independently inspected.
     known_reports = {
+        "safety-scope": ("safety-scope.json", "specification-safety-scope"),
+        "safety-correspondence": ("safety-correspondence.json", "safety-implementation-correspondence"),
+        "safety-acceptance": ("safety-acceptance.json", "specification-safety-acceptance"),
         "inventory": ("inventory.json", "whole-implementation-proof-inventory"),
         "semantic-boundaries": ("semantic-boundaries.json", "first-five-semantic-refinement-boundaries"),
         "semantic-composition": ("semantic-composition.json", "compiler-semantic-composition"),
@@ -293,8 +307,10 @@ def main(argv: list[str] | None = None) -> int:
     # refinements in the future, without treating model-only checks as proofs.
     infrastructure_errors = any(
         stage["status"] in ("TIMEOUT", "EXECUTION_ERROR")
-        or (stage["status"] == "NONZERO_EXIT" and stage["name"] != "refinement")
-        or (stage["name"] == "refinement" and stage.get("returncode") not in (0, 1))
+        or (stage["status"] == "NONZERO_EXIT" and not (
+            stage["name"] in ("refinement", "safety-acceptance")
+            and stage.get("returncode") == 1
+            and stage.get("report", {}).get("status") == "NOT_PROVEN"))
         or stage.get("report", {}).get("status") in (
             "INVALID_REPORT", "INVALID_EVIDENCE", "INVALID_INVENTORY",
             "INVALID_BASELINE", "FAIL", "NOT_CHECKED", "STRUCTURE_MISMATCH")
@@ -302,6 +318,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     reports = {name: stage.get("report", {}) for name, stage in by_name.items()}
     expected_model_statuses = {
+        "safety-scope": "SCOPE_READY",
+        "safety-correspondence": "CHECKED_WITH_OPEN_CONDITIONS",
         "emitter-binding": "STRUCTURE_MATCHED",
         "worklist-structure": "STRUCTURE_MATCHED",
         "emitter-semantics": "KERNEL_CHECKED_TEMPLATE_MODEL_ONLY",
@@ -467,6 +485,34 @@ def main(argv: list[str] | None = None) -> int:
         log_faults.append("frozen proof input recheck failed: " + str(exc))
     if not frozen_unchanged:
         infrastructure_errors = True
+    # Reconstruct the scope from the current reviewed policy/specification.
+    # Its classification is not implementation evidence and never changes
+    # the proof counters below. Stages 2/3 will discharge those conditions.
+    try:
+        from safety_scope import validate_scope
+        validate_scope(reports["safety-scope"])
+    except (OSError, ValueError, KeyError, TypeError, RecursionError) as exc:
+        infrastructure_errors = True
+        log_faults.append("specification safety scope changed or invalid: " + str(exc))
+    try:
+        # Structural authentication of our freshly executed stage output. This
+        # is not a replacement for independent replay when accepting uploads.
+        from safety_correspondence import validate_report_binding
+        validate_report_binding(reports["safety-correspondence"], reports["safety-scope"])
+    except (OSError, ValueError, KeyError, TypeError, RecursionError) as exc:
+        infrastructure_errors = True
+        log_faults.append("safety correspondence report binding invalid: " + str(exc))
+    try:
+        from safety_acceptance import validate_result_binding
+        validate_result_binding(reports["safety-acceptance"], reports["safety-scope"],
+                                reports["safety-correspondence"])
+        if by_name["safety-acceptance"].get("returncode") != (
+                0 if reports["safety-acceptance"]["status"] == "ACCEPTED" else 1):
+            raise ValueError("acceptance exit code contradicts judgement")
+    except (OSError, ValueError, KeyError, TypeError, RecursionError) as exc:
+        infrastructure_errors = True
+        log_faults.append("safety acceptance report binding invalid: " + str(exc))
+    positive = positive and reports["safety-acceptance"].get("status") == "ACCEPTED"
     if infrastructure_errors:
         overall = "TOOL_ERROR"
     elif positive and all(stage["status"] == "COMPLETED" for stage in stages):
@@ -504,6 +550,9 @@ def main(argv: list[str] | None = None) -> int:
         },
         "status": overall,
         "refinement_status": refinement_status or "UNKNOWN",
+        "safety_scope": reports["safety-scope"],
+        "safety_correspondence": reports["safety-correspondence"],
+        "safety_acceptance": reports["safety-acceptance"],
         "input_identity": {name: entry["sha256"] for name, entry in input_identity.items()},
         "inputs_unchanged": inputs_unchanged,
         "external_proof_inputs": external_before,
