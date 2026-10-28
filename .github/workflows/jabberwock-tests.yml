@@ -30,11 +30,30 @@ jobs:
         timeout-minutes: 8
         run: |
           /usr/bin/time -v timeout 450s cargo test --all-targets --locked --no-run
-      - name: Rust tests (measured, bounded)
+      - name: Rust library and binaries
         if: success() || failure()
-        timeout-minutes: 20
+        timeout-minutes: 5
         run: |
-          /usr/bin/time -v timeout 1140s cargo test --all-targets --locked
+          /usr/bin/time -v timeout 270s cargo test --lib --bins --locked -- --test-threads=4
+      - name: Rust integration tests (identified individually)
+        if: success() || failure()
+        timeout-minutes: 18
+        shell: bash
+        run: |
+          failures=0
+          for file in tests/*.rs; do
+            suite="${file##*/}"
+            suite="${suite%.rs}"
+            echo "::group::integration suite: ${suite}"
+            start=$SECONDS
+            timeout 75s cargo test --locked --test "$suite" -- --test-threads=4
+            rc=$?
+            echo "SUITE_RESULT suite=${suite} exit=${rc} duration=$((SECONDS-start))s"
+            echo "::endgroup::"
+            if [[ $rc -ne 0 ]]; then failures=$((failures+1)); fi
+          done
+          echo "FAILED_SUITES=$failures"
+          [[ $failures -eq 0 ]]
       - name: Python regression tests
         if: success() || failure()
         timeout-minutes: 5
