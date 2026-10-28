@@ -233,7 +233,7 @@ def lean_word(tree) -> str:
     if op == "literal":
         return "(.literal (BitVec.ofNat 64 " + str(tree[1]) + "))"
     if op == "shl":
-        return "(.shl " + lean_word(tree[1]) + " ⟨" + str(tree[2]) + ", by decide⟩)"
+        return "(.shl " + lean_word(tree[1]) + " " + str(tree[2]) + " (by decide))"
     return "(." + op + " " + lean_word(tree[1]) + " " + lean_word(tree[2]) + ")"
 
 
@@ -246,6 +246,7 @@ def proof_text(tree, limit: int) -> str:
     # Names, operators and numerals come only from the closed typed extractor.
     return """import JabberwockFormal.UnsignedGuardSource
 set_option autoImplicit false
+set_option maxRecDepth 4096
 set_option warningAsError true
 namespace JabberwockExtracted
 open JabberwockFormal.UnsignedGuardSource
@@ -253,13 +254,11 @@ def source : Predicate := """ + lean_predicate(tree) + """
 theorem source_refines_capacity_spec (gen step : Word) :
     eval gen step source = true ↔
       JabberwockFormal.RuntimeGenerationBitVec.guardSpec gen step (BitVec.ofNat 64 """ + str(limit) + """) := by
-  simp [source, eval, evalWord, JabberwockFormal.RuntimeGenerationBitVec.guardSpec,
-    JabberwockFormal.RuntimeGenerationBitVec.retiredWord,
-    JabberwockFormal.RuntimeGenerationBitVec.wordMaximum,
-    JabberwockFormal.RuntimeGenerationBitVec.counterMask,
-    JabberwockFormal.RuntimeGenerationBitVec.limitMaximum,
-    JabberwockFormal.RuntimeGenerationBitVec.radix,
-    BitVec.ule_eq_decide_le, and_assoc]
+  have mask : ((BitVec.ofNat 64 1) <<< (62 : Nat)) - BitVec.ofNat 64 1 = BitVec.ofNat 64 4611686018427387903 := by decide
+  have maskDef : JabberwockFormal.RuntimeGenerationBitVec.counterMask = BitVec.ofNat 64 4611686018427387903 := by decide
+  have retiredDef : JabberwockFormal.RuntimeGenerationBitVec.retiredWord = BitVec.ofNat 64 18446744073709551615 := by decide
+  simp only [source, eval, evalWord, mask, JabberwockFormal.RuntimeGenerationBitVec.guardSpec,
+    maskDef, retiredDef, BitVec.ule_eq_decide_le, Bool.and_eq_true, decide_eq_true_eq, and_assoc]
 end JabberwockExtracted
 #print axioms JabberwockExtracted.source_refines_capacity_spec
 """

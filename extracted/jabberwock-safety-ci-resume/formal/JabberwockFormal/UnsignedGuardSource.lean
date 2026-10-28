@@ -21,7 +21,7 @@ inductive WordExpr where
   | literal (value : Word)
   | band (left right : WordExpr)
   | sub (left right : WordExpr)
-  | shl (value : WordExpr) (count : Fin 64)
+  | shl (value : WordExpr) (count : Nat) (inRange : count < 64)
 
 inductive Predicate where
   | ne (left right : WordExpr)
@@ -34,7 +34,7 @@ def evalWord (gen step : Word) : WordExpr → Word
   | .literal value => value
   | .band left right => evalWord gen step left &&& evalWord gen step right
   | .sub left right => evalWord gen step left - evalWord gen step right
-  | .shl value count => (evalWord gen step value) <<< count.val
+  | .shl value count _ => (evalWord gen step value) <<< count
 
 /-- Value of C's short-circuit conjunction. Both admitted operands are pure
     and total, so evaluating this Boolean expression has the same value. -/
