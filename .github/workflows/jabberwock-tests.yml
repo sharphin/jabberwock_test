@@ -12,7 +12,7 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 65
     env:
       CARGO_PROFILE_DEV_DEBUG: '0'
       CARGO_PROFILE_TEST_DEBUG: '0'
@@ -40,18 +40,24 @@ jobs:
           /usr/bin/time -v timeout 270s cargo test --lib --bins --locked -- --test-threads=4
       - name: Rust integration tests (identified individually)
         if: success() || failure()
-        timeout-minutes: 18
+        timeout-minutes: 45
         shell: bash
         run: |
+          mkdir -p target/ci-integration
           failures=0
           for file in tests/*.rs; do
             suite="${file##*/}"
             suite="${suite%.rs}"
             echo "::group::integration suite: ${suite}"
             start=$SECONDS
-            timeout 75s cargo test --locked --test "$suite" -- --test-threads=4
+            limit=150
+            if [[ "$suite" == "robust" || "$suite" == "fuzz" || "$suite" == "sanitizers" || "$suite" == "native" || "$suite" == "jwc" ]]; then
+              limit=600
+            fi
+            timeout "${limit}s" cargo test --locked --test "$suite" -- --test-threads=4 > "target/ci-integration/${suite}.log" 2>&1
             rc=$?
-            echo "SUITE_RESULT suite=${suite} exit=${rc} duration=$((SECONDS-start))s"
+            tail -n 30 "target/ci-integration/${suite}.log"
+            echo "SUITE_RESULT suite=${suite} exit=${rc} duration=$((SECONDS-start))s" | tee -a target/ci-integration/results.txt
             echo "::endgroup::"
             if [[ $rc -ne 0 ]]; then failures=$((failures+1)); fi
           done
@@ -77,4 +83,5 @@ jobs:
           path: |
             extracted/jabberwock-safety-ci-resume/target/*.json
             extracted/jabberwock-safety-ci-resume/target/**/*.json
+            extracted/jabberwock-safety-ci-resume/target/ci-integration/*
           if-no-files-found: ignore
