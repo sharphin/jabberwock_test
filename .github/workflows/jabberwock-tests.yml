@@ -9,26 +9,42 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 35
     defaults:
       run:
         working-directory: extracted/jabberwock-safety-ci-resume
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: extracted/jabberwock-safety-ci-resume
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: Rust unit and integration tests
-        run: cargo test --all-targets --locked
+      - name: Rust compile (measured, bounded)
+        timeout-minutes: 8
+        run: |
+          /usr/bin/time -v timeout 450s cargo test --all-targets --locked --no-run
+      - name: Rust tests (measured, bounded)
+        if: success() || failure()
+        timeout-minutes: 12
+        env:
+          RUST_TEST_THREADS: '2'
+        run: |
+          /usr/bin/time -v timeout 660s cargo test --all-targets --locked -- --nocapture
       - name: Python regression tests
         if: success() || failure()
-        run: python3 -m unittest discover -s scripts -p 'test_*.py'
+        timeout-minutes: 5
+        run: timeout 240s python3 -m unittest discover -s scripts -p 'test_*.py'
       - name: Linux safety probes
         if: success() || failure()
-        run: python3 scripts/safety_linux.py
+        timeout-minutes: 8
+        run: timeout 450s python3 scripts/safety_linux.py
       - name: Lean formal verification
         if: success() || failure()
-        run: python3 scripts/formal_report.py --compiler all --output target/formal-report.json
+        timeout-minutes: 5
+        run: timeout 240s python3 scripts/formal_report.py --compiler all --output target/formal-report.json
       - name: Upload evidence
         if: always()
         uses: actions/upload-artifact@v4
