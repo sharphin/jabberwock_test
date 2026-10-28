@@ -102,8 +102,13 @@ fn compile_to(ll: &str, dir: &Path, name: &str, exe: &Path, opt: &str) -> Result
     fs::write(&rt, RUNTIME_C).map_err(|e| e.to_string())?;
     let mut args = vec![opt, path_str(&llp)?, path_str(&rt)?, "-o", path_str(exe)?, "-Wno-override-module"];
     link_flags(&mut args);
-    // 実行時ライブラリの関数（区画の確保・リストへの追加など）を書き出したコードの中に展開させるため、
-    // まず LTO（リンクのときに 2 つをまとめて最適化する）で作る。lld がない環境では LTO なしで作り直す
+    // LTO is needed for the release (-O2/-O3) path, but not for
+    // development (-O0/-O1). A large self-hosted compiler generates
+    // substantial LLVM IR: whole-program LTO at -O1 dominates its build time.
+    // Keep the -O1 runtime and output checks while avoiding unnecessary LTO.
+    if opt == "-O0" || opt == "-O1" {
+        return run_clang(&args);
+    }
     let mut lto = args.clone();
     lto.extend(["-flto", "-fuse-ld=lld"]);
     run_clang(&lto).or_else(|_| run_clang(&args))
