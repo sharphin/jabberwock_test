@@ -122,6 +122,8 @@ jobs:
 
   specification-judgement:
     name: Specification judgement infrastructure (jwc and Rust)
+    env:
+      JW_CLANG: /usr/bin/clang
     runs-on: ubuntu-latest
     timeout-minutes: 40
     defaults:
