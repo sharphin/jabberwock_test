@@ -109,8 +109,11 @@ def main():
     parser.add_argument("--compiler", choices=("all", "jwc", "rust"), default="all")
     parser.add_argument("--output", type=Path, default=ROOT / "target/formal-report.json")
     parser.add_argument("--require-full", action="store_true", help="nonzero unless whole-compiler goals are proved")
+    parser.add_argument("--kernel-only", action="store_true", help="CI test of declared Lean theorems only; does not accept stale source bindings or prove compiler safety")
     parser.add_argument("--abstract-model", action="store_true", help="also audit the shared abstract model; never substitutes compiler proofs")
     args = parser.parse_args()
+    if args.kernel_only and args.require_full:
+        parser.error("--kernel-only cannot be combined with --require-full")
     selected = ("jwc", "rust") if args.compiler == "all" else (args.compiler,)
     report = {"schema_version": 3, "kind": "formal-proof", "started_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
               "compilers": {}, "goals": [], "abstract_model": {"status": "NOT_RUN"},
@@ -191,6 +194,12 @@ def main():
         return 2
     if args.require_full:
         return 1  # Whole-compiler correspondence remains unproved.
+    if args.kernel_only:
+        # This is an independent Lean-kernel test, NOT a proof-acceptance gate.
+        # Keep stale bindings and NOT_PROVEN visible in the JSON report.
+        return int(len(report["goals"]) != len(selected) * len(GOALS) or
+                   any(g["proof_check"]["status"] != "KERNEL_CHECKED" for g in report["goals"]) or
+                   (args.abstract_model and report["abstract_model"]["status"] != "MODEL_PASS"))
     return int(len(report["goals"]) != len(selected) * len(GOALS) or any(g["proof_check"]["status"] != "KERNEL_CHECKED" or g["proof_check"].get("source_binding") != "MATCH" for g in report["goals"])
                or (args.abstract_model and report["abstract_model"]["status"] != "MODEL_PASS"))
 
