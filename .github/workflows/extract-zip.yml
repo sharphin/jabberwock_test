@@ -1,0 +1,41 @@
+name: Extract ZIP
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/extract-zip.yml'
+permissions:
+  contents: write
+jobs:
+  extract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Extract archive
+        run: |
+          python3 - <<'PY'
+          import zipfile, pathlib, shutil, stat
+          with zipfile.ZipFile('jabberwock-safety-ci-resume.zip') as z:
+              for m in z.infolist():
+                  p=pathlib.PurePosixPath(m.filename)
+                  if p.is_absolute() or '..' in p.parts or '\\' in m.filename:
+                      raise ValueError(f'Unsafe path: {m.filename}')
+                  if stat.S_IFMT(m.external_attr >> 16)==stat.S_IFLNK:
+                      raise ValueError(f'Symlink: {m.filename}')
+                  out=pathlib.Path('extracted').joinpath(*p.parts)
+                  if m.is_dir():
+                      out.mkdir(parents=True,exist_ok=True)
+                  else:
+                      out.parent.mkdir(parents=True,exist_ok=True)
+                      with z.open(m) as src, out.open('wb') as dst: shutil.copyfileobj(src,dst)
+          PY
+      - name: Commit extracted files
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add extracted
+          if ! git diff --cached --quiet; then
+            git commit -m "Extract jabberwock archive"
+            git push
+          fi
