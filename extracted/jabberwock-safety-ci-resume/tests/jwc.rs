@@ -59,9 +59,9 @@ fn jwc() -> PathBuf {
         eprintln!("JWC_BUILD_PHASE llvm_emission elapsed_ms={} ir_bytes={}", start.elapsed().as_millis(), ll.len());
         let out = std::env::temp_dir().join(format!("jw-jwc-test-{}", std::process::id()));
         // The parity integration tests exercise compiler behavior, not optimized
-        // code generation. Build the very large self-hosted compiler at -O0;
+        // code generation. Build the very large self-hosted compiler at -O1 without LTO;
         // optimized native output remains covered by native/safety tests.
-        let opt = std::env::var("JW_JWC_TEST_OPT").unwrap_or_else(|_| "-O0".to_owned());
+        let opt = std::env::var("JW_JWC_TEST_OPT").unwrap_or_else(|_| "-O1".to_owned());
         let start = Instant::now();
         let exe = native::compile(&ll, &out, "jwc", &opt).expect("jwc を clang でコンパイルできる");
         eprintln!("JWC_BUILD_PHASE clang_link elapsed_ms={} opt={}", start.elapsed().as_millis(), opt);
