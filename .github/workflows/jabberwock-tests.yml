@@ -2,7 +2,10 @@ name: Jabberwock test suite
 on:
   push:
     branches: [main]
-    paths: ['.github/workflows/jabberwock-tests.yml']
+    paths:
+      - '.github/workflows/jabberwock-tests.yml'
+      - 'extracted/jabberwock-safety-ci-resume/src/**'
+      - 'extracted/jabberwock-safety-ci-resume/tests/**'
   workflow_dispatch:
 permissions:
   contents: read
