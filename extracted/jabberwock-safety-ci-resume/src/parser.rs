@@ -1037,7 +1037,11 @@ impl Parser {
 
     /// 型: `i64`、`Player`、`own T`、`ref T`、`ref mut T`
     fn parse_type(&mut self) -> R<TypeExpr> {
-        self.nested(|p| p.parse_type_in())
+        let base = self.depth;
+        self.deeper()?;
+        let result = self.parse_type_in();
+        self.depth = base;
+        result
     }
 
     fn parse_type_in(&mut self) -> R<TypeExpr> {
@@ -1100,6 +1104,8 @@ impl Parser {
         let mut t = TypeExpr { kind, span: start.join(self.prev_span()) };
         // `i64[3]`、`i64[3][2]`（長さ 3 の配列が 2 つ）、`i64[]`（リスト）、`i64[str]`（辞書）
         while self.eat(Tok::LBrack) {
+            // Each postfix adds a recursive AST node even though parsing is a loop.
+            self.deeper()?;
             let kind = if self.eat(Tok::RBrack) {
                 TypeKind::List(Box::new(t))
             } else if matches!(self.peek(), Tok::Ident(_)) {

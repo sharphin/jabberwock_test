@@ -1306,10 +1306,11 @@ struct Parser {
 
     /// 型: `i64`、`Player`、`own T`、`ref T`、`ref mut T`、`fn R(A)`、`(T)`、`T[3]`、`T[]`、`V[K]`
     fn mut Result<ast.TypeExpr, diag.Diag> parse_type() {
+        let base = nest;
         if nest >= MAX_NEST { return Err(too_deep()); }
         nest += 1;
         let r = parse_type_in();
-        nest -= 1;
+        nest = base;
         r
     }
 
@@ -1368,6 +1369,8 @@ struct Parser {
         t.span = diag.join(start, prev_span());
         // `i64[3]`、`i64[]`（リスト）、`i64[str]`（辞書）
         while eat("[") {
+            // Postfix types grow the recursive AST just like nested type syntax.
+            deeper()?;
             if eat("]") {
                 t = ast.TypeExpr { kind: ast.TypeKind.List(own t), span: 0 };
             } else if peek() == "ident" {
