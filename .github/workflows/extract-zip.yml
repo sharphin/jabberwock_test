@@ -39,3 +39,5 @@ jobs:
             git commit -m "Extract jabberwock archive"
             git push
           fi
+
+# Trigger extraction on workflow update
