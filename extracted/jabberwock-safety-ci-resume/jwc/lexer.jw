@@ -1,0 +1,373 @@
+// 字句解析（Rust 版の src/lexer.rs と同じトークンを作る）
+//
+// 埋め込みのある文字列 "a{x}b" は、平らに並べる:
+//   interp（位置は文字列全体）→ lit "a" → code → x のトークン → eof → lit "b" → end
+// kind は記号・予約語ならその字、ほかは ident / int / float / str / interp / lit / code / end / eof。
+use diag;
+
+pub struct Token {
+    str kind;
+    str text;     // ident・float・str・lit の中身
+    u64 num;      // int の値
+    i64 span;
+}
+
+const KEYWORDS = "fn let if else while loop for in break continue match case default return struct enum static interface use pub const own as ref mut true false";
+
+fn bool is_digit(i64 c) { c >= 48 && c <= 57 }
+fn bool is_ascii_alpha(i64 c) { (c >= 97 && c <= 122) || (c >= 65 && c <= 90) }
+// 英字以外の文字（日本語など）は名前に使える文字として扱う（Rust 版の is_alphabetic より広い）
+fn bool is_alpha(i64 c) { is_ascii_alpha(c) || c >= 128 }
+fn bool is_alnum(i64 c) { is_alpha(c) || is_digit(c) }
+
+/// radix 進の 1 桁の値（使えない文字なら -1）
+fn i64 digit_value(i64 c, i64 radix) {
+    let v = if is_digit(c) { c - 48 } else if c >= 97 && c <= 122 { c - 87 } else if c >= 65 && c <= 90 { c - 55 } else { 99 };
+    if v < radix { v } else { -1 }
+}
+
+struct Lexer {
+    str[] cs;      // 1 文字ずつ
+    i64[] codes;   // その番号
+    i64 i;
+    i64 line;
+    i64 col;
+    Token[] out;
+
+    fn i64 at(i64 k) {
+        if k < codes.len() { codes[k] } else { -1 }
+    }
+
+    fn mut push(str kind, i64 ln, i64 cl, i64 len) {
+        out.push(Token { kind: kind, text: "", num: 0, span: diag.mk_span(ln, cl, len) });
+    }
+
+    fn mut push_text(str kind, str text, i64 ln, i64 cl, i64 len) {
+        out.push(Token { kind: kind, text: text, num: 0, span: diag.mk_span(ln, cl, len) });
+    }
+
+    /// a 文字目から b 文字目の手前まで
+    fn str piece(i64 a, i64 b) {
+        let mut t = "";
+        let mut k = a;
+        while k < b {
+            t += cs[k];
+            k += 1;
+        }
+        t
+    }
+
+    fn mut Result<Token[], diag.Diag> run() {
+        while i < codes.len() {
+            let c = codes[i];
+            let start_col = col;
+            if c == 32 || c == 9 || c == 13 {
+                i += 1;
+                col += 1;
+            } else if c == 10 {
+                i += 1;
+                line += 1;
+                col = 1;
+            } else if c == 47 && at(i + 1) == 47 {
+                while i < codes.len() && codes[i] != 10 {
+                    i += 1;
+                    col += 1;
+                }
+            } else if c == 48 && (at(i + 1) == 120 || at(i + 1) == 98 || at(i + 1) == 111) {
+                radix_number(start_col)?;
+            } else if is_digit(c) {
+                number(start_col)?;
+            } else if is_alpha(c) || c == 95 {
+                let s = i;
+                while i < codes.len() && (is_alnum(codes[i]) || codes[i] == 95) {
+                    i += 1;
+                    col += 1;
+                }
+                let text = piece(s, i);
+                let mut kind = "ident";
+                for k in KEYWORDS.split(" ") {
+                    if k == text { kind = k; }
+                }
+                if kind == "ident" {
+                    push_text("ident", text, line, start_col, i - s);
+                } else {
+                    push(kind, line, start_col, i - s);
+                }
+            } else if c == 34 {
+                string(start_col)?;
+            } else {
+                symbol(start_col)?;
+            }
+        }
+        push("eof", line, col, 1);
+        Ok(out.drain())
+    }
+
+    // `0xff`・`0b1010`・`0o17`（`_` で区切ってよい）
+    fn mut Result<(), diag.Diag> radix_number(i64 start_col) {
+        let r = codes[i + 1];
+        let radix = if r == 120 { 16 } else if r == 98 { 2 } else { 8 };
+        let s = i;
+        i += 2;
+        col += 2;
+        let i64[] mut digits = [];
+        while i < codes.len() && (is_ascii_alpha(codes[i]) || is_digit(codes[i]) || codes[i] == 95) {
+            if codes[i] != 95 {
+                digits.push(codes[i]);
+            }
+            i += 1;
+            col += 1;
+        }
+        let sp = diag.mk_span(line, start_col, i - s);
+        let mut ok = digits.len() > 0;
+        for d in digits {
+            if digit_value(d, radix) < 0 { ok = false; }
+        }
+        if !ok {
+            return Err(diag.error("数の書き方が正しくありません", sp, "{radix} 進数に使えない文字があります"));
+        }
+        let u64 max = 18446744073709551615;
+        let u64 mut n = 0;
+        let u64 rr = radix as u64;
+        for d in digits {
+            let u64 v = digit_value(d, radix) as u64;
+            if n > (max - v) / rr {
+                return Err(diag.error("整数が大きすぎます", sp, "どの整数型にも収まりません"));
+            }
+            n = n * rr + v;
+        }
+        out.push(Token { kind: "int", text: "", num: n, span: sp });
+        Ok(())
+    }
+
+    fn mut Result<(), diag.Diag> number(i64 start_col) {
+        let s = i;
+        while i < codes.len() && (is_digit(codes[i]) || (codes[i] == 95 && i > s)) {
+            i += 1;
+            col += 1;
+        }
+        // `1.5` は小数（`.` のあとに数字が続くときだけ）
+        if at(i) == 46 && is_digit(at(i + 1)) {
+            i += 1;
+            col += 1;
+            while i < codes.len() && is_digit(codes[i]) {
+                i += 1;
+                col += 1;
+            }
+            push_text("float", piece(s, i), line, start_col, i - s);
+            return Ok(());
+        }
+        let sp = diag.mk_span(line, start_col, i - s);
+        let u64 max = 18446744073709551615;
+        let u64 mut n = 0;
+        let mut k = s;
+        while k < i {
+            if codes[k] != 95 {
+                let u64 v = (codes[k] - 48) as u64;
+                if n > (max - v) / 10 {
+                    return Err(diag.error("整数が大きすぎます", sp, "どの整数型にも収まりません"));
+                }
+                n = n * 10 + v;
+            }
+            k += 1;
+        }
+        out.push(Token { kind: "int", text: "", num: n, span: sp });
+        Ok(())
+    }
+
+    fn mut Result<(), diag.Diag> string(i64 start_col) {
+        // `"""..."""` は途中で改行できる（開きの直後の改行は含めない）
+        let triple = at(i + 1) == 34 && at(i + 2) == 34;
+        let start_line = line;
+        let open = if triple { 3 } else { 1 };
+        i += open;
+        col += open;
+        if triple && at(i) == 10 {
+            i += 1;
+            line += 1;
+            col = 1;
+        }
+        let mut text = "";
+        let Token[] mut parts = [];
+        let mut interp = false;
+        loop {
+            if i >= codes.len() || (codes[i] == 10 && !triple) {
+                let why = if triple {
+                    "この `\"\"\"` に対応する閉じ `\"\"\"` がありません"
+                } else {
+                    "この `\"` に対応する閉じ `\"` が同じ行にありません（改行を含むなら `\"\"\"...\"\"\"`）"
+                };
+                return Err(diag.error("文字列が閉じていません", diag.mk_span(start_line, start_col, open), why));
+            }
+            let ch = codes[i];
+            if ch == 10 {
+                text += "\n";
+                i += 1;
+                line += 1;
+                col = 1;
+                continue;
+            }
+            if ch == 34 && (!triple || (at(i + 1) == 34 && at(i + 2) == 34)) {
+                i += open;
+                col += open;
+                break;
+            }
+            if (ch == 123 || ch == 125) && at(i + 1) == ch {
+                // `{{` / `}}` は `{{` / `}}` そのもの
+                text += cs[i];
+                i += 2;
+                col += 2;
+                continue;
+            }
+            if ch == 125 {
+                return Err(diag.error("文字列の中の `}}` に対応する `{{` がありません", diag.mk_span(line, col, 1),
+                    "`}}` そのものを書くなら `}}}}` と書いてください"));
+            }
+            if ch == 123 {
+                // 埋め込み: 対応する `}}` までを式として字句解析する
+                let open_col = col;
+                let mut depth = 1;
+                let mut j = i + 1;
+                while j < codes.len() && codes[j] != 10 {
+                    let cj = codes[j];
+                    if cj == 123 {
+                        depth += 1;
+                    } else if cj == 125 {
+                        depth -= 1;
+                        if depth == 0 { break; }
+                    } else if cj == 34 {
+                        return Err(diag.error_note("埋め込みの `{{` が閉じていません", diag.mk_span(line, open_col, 1),
+                            "この `{{` の `}}` より先に `\"` がある",
+                            "`{{` そのものは `{{{{` と書きます。`{{ }}` の中には文字列を書けないので、先に変数に入れてください"));
+                    }
+                    j += 1;
+                }
+                if j >= codes.len() || codes[j] != 125 {
+                    return Err(diag.error("埋め込みの `{{` が閉じていません", diag.mk_span(line, open_col, 1),
+                        "`{{` そのものを書くなら `{{{{` と書いてください"));
+                }
+                let code = piece(i + 1, j);
+                if code.trim() == "" {
+                    return Err(diag.error("埋め込みの `{{ }}` が空です", diag.mk_span(line, open_col, j - i + 1), "中に式を書いてください"));
+                }
+                let mut toks = lex(code)?;
+                if text != "" {
+                    parts.push(Token { kind: "lit", text: text, num: 0, span: diag.mk_span(0, 0, 0) });
+                    text = "";
+                }
+                parts.push(Token { kind: "code", text: "", num: 0, span: diag.mk_span(0, 0, 0) });
+                for t in toks.drain() {
+                    // 部分の字句解析の位置を、元のファイルでの位置に直す
+                    parts.push(Token { kind: t.kind, text: t.text, num: t.num, span: diag.mk_span(line, diag.col_of(t.span) + open_col, diag.len_of(t.span)) });
+                }
+                interp = true;
+                col += j - i + 1;
+                i = j + 1;
+                continue;
+            }
+            if ch == 92 {
+                let esc = at(i + 1);
+                // `\u{{1F600}}`: 番号で書いた文字
+                if esc == 117 && at(i + 2) == 123 {
+                    let mut k = i + 3;
+                    while k < codes.len() && codes[k] != 125 && codes[k] != 34 && codes[k] != 10 {
+                        k += 1;
+                    }
+                    let mut v = 0;
+                    let mut ok = k < codes.len() && codes[k] == 125 && k > i + 3 && k - (i + 3) <= 8;
+                    if ok {
+                        let mut m = i + 3;
+                        while m < k {
+                            let dv = digit_value(codes[m], 16);
+                            if dv < 0 { ok = false; }
+                            v = v * 16 + dv;
+                            m += 1;
+                        }
+                    }
+                    if ok && (v > 1114111 || (v >= 55296 && v <= 57343)) { ok = false; }
+                    if !ok {
+                        return Err(diag.error("文字の番号のエスケープが正しくありません", diag.mk_span(line, col, 2),
+                            "`\\u{{41}}` のように、{{ }} の中に 16 進数で文字の番号を書きます"));
+                    }
+                    text += chr(v);
+                    col += k + 1 - i;
+                    i = k + 1;
+                    continue;
+                }
+                let mapped = if esc == 110 { "\n" } else if esc == 116 { "\t" } else if esc == 114 { "\r" } else if esc == 48 { "\0" }
+                    else if esc == 34 { "\"" } else if esc == 92 { "\\" } else { "" };
+                if mapped == "" && esc != 48 {
+                    return Err(diag.error("未知のエスケープです", diag.mk_span(line, col, 2),
+                        "使えるのは \\n \\t \\r \\0 \\\" \\\\ \\u{{...}} です"));
+                }
+                text += mapped;
+                i += 2;
+                col += 2;
+            } else {
+                text += cs[i];
+                i += 1;
+                col += 1;
+            }
+        }
+        let len = if line == start_line { col - start_col } else { open };
+        let sp = diag.mk_span(start_line, start_col, len);
+        if !interp {
+            out.push(Token { kind: "str", text: text, num: 0, span: sp });
+            return Ok(());
+        }
+        if text != "" {
+            parts.push(Token { kind: "lit", text: text, num: 0, span: diag.mk_span(0, 0, 0) });
+        }
+        out.push(Token { kind: "interp", text: "", num: 0, span: sp });
+        for t in parts.drain() {
+            out.push(t);
+        }
+        out.push(Token { kind: "end", text: "", num: 0, span: sp });
+        Ok(())
+    }
+
+    fn mut Result<(), diag.Diag> symbol(i64 start_col) {
+        let c = cs[i];
+        let two = if i + 1 < cs.len() { c + cs[i + 1] } else { c };
+        let mut n = 0;
+        for s in ["==", "!=", "<=", "<<", ">=", "&&", "||", "->", "+=", "-=", "*=", "/=", "%=", "++", "--"] {
+            if n == 0 && s == two { n = 2; }
+        }
+        if n == 0 && "=<>([]){{}},.:;+-*/%!?&|^~".contains(c) { n = 1; }
+        if n == 0 {
+            return Err(diag.error("使えない文字です", diag.mk_span(line, col, 1), "`{c}` はこの言語にありません"));
+        }
+        let kind = if n == 2 { two } else { c };
+        push(kind, line, start_col, n);
+        i += n;
+        col += n;
+        Ok(())
+    }
+}
+
+pub fn Result<Token[], diag.Diag> lex(str src) {
+    let cs = src.chars();
+    let codes = cs.map((c) -> c.code());
+    let mut l = Lexer { cs: cs, codes: codes, i: 0, line: 1, col: 1, out: [] };
+    l.run()
+}
+
+/// `file` 番目のファイルとして字句解析する（位置にファイルの番号を入れる）
+pub fn Result<Token[], diag.Diag> lex_file(str src, i64 file) {
+    match lex(src) {
+        case Ok(toks) -> {
+            let mut ts = toks;
+            for i in range(ts.len()) {
+                ts[i].span = diag.with_file(ts[i].span, file);
+            }
+            Ok(ts)
+        }
+        case Err(d) -> {
+            let mut e = d;
+            for i in range(e.labels.len()) {
+                e.labels[i].span = diag.with_file(e.labels[i].span, file);
+            }
+            Err(e)
+        }
+    }
+}

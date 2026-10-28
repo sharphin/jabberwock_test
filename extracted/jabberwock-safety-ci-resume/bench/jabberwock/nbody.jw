@@ -1,0 +1,91 @@
+const PI = 3.141592653589793;
+const SOLAR_MASS = 4.0 * PI * PI;
+const DAYS = 365.24;
+
+struct Body {
+    f64 x;
+    f64 y;
+    f64 z;
+    f64 vx;
+    f64 vy;
+    f64 vz;
+    f64 mass;
+}
+
+fn Body planet(f64 x, f64 y, f64 z, f64 vx, f64 vy, f64 vz, f64 mass) {
+    Body { x: x, y: y, z: z, vx: vx * DAYS, vy: vy * DAYS, vz: vz * DAYS, mass: mass * SOLAR_MASS }
+}
+
+fn advance(ref mut Body[] bs, f64 dt) {
+    let n = bs.len();
+    for i in range(n) {
+        for j in range(i + 1, n) {
+            let dx = bs[i].x - bs[j].x;
+            let dy = bs[i].y - bs[j].y;
+            let dz = bs[i].z - bs[j].z;
+            let d2 = dx * dx + dy * dy + dz * dz;
+            let mag = dt / (d2 * d2.sqrt());
+            let mi = bs[i].mass * mag;
+            let mj = bs[j].mass * mag;
+            bs[i].vx -= dx * mj;
+            bs[i].vy -= dy * mj;
+            bs[i].vz -= dz * mj;
+            bs[j].vx += dx * mi;
+            bs[j].vy += dy * mi;
+            bs[j].vz += dz * mi;
+        }
+    }
+    for i in range(n) {
+        bs[i].x += dt * bs[i].vx;
+        bs[i].y += dt * bs[i].vy;
+        bs[i].z += dt * bs[i].vz;
+    }
+}
+
+fn f64 energy(ref Body[] bs) {
+    let mut e = 0.0;
+    let n = bs.len();
+    for i in range(n) {
+        let b = ref bs[i];
+        e += 0.5 * b.mass * (b.vx * b.vx + b.vy * b.vy + b.vz * b.vz);
+        for j in range(i + 1, n) {
+            let dx = b.x - bs[j].x;
+            let dy = b.y - bs[j].y;
+            let dz = b.z - bs[j].z;
+            e -= b.mass * bs[j].mass / (dx * dx + dy * dy + dz * dz).sqrt();
+        }
+    }
+    e
+}
+
+fn offset(ref mut Body[] bs) {
+    let mut px = 0.0;
+    let mut py = 0.0;
+    let mut pz = 0.0;
+    for b in bs {
+        px += b.vx * b.mass;
+        py += b.vy * b.mass;
+        pz += b.vz * b.mass;
+    }
+    bs[0].vx = -px / SOLAR_MASS;
+    bs[0].vy = -py / SOLAR_MASS;
+    bs[0].vz = -pz / SOLAR_MASS;
+}
+
+fn main() {
+    let Body[] mut bs = [
+        Body { x: 0.0, y: 0.0, z: 0.0, vx: 0.0, vy: 0.0, vz: 0.0, mass: SOLAR_MASS },
+        planet(4.841431442464721, -1.1603200440274284, -0.103622044471123109232735,
+            0.001660076642744036943058, 0.00769901118419740425336, -0.000069046001697206302317, 0.000954791938424326609193),
+        planet(8.34336671824458, 4.124798564124305, -0.403523417114321381049535,
+            -0.002767425107268624111245, 0.004998528012349172378048, 0.000023041729757376392881, 0.000285885980666130811584),
+        planet(12.894369562139131, -15.111151401698631, -0.223307578892655733682204,
+            0.002964601375647616179898, 0.002378471739594809498258, -0.000029658956854023755569, 0.000043662440433515629814),
+        planet(15.379697114850917, -25.919314609987964, 0.179258772950371181309492,
+            0.002680677724903893222042, 0.001628241700382422954552, -0.000095159225451971586954, 0.000051513890204661145133)
+    ];
+    offset(ref mut bs);
+    print((energy(bs) * 1000000000.0) as i64);
+    for k in range(5000000) { advance(ref mut bs, 0.01); }
+    print((energy(bs) * 1000000000.0) as i64);
+}

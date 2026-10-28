@@ -1,0 +1,42 @@
+{
+  "proof_engine_and_axiom_audit": {
+    "state": "IMPLEMENTED",
+    "evidence": "Code audit: scripts/check_formal.py discovers theorem declarations across formal/JabberwockFormal, rejects proof escapes and requires warningAsError, then builds Lean and audits theorem axioms. scripts/lean_evidence_engine.py pins Lean 4.24.0 and checks proof/source closure plus registered expected proposition types. Runtime execution not performed in this review."
+  },
+  "proof_obligation_inventory": {
+    "state": "IMPLEMENTED",
+    "evidence": "Code audit: scripts/whole_compiler_proof.py discovers production sources for Rust and jwc, fingerprints source files, creates compiler/goal/source obligations, and validate() regenerates and compares the full inventory to reject omissions or altered rows. This inventories proof work; it does not prove the obligations."
+  },
+  "implementation_correspondence_checker": {
+    "state": "PARTIAL",
+    "evidence": "Code audit: scripts/semantic_refinement_boundaries.py, scripts/stage_refinement_binding.py, scripts/proof_emitter_correspondence.py, and scripts/runtime_generation_binding.py check source/theorem bindings and structural correspondence. scripts/refinement_transition.py deliberately has an empty whole-implementation verifier registry; hashes and structural matches do not prove semantic refinement."
+  },
+  "practical_safety_orchestration": {
+    "state": "IMPLEMENTED",
+    "evidence": "Code audit: scripts/safety_windows.py and scripts/safety_linux.py route into scripts/safety_report.py, which records per-probe status, timeout/log evidence, source identity, and NOT_RUN for unsupported platform checks. This means orchestration is implemented, not that all probes passed or all platform probes exist."
+  },
+  "negative_tests_and_tamper_rejection": {
+    "state": "PARTIAL",
+    "evidence": "Code audit: manifest, source hash, proof inventory, and evidence validation reject missing, stale, malformed, duplicate, or foreign inputs. The 26 pre-existing scripts/test_*.py regression files were restored on safety-ci-resume from its pre-integration base. They have not been executed in this environment, and coverage of the newer formal_tool/evidence pipeline remains to be verified."
+  },
+  "isolated_runner_and_sealed_logs": {
+    "state": "PARTIAL",
+    "evidence": "Code audit: scripts/formal_tool.py runs stages separately with timeouts, stdin disabled, per-stage stdout/stderr logs, stale-report removal, and atomic summary writing. Logs are not cryptographically sealed or authenticated as immutable artifacts."
+  },
+  "explainable_machine_readable_reports": {
+    "state": "IMPLEMENTED",
+    "evidence": "Code audit: scripts/formal_tool.py and its stage scripts emit JSON reports with explicit statuses, findings, reasons, source hashes, proof counts, and limitations. Missing proof remains NOT_PROVEN rather than PASS."
+  },
+  "evidence_packaging_and_provenance": {
+    "state": "IMPLEMENTED",
+    "evidence": "Code audit: scripts/package_verification.py validates the summary schema and emits an evidence archive with per-file SHA-256 entries; scripts/formal_report.py and proof manifests bind reports to source/proof snapshots. Packaging and hashes do not constitute a digital signature."
+  },
+  "windows_setup_and_local_operation": {
+    "state": "IMPLEMENTED",
+    "evidence": "Code audit: scripts/setup_lean_windows.ps1 pins the Lean toolchain, logs setup steps, and invokes the formal kernel audit; scripts/toolchain_preflight.py checks local prerequisites. Windows execution was not performed during this review."
+  },
+  "tool_regressions_and_single_entrypoint": {
+    "state": "PARTIAL",
+    "evidence": "Code audit: scripts/formal_tool.py provides the single entrypoint for formal verification stages. The 26 pre-existing scripts/test_*.py regression files have been restored on safety-ci-resume; no new test cases were created. Execution status remains NOT_RUN, and direct regression coverage of all formal_tool stages is not yet established."
+  }
+}

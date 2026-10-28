@@ -1,0 +1,6416 @@
+
+struct Pair { own i64 a; own own i64 b; }
+
+fn own Pair make() {
+    return own Pair { a: own 1, b: own own 2 };
+}
+
+fn main() {
+    let p = make();
+    print(*p.a, **p.b);
+    let q = Pair { a: own 3, b: own own 4 };
+    drop(q);
+    print(Pair { a: own 5, b: own own 6 })
+}
+#####
+struct P {
+    i64 x;
+}
+fn main() {
+let f64[f64] m = [];
+}
+#####
+
+fn main() {
+    let a = own 5;
+    let t = spawn(() -> a);
+    let b = t.join();
+    print(*b);
+}
+#####
+
+enum E {
+    A(ref i64 r);
+}
+
+fn ref i64 stale() {
+    let x = own 1;
+    return ref x;
+}
+
+fn main() {
+    let a = own 1;
+    match E.A(ref a) {
+        case A(r) -> print(*r);
+    }
+    let e = E.A(stale());
+    match e {
+        case A(r) -> print(*r);
+    }
+}
+#####
+struct P { i64 x; }
+enum E {
+    A(P p);
+}
+fn main() {
+    let e = own E.A(P { x: 1 });
+    match ref e {
+        case A(p) -> print(1);
+    }
+}
+#####
+struct P {
+    i64 x;
+}
+fn main() {
+let m = ["a": 1, 2: 3];
+}
+#####
+
+fn main() {
+    print("out");
+    eprint("err", 1, [2, 3]);
+    eprint();
+}
+#####
+fn i64 f() { 1 } const A = f(); fn main() {}
+#####
+
+fn main() {
+    let i64[] a = [1, 2];
+    let r = ref a[0];
+    let t = spawn(() -> a.len());
+    print(t.join());
+    print(*r);
+}
+#####
+fn f(i64 mut a) {
+ a += 1;
+ print(a);
+}
+fn main() {
+ f(1);
+}
+#####
+fn main() {
+print(1.5 << 1);
+}
+#####
+interface Shape {
+    fn i64 area();
+    fn str name();
+}
+
+struct Square {
+    i64 side;
+
+    fn i64 area() { side * side }
+    fn str name() { "正方形" }
+}
+
+struct Rect {
+    i64 w;
+    i64 h;
+
+    fn i64 area() { w * h }
+    fn str name() { "長方形" }
+    fn mut grow(i64 n) { w += n; h += n; }
+}
+
+fn describe<T: Shape>(ref T s) {
+    print(s.name(), s.area());
+}
+
+fn i64 twice<T: Shape>(T s) {
+    s.area() * 2
+}
+
+fn f(Shape s) {}
+fn main() {}
+#####
+
+struct P {
+    i64 x;
+
+    fn mut bump() { x++; }
+}
+
+fn main() {
+    let mut ps = [P { x: 1 }, P { x: 2 }];
+    ps[1].x = 20;
+    ps[0].bump();
+    print(ps[0].x, ps[1].x);
+    let mut grid = [[0; 3]; 2];
+    grid[1][2] = 7;
+    print(grid);
+}
+#####
+
+fn T max<T: ordered>(T a, T b) {
+    if a > b { a } else { b }
+}
+fn T pass<T>(T a) {
+    max(a, a)
+}
+fn main() {}
+#####
+
+struct Tag {
+    str name;
+    i64 n;
+
+    fn take str label() { "{name}:{n}" }
+}
+
+enum Shape {
+    Circle(f64 r);
+    Rect(f64 w, f64 h);
+
+    fn take Shape scaled(f64 k) {
+        match this {
+            case Circle(r) -> Shape.Circle(r * k);
+            case Rect(w, h) -> Shape.Rect(w * k, h * k);
+        }
+    }
+    fn f64 area() { match this { case Circle(r) -> 3.0 * r * r; case Rect(w, h) -> w * h; } }
+}
+
+enum Slot {
+    Full(own i64 v);
+    Empty;
+
+    fn take i64 open() { match this { case Full(v) -> *v; case Empty -> 0; } }
+}
+
+fn main() {
+    let t = Tag { name: "a", n: 1 };
+    print(t.label());
+    print(Shape.Rect(1.0, 2.0).scaled(2.0).scaled(3.0).area());
+    let c = Shape.Circle(1.0);
+    let d = c.scaled(2.0);
+    print(d.area(), c.area());
+    let s = Slot.Full(own 7);
+    print(s.open(), Slot.Empty.open());
+}
+#####
+fn main() {
+print(0b102);
+}
+#####
+fn main() {
+print(chr(1114112));
+}
+#####
+fn main() {
+    print(0);
+    let a = 1;
+    let a = 2;
+}
+#####
+fn main() {
+let u64 a = 1;
+let usize b = a;
+}
+#####
+fn main() {
+loop {
+ let x = if true { break; } else { 2 };
+}
+}
+#####
+
+struct P {
+    i64 x;
+}
+fn main() {
+    let ps = [P { x: 1 }];
+    for p in ps {
+        p.x = 2;
+    }
+}
+#####
+
+struct P {
+    i64 x;
+
+    fn set() {
+        x = 1;
+    }
+}
+fn main() {}
+#####
+fn main() {
+let a = [1, "x"];
+}
+#####
+fn main() {
+let a = [1];
+for x in a {
+    x = 2;
+}
+}
+#####
+fn main() {
+print("a } b");
+}
+#####
+interface Shape {
+    fn i64 area();
+    fn str name();
+}
+
+struct Square {
+    i64 side;
+
+    fn i64 area() { side * side }
+    fn str name() { "正方形" }
+}
+
+struct Rect {
+    i64 w;
+    i64 h;
+
+    fn i64 area() { w * h }
+    fn str name() { "長方形" }
+    fn mut grow(i64 n) { w += n; h += n; }
+}
+
+fn describe<T: Shape>(ref T s) {
+    print(s.name(), s.area());
+}
+
+fn i64 twice<T: Shape>(T s) {
+    s.area() * 2
+}
+
+fn main() {
+    let r = own Rect { w: 1, h: 1 };
+    let ref Shape s = ref r;
+    print(s.w);
+}
+#####
+fn f(f32 n) {
+}
+fn main() {
+}
+#####
+struct P { i64 x; }
+fn main() {
+ let a = P { x: 1 };
+ a.x = 2;
+}
+#####
+struct A { i64 x; }
+enum A { X; }
+fn main() {
+}
+#####
+
+fn main() {
+    let i64[] mut v = [];
+    for i in range(5) {
+        v.push(i * 10);
+    }
+    print(v, v.len(), v[2]);
+    v[0] = 7;
+    print(v.pop(), v.pop(), v.len());
+    let str[] mut names = ["a", "b"];
+    names.push("c");
+    print(names);
+    let i64[] mut e = [];
+    print(e.pop());
+    let i64[] z = [0; 3];
+    print(z);
+}
+#####
+fn main() {
+    let a = [1, 2, 3];
+    let i = 5;
+    print("ここまで");
+    print(a[i]);
+}
+#####
+
+fn main() {
+    let Option<i64> x = None;
+    match x { case Some(y) -> {} case Some(1) -> {} case None -> {} }
+}
+#####
+struct Point {
+    i64 x;
+    i64 y;
+
+    fn i64 len2() {
+        x * x + y * y
+    }
+
+    fn mut move_by(i64 dx, i64 dy) {
+        x += dx;
+        this.y = y + dy;
+    }
+
+    fn i64 plus(i64 d) {
+        d + x + len2()
+    }
+}
+
+struct S {
+    i64 v;
+
+    static fn S make() {
+        S { v: 1 }
+    }
+}
+fn main() {
+let p = Point { x: 1, y: 1 };
+Point.len2(ref p);
+}
+#####
+interface Shape {
+    fn i64 area();
+    fn str name();
+}
+
+struct Square {
+    i64 side;
+
+    fn i64 area() { side * side }
+    fn str name() { "正方形" }
+}
+
+struct Rect {
+    i64 w;
+    i64 h;
+
+    fn i64 area() { w * h }
+    fn str name() { "長方形" }
+    fn mut grow(i64 n) { w += n; h += n; }
+}
+
+fn describe<T: Shape>(ref T s) {
+    print(s.name(), s.area());
+}
+
+fn i64 twice<T: Shape>(T s) {
+    s.area() * 2
+}
+
+fn main() {
+    let first = own Square { side: 1 };
+    let ref Shape mut s = ref first;
+    let mut a = own Square { side: 2 };
+    s = ref a;
+    a = own Square { side: 3 };
+    print(s.area());
+}
+#####
+fn f(i64 a) {
+ a = 1;
+}
+fn main() {
+ f(0);
+}
+#####
+fn main() {
+let a = 1;
+print("value: {a + nope}");
+}
+#####
+struct A { B b; }
+struct B { A a; }
+fn main() {
+}
+#####
+struct P {
+    i64 x;
+    fn i64 f() {
+        let x = 1;
+        x
+    }
+}
+fn main() {
+    print(0);
+}
+#####
+fn main() {
+    let mut a = own 1;
+    let r = ref a;
+    *r = 2;
+}
+#####
+
+struct P {
+    str name;
+    i64 age;
+}
+
+fn main() {
+    let mut v = [3, 1, 2];
+    v.sort();
+    let mut ss = ["b", "c", "a"];
+    ss.sort();
+    let mut xs = [1.5, -0.5];
+    xs.sort();
+    print(v, ss, xs);
+    // 同じ値の要素は元の順のまま（安定）
+    let mut ps = [P { name: "a", age: 30 }, P { name: "b", age: 20 }, P { name: "c", age: 30 }];
+    ps.sort_by((x, y) -> x.age < y.age);
+    for p in ps { print(p.name); }
+    let mut os = [own 3, own 1, own 2];
+    os.sort_by((a, b) -> *a < *b);
+    print(os);
+}
+#####
+
+fn main() {
+    let i64[] a = [1, 2];
+    let b = a;
+    print(a);
+}
+#####
+fn main() {
+let a = [1];
+print(a.push(2));
+}
+#####
+fn main() {
+    let mut a = own 1;
+    a = ref a;
+}
+#####
+fn main() {
+    print(0);
+    let v = 0;
+    match Some(1) {
+        case Some(v) -> print(v);
+        case None -> {}
+    }
+}
+#####
+
+fn i64 scale(u8 a) {
+    a
+}
+
+fn main() {
+    let u8 a = 200;
+    let i64 b = 1000;
+    let i64 x = a;
+    print(a + b, x * 1000, scale(a) * 1000);
+    let u32 c = 70000;
+    let usize n = c;
+    let i16 s = a;
+    print(n, s);
+}
+#####
+
+fn main() {
+    let a = args();
+    print(a.len(), a);
+}
+#####
+fn main() {
+let x = match 1 {
+ case 1 -> 2;
+};
+}
+#####
+fn main() {
+let x = if true {
+ loop { break; }
+ 1
+} else { 2 };
+}
+#####
+fn inc(ref mut i64 x) {
+    *x += 1;
+}
+fn main() {
+    let mut n = 1;
+    inc(n);
+}
+#####
+
+fn main() {
+    let ps = [own 1, own 2, own 3];
+    let mut sum = 0;
+    for p in ps {
+        sum += *p;
+        if *p == 2 {
+            break;
+        }
+    }
+    print(sum);
+    let o = own [own 5, own 6];
+    for p in o {
+        print(*p);
+    }
+}
+#####
+struct P { i64 x, i64 y }
+fn main() {
+}
+#####
+
+fn i64 count(ref str s) {
+    s.len()
+}
+
+fn main() {
+    let s = "abc";
+    let r = ref s;
+    print(count(s), r.len(), r.to_upper());
+}
+#####
+struct A { i64 x; }
+struct A { i64 y; }
+fn main() {
+}
+#####
+fn main() {
+let Vec<i64> x = None;
+}
+#####
+struct P {
+    i64 x;
+}
+fn main() {
+let m = [1: P { x: 1 }];
+let p = m.get(1);
+}
+#####
+
+fn i64 first_even(i64 limit) {
+    for i in range(1, limit) {
+        match i % 2 {
+            case 0 -> return i;
+            default -> continue;
+        }
+    }
+    return -1;
+}
+
+fn main() {
+    print(first_even(10));
+    let mut i = 0;
+    loop {
+        i = i + 1;
+        match i {
+            case 3 -> break;
+            default -> print(i);
+        }
+    }
+}
+#####
+enum Shape {
+    Circle(i64 r);
+    Rect(i64 w, i64 h);
+    Empty;
+}
+fn main() {
+let s = Shape.Empty;
+match s {
+ case Empty -> print(1);
+ case Empty -> print(2);
+ default -> print(3);
+}
+}
+#####
+fn main() {
+
+    let y = 1.5;
+    print(y + 0.25, y * 2.0, y / 2.0, -y, 7.5 % 2.0);
+    print(3.0, 0.1 + 0.2, 1.0 / 0.0, "y = {y}");
+    print(y < 2.0, y >= 1.5, y == 1.5, y != 1.5);
+}
+#####
+
+fn Result<i64, str> f() { Ok(1) }
+fn Result<i64, i64> g() {
+    Ok(f()?)
+}
+fn main() {}
+#####
+fn main() {
+    print(nope);
+}
+#####
+
+fn T id<T>(T x) {
+    x
+}
+
+fn main() {
+    let a = 1;
+    let b = id(a);
+    print(a, b);
+}
+#####
+fn main() {
+    print(0);
+    assert(1);
+}
+#####
+struct Point { i64 x; i64 y; }
+;
+fn own Point make() {
+    return own Point { x: 1, y: 2 };
+}
+
+fn main() {
+    print((*make()).x)
+}
+#####
+fn main() {
+for i in range(3) {
+ i = 5;
+}
+}
+#####
+fn main() {
+let a = [1, 2];
+a[0] = 5;
+}
+#####
+fn main() {
+if true { print(1); }
+while false { }
+for i in range(1) { }
+print(2);
+}
+#####
+struct Node { i64 v; Node next; }
+fn main() {
+}
+#####
+fn i64 twice(i64 n) {
+    return n * 2;
+}
+fn main() {
+    let str s = twice(1);
+}
+#####
+
+fn show(ref i64 r) {
+    print(*r)
+}
+
+fn ref i64 stale() {
+    let a = own 1;
+    return ref a;
+}
+
+fn main() {
+    let b = own 2;
+    show(ref b);
+    show(stale())
+}
+#####
+
+fn main() {
+    let chan<str> c = chan();
+    let w = spawn(() -> {
+        for i in range(3) { c.send("msg {i}"); }
+        c.close();
+    });
+    loop {
+        match c.recv() {
+            case Some(m) -> print(m);
+            case None -> break;
+        }
+    }
+    w.join();
+    print(c);
+}
+#####
+fn main() {
+let u8 a = 1;
+let u8 b = 2;
+for i in range(a, 300) { }
+}
+#####
+fn main() {
+let v = if true { let t = 2; t * 3 } else { 0 };
+print(v);
+}
+#####
+
+fn Result<i64, str> half(i64 n) {
+    if n % 2 == 0 { Ok(n / 2) } else { Err("odd") }
+}
+fn main() {
+    let a = Some(3);
+    let Option<str> b = None;
+    print(a.is_some(), a.is_none(), b.is_some(), b.is_none());
+    print(half(4).is_ok(), half(3).is_err());
+    let s = Some(own 5);
+    if s.is_some() { print("yes"); }
+    let Option<i64>[] xs = [Some(1), None, Some(3)];
+    let mut n = 0;
+    for x in xs { if x.is_some() { n += 1; } }
+    print(n);
+}
+#####
+
+fn Option<i64> half(i64 n) {
+    if n % 2 == 0 { Some(n / 2) } else { None }
+}
+
+fn Option<i64> quarter(i64 n) {
+    let h = half(n)?;
+    Some(half(h)?)
+}
+
+fn main() {
+    print(quarter(8), quarter(6), quarter(3));
+}
+#####
+fn main() {
+
+    let slot = own 0;
+    let mut r = ref slot;
+    loop {
+        let a = own 1;
+        r = ref a;
+        break;
+    }
+    print(*r);
+}
+#####
+struct P { x; }
+fn main() {
+}
+#####
+
+fn Result<(), str> check(i64 n) {
+    if n < 0 { return Err("負の数 {n}"); }
+    Ok(())
+}
+fn Result<(), str> all() {
+    check(1)?;
+    check(-2)?;
+    print("ここには来ない");
+    Ok(())
+}
+fn main() {
+    print(check(3), all());
+    match check(5) {
+        case Ok(u) -> print("ok");
+        case Err(e) -> print(e);
+    }
+}
+#####
+enum Shape {
+    Circle(i64 r);
+    Rect(i64 w, i64 h);
+    Empty;
+}
+fn main() {
+let s = Shape.Empty;
+match s {
+ case 1 -> print(1);
+ default -> print(2);
+}
+}
+#####
+fn main() {
+let i8 b = 128;
+}
+#####
+fn main() {
+print("abc".len(1));
+}
+#####
+struct P {
+    i64 x;
+}
+fn main() {
+let i64[str] m = ["a": 1];
+m["b"] = 2;
+}
+#####
+fn main() {
+let u8 a = 1;
+print(a + 1000);
+}
+#####
+fn main() {
+let v = [3, 1];
+v.sort();
+}
+#####
+fn i64 twice(i64 n) {
+    return n * 2;
+}
+fn main() {
+    twice(true);
+}
+#####
+
+fn i64 f(i64 n) {
+    return f(n + 1);
+}
+fn main() {
+    f(0)
+}
+#####
+fn main() {
+let f = () -> { return 1; };
+}
+#####
+
+struct P { i64 x; }
+
+fn main() {
+    let P[] mut a = [P { x: 1 }, P { x: 2 }];
+    let r = ref a[1];
+    print(r.x);
+    a.push(P { x: 3 });
+    
+    print(r.x);
+}
+#####
+
+struct Point { i64 x; i64 y; }
+
+fn i64 add(i64 a, i64 b) {
+    return a + b;
+}
+
+fn own Point origin() {
+    return own Point { x: 0, y: 0 };
+}
+
+fn shift(ref mut Point p, i64 dx) {
+    p.x += dx;
+}
+
+fn main() {
+    let i64 mut n = add(1, 2);
+    n++;
+    let str s = "n =";
+    let bool b = n > 3;
+    let mut p = origin();
+    shift(ref mut p, n);
+    print(s, n, b, p.x);
+}
+#####
+struct P { i64 x; own i64 o; }
+fn main() {
+    let mut a = P { x: 1, o: own 1 };
+    a.o = 2;
+}
+#####
+
+fn f64 area(f64 r) {
+    3.14 * r * r
+}
+
+fn main() {
+    let f64 x = 7 / 2;
+    let f64 mut s = 0;
+    s += 1;
+    print(x, s, area(2), 2 * 1.5);
+}
+#####
+fn main() {
+ let n = 5;
+ print(n.x)
+}
+#####
+
+struct P { str name; i64 age; }
+fn i64 apply(fn i64(i64) f, i64 x) { f(x) }
+fn main() {
+    let m = ["a": 3, "b": 1, "c": 2];
+    let mut ks = m.keys();
+    ks.sort_by((x, y) -> m[x] < m[y]);
+    print(ks, m);
+    let base = own 10;
+    let p = P { name: "x", age: 5 };
+    print(apply((v) -> v + *base + p.age, 1));
+    print(*base, p.name);
+    let g = (i64 v) -> v + *base;
+    print(g(1));
+}
+#####
+fn main() { exit("a"); }
+#####
+
+struct Box2<T> {
+    T first;
+    T second;
+}
+
+fn main() {
+    let b = Box2 { first: own 1, second: own 2 };
+    print(*b.first + *b.second);
+    let c = b;
+    let Box2<own i64> d = Box2 { first: own 3, second: own 4 };
+}
+#####
+
+fn main() {
+    let chan<own i64> c = chan();
+    let a = own 1;
+    let r = ref a;
+    c.send(a);
+    print(*r);
+}
+#####
+fn main() {
+let i8 mut x = 127;
+x++;
+print(x);
+}
+#####
+fn main() {
+
+    for i in range(4) {
+        let a = own i;
+        if i == 1 { continue; }
+        if i == 2 { break; }
+    }
+    loop {
+        let b = own 1;
+        break;
+    }
+}
+#####
+
+fn Option<T> nothing<T>() {
+    None
+}
+
+fn main() {
+    let x = nothing();
+}
+#####
+fn main() {
+    print((4611686018427387904 * 2 - 1) + 5);
+}
+#####
+fn f() {
+    return 1;
+}
+fn main() {
+}
+#####
+enum Shape {
+    Circle(i64 r);
+    Rect(i64 w, i64 h);
+    Empty;
+}
+
+fn i64 area(Shape s) {
+    match s {
+        case Circle(r) -> 3 * r * r;
+        case Rect(w, h) -> w * h;
+        case Empty -> 0;
+    }
+}
+
+fn main() {
+    print(area(Shape.Circle(2)), area(Shape.Rect(3, 4)), area(Shape.Empty));
+    let s = Shape.Rect(5, 6);
+    print(s, Shape.Empty);
+    print(area(s), area(s));
+}
+#####
+
+fn T id<T>(T x) {
+    x
+}
+
+fn main() {
+    let a = own 1;
+    let b = id(a);
+    print(*a);
+}
+#####
+fn main() {
+let i64 x = 300;
+print(x as u8, -1 as u8, 255 as i8, x as i16);
+}
+#####
+fn main() {
+print(read_line(1));
+}
+#####
+
+struct Point { i64 x; i64 y; }
+struct Line { Point a; Point b; }
+
+fn shift(ref mut Point p, i64 d) {
+    p.x += d;
+    p.y += d;
+}
+
+fn main() {
+    let mut n = 1;
+    let r = ref mut n;
+    *r += 5;
+    print(n);
+    let mut l = Line { a: Point { x: 0, y: 0 }, b: Point { x: 1, y: 1 } };
+    shift(ref mut l.b, 10);
+    print(l.b.x, l.b.y);
+    let i64[3] mut arr = [1, 2, 3];
+    let e = ref mut arr[1];
+    *e = 20;
+    print(arr);
+    let o = own Line { a: Point { x: 2, y: 2 }, b: Point { x: 3, y: 3 } };
+    let pa = ref o.a;
+    print(pa.x);
+}
+#####
+
+struct Node {
+    i64 key;
+    Option<own Node> next;
+}
+
+fn i64 length(ref Option<own Node> list) {
+    match list {
+        case None -> 0;
+        case Some(n) -> 1 + length(n.next);
+    }
+}
+
+fn main() {
+    let mut head = Node { key: 1, next: None };
+    head.next = Some(own Node { key: 2, next: None });
+    print(length(head.next) + 1);
+}
+#####
+
+fn main() {
+    let mut a = [1, 2, 3];
+    a[0] = 10;
+    a[2] += 5;
+    print(a, a[0], a[1] + a[2], a.len());
+    let u8[3] b = [250, 0, 1];
+    print(b[0] + 10);
+    let mut z = [0; 4];
+    for i in range(0, z.len()) {
+        z[i] = i * i;
+    }
+    print(z);
+    let i64[0] empty = [];
+    print(empty.len());
+}
+#####
+
+fn main() {
+    let a = [1, 2, 3];
+    print("これは出ない");
+    print(a[3]);
+}
+#####
+fn main() {
+let i64[] mut v = [];
+v.push("a");
+}
+#####
+fn main() {
+print("\u{D800}");
+}
+#####
+fn main() {
+    print(0);
+    let x = 5;
+    print(*x);
+}
+#####
+const A = 300; fn main() { let u8 b = A; }
+#####
+fn main() {
+    print(-9223372036854775807 - 1);
+}
+#####
+
+fn Result<i64, str> g() {
+    Ok(1)
+}
+fn main() {
+    match g() {
+        case Ok(v) -> print(v);
+    }
+}
+#####
+fn main() {
+let x = if true { 1 };
+}
+#####
+
+struct Point {
+    i64 x;
+    i64 y;
+
+    fn i64 len2() { x * x + y * y }
+    fn str show() { "({x}, {y})" }
+}
+
+fn main() {
+    let x = 3;
+    let name = "jabberwock";
+    print("x = {x}, x+1 = {x + 1}, {name}!");
+    let p = own Point { x: 1, y: 2 };
+    print("p = {p.show()}, len2 = {p.len2()}, ok = {p.x < p.y}");
+    let o = Some(5);
+    print("o = {o}");
+    let u8 big = 250;
+    print("{big + 10}");
+    let s = "a{x}b" + "c";
+    print(s);
+    print("{{x}} はそのまま {x}");
+}
+#####
+fn main() {
+print(12 & 10, 12 | 10, 12 ^ 10, ~5, 1 << 4, -16 >> 2, 255 >> 9, -1 >> 70, 1 << 64);
+let u8 a = 200;
+print(a & 15, a | 1, a ^ 255, ~a, a << 1, a >> 3, a >> 8);
+let u64 big = 18446744073709551615;
+print(big >> 63, big << 63, big >> (64 as u8), 3 + 4 << 1, 1 | 2 == 3, 6 & 3 ^ 1 | 8);
+let i32 k = 5;
+print(k << 30, k << 31, (k << 29) >> 29);
+let Option<Option<i64>> o = Some(Some(1 << 2));
+print(o);
+}
+#####
+enum E { A(own i64 x); B; fn take i64 get() { match this { case A(x) -> *x; case B -> 0; } } }
+fn main() { let e = own E.A(own 3); print(e.get()); }
+#####
+
+fn T max<T: ordered>(T a, T b) {
+    if a > b { a } else { b }
+}
+fn main() {
+    print(max(true, false));
+}
+#####
+
+struct Big { i64[] xs; }
+fn i64 pick(Option<i64> o) {
+    match o {
+        case Some(n) -> n;
+        case None -> exit(7);
+    }
+}
+fn main() {
+    let b = own Big { xs: [1, 2] };
+    print(pick(Some(3)));
+    eprint("止まります", b.xs.len());
+    print(pick(None));
+    print("ここには来ない");
+}
+#####
+
+fn main() {
+    let a = [1, 2, 3];
+    let mut total = 0;
+    for x in a {
+        total += x;
+    }
+    print(total, a);
+    let str[] mut words = ["x", "y"];
+    words.push("z");
+    for w in words {
+        print("word {w}");
+    }
+    let i64[] empty = [];
+    for x in empty {
+        print(x);
+    } else {
+        print("空でした");
+    }
+    for x in [10, 20, 30] {
+        if x == 20 {
+            continue;
+        }
+        print(x);
+    }
+}
+#####
+fn main() {
+let u8 b = -1;
+}
+#####
+
+fn i64 twice(fn i64(i64) f, i64 x) { f(f(x)) }
+
+fn main() {
+    let big = own 3;
+    let f = (i64 x) -> x * *big;
+    print(f(1), twice(f, 2));
+}
+#####
+fn main() {
+print(1 as bool);
+}
+#####
+
+fn T or_else<T>(Option<T> o, T other) {
+    match o {
+        case Some(v) -> v;
+        case None -> other;
+    }
+}
+
+fn Option<T> wrap<T>(T x) {
+    Some(x)
+}
+
+fn main() {
+    print(or_else(Some(1), 5));
+    print(or_else(None, 5));
+    let Option<str> s = Option.Some("long");
+    print(s);
+    let o = wrap(own 7);
+    match o {
+        case Some(p) -> print(*p);
+        case None -> print("none");
+    }
+}
+#####
+fn main() {
+    print(0);
+    let a = own 1;
+    let ref bool r = ref a;
+}
+#####
+
+fn main() {
+    let chan<i64> c = chan();
+    c.close();
+    c.send(1);
+}
+#####
+struct Point {
+    i64 x;
+    i64 y;
+
+    fn i64 len2() {
+        x * x + y * y
+    }
+
+    fn mut move_by(i64 dx, i64 dy) {
+        x += dx;
+        this.y = y + dy;
+    }
+
+    fn i64 plus(i64 d) {
+        d + x + len2()
+    }
+}
+
+fn bump(ref mut Point r) {
+    r.move_by(1, 1);
+}
+
+fn main() {
+    let mut o = own Point { x: 1, y: 2 };
+    o.move_by(10, 10);
+    print(o.len2());
+    bump(ref mut o);
+    print(o.x, o.y);
+    let r = ref o;
+    print(r.len2());
+}
+#####
+
+struct Holder { ref i64 r; }
+fn main() {
+    let chan<Holder> c = chan();
+}
+#####
+
+fn main() {
+    let (own i64)[] mut v = [own 1, own 2];
+    for p in v {
+        v.pop();
+        print(*p);
+    }
+}
+#####
+fn main() {
+for x in 5 {
+}
+}
+#####
+
+struct P { i64 x; }
+
+fn main() {
+    let P[] mut a = [P { x: 1 }, P { x: 2 }];
+    let r = ref a[1];
+    print(r.x);
+    a.sort_by((p, q) -> p.x < q.x);
+    
+    print(r.x);
+}
+#####
+interface Shape {
+    fn i64 area();
+    fn str name();
+}
+
+struct Square {
+    i64 side;
+
+    fn i64 area() { side * side }
+    fn str name() { "正方形" }
+}
+
+struct Rect {
+    i64 w;
+    i64 h;
+
+    fn i64 area() { w * h }
+    fn str name() { "長方形" }
+    fn mut grow(i64 n) { w += n; h += n; }
+}
+
+fn describe<T: Shape>(ref T s) {
+    print(s.name(), s.area());
+}
+
+fn i64 twice<T: Shape>(T s) {
+    s.area() * 2
+}
+
+struct Odd {
+    i64 r;
+    fn str area() { "x" }
+    fn str name() { "odd" }
+}
+fn main() {
+    print(twice(Odd { r: 1 }));
+}
+#####
+fn main() {
+let mut i = 0;
+print(i++);
+}
+#####
+fn main() {
+
+    print("a\rb".bytes(), "x\0y".bytes(), "\u{41}\u{3042}\u{1F600}", "\u{41}{1 + 1}");
+}
+#####
+
+fn main() {
+    let chan<i64> c = chan();
+    let task<i64>[] mut ts = [];
+    for i in range(8) {
+        ts.push(spawn(() -> { c.send(i); i * i }));
+    }
+    let mut squares = 0;
+    for t in ts { squares += t.join(); }
+    let mut sum = 0;
+    for i in range(8) {
+        match c.recv() {
+            case Some(x) -> { sum += x; }
+            case None -> {}
+        }
+    }
+    print(squares, sum);
+}
+#####
+use geom;
+fn main() {
+    print(util.sq(2));
+}
+#####
+fn main() {
+    let a = [1, 2, 3];
+    print(a[-1]);
+}
+#####
+enum E { A(own i64 x); B; fn take i64 get() { match this { case A(x) -> *x; case B -> 0; } } }
+fn main() { let e = E.A(own 3); let r = ref e; print(e.get()); match r { case A(x) -> print(*x); case B -> {} } }
+#####
+
+fn i64 sum(i64[] xs) {
+    let mut s = 0;
+    for x in xs { s += x; }
+    s
+}
+
+fn i64 seven() { 7 }
+
+fn main() {
+    let i64[] a = [1, 2, 3];
+    let i64[] b = [4, 5, 6];
+    let t1 = spawn(() -> sum(a));
+    let t2 = spawn(() -> sum(b));
+    print(t1.join() + t2.join());
+    print(spawn(seven).join());
+}
+#####
+struct Point {
+    i64 x;
+    i64 y;
+
+    fn i64 len2() {
+        x * x + y * y
+    }
+
+    fn mut move_by(i64 dx, i64 dy) {
+        x += dx;
+        this.y = y + dy;
+    }
+
+    fn i64 plus(i64 d) {
+        d + x + len2()
+    }
+}
+
+fn main() {
+let p = Point { x: 1, y: 1 };
+p.len2(1);
+}
+#####
+
+fn i64 first_square_over(i64 n) {
+    let mut i = 0;
+    loop {
+        if i * i > n { return i; }
+        i++;
+    }
+}
+
+fn main() {
+    print(first_square_over(50));
+}
+#####
+
+fn T pick<T>(bool first, T a, T b) {
+    if first { a } else { b }
+}
+
+fn main() {
+    let u8 a = 250;
+    let i64 b = 10;
+    let c = pick(true, a, b);
+    print(c + 10);
+    let u8 d = pick(true, a, 3);
+    print(d + 10);
+}
+#####
+fn main() {
+let i32 a = 2147483647;
+print(a + 1);
+}
+#####
+
+fn main() {
+    let a = [own 1, own 2];
+    let b = a;
+    print(a);
+}
+#####
+
+fn eat(own i64 c) {
+}
+fn main() {
+    let a = own 1;
+    let mut i = 0;
+    while i < 2 {
+        eat(a);
+        i = i + 1;
+    }
+}
+#####
+// 並列の単語数え上げ: 行を worker に配り、結果の辞書を chan で集める
+fn i64[str] count(str[] lines) {
+    let i64[str] mut out = [];
+    for line in lines {
+        for raw in line.split(" ") {
+            let w = raw.trim().to_lower();
+            if w == "" { continue; }
+            if out.contains(w) { out[w] += 1; } else { out[w] = 1; }
+        }
+    }
+    out
+}
+
+fn main() {
+    let text = """
+the quick brown fox
+jumps over the lazy dog
+the dog sleeps
+a fox is quick""";
+    let lines = text.lines();
+    let workers = 3;
+    let (str[])[] mut parts = [];
+    for i in range(workers) { parts.push([]); }
+    for (i, l) in lines {
+        parts[i % workers].push(l);
+    }
+    let chan<i64[str]> results = chan();
+    let task<()>[] mut ts = [];
+    for p in parts.drain() {
+        // drain で取り出した要素は値なので、スレッドへ渡せる
+        ts.push(spawn(() -> { results.send(count(p)); }));
+    }
+    let i64[str] mut total = [];
+    for i in range(workers) {
+        match results.recv() {
+            case Some(m) -> {
+                for (k, v) in m {
+                    if total.contains(k) { total[k] += v; } else { total[k] = v; }
+                }
+            }
+            case None -> {}
+        }
+    }
+    for t in ts { t.join(); }
+    let mut keys = total.keys();
+    // 引数に書いたクロージャは total を借りるだけ（ムーブしない）
+    keys.sort_by((a, b) -> total[a] > total[b] || (total[a] == total[b] && a < b));
+    for k in keys {
+        print("{k}: {total[k]}");
+    }
+}
+#####
+
+struct Job { i64 id; own i64 data; }
+
+fn main() {
+    let chan<Job> jobs = chan();
+    let chan<own i64> done = chan();
+    let w = spawn(() -> {
+        loop {
+            match jobs.recv() {
+                case Some(j) -> done.send(own (*j.data * 10 + j.id));
+                case None -> break;
+            }
+        }
+        done.close();
+    });
+    for i in range(3) {
+        jobs.send(Job { id: i, data: own i });
+    }
+    jobs.close();
+    let mut total = 0;
+    loop {
+        match done.recv() {
+            case Some(x) -> { total += *x; }
+            case None -> break;
+        }
+    }
+    w.join();
+    print(total);
+}
+#####
+
+fn Option<own i64> make(bool b) {
+    if b { Some(own 42) } else { None }
+}
+
+fn main() {
+    let a = make(true);
+    let b = make(false);
+    match a {
+        case Some(p) -> print(*p);
+        case None -> print("none");
+    }
+    print(b);
+    let c = make(true);
+}
+#####
+fn main() {
+print("{x}");
+}
+#####
+fn i64 big() {
+ 9223372036854775807
+}
+fn main() {
+ print(big() + 1, -(big() + 1) == big() + 1, big() * 2);
+}
+#####
+struct Point { i64 x; i64 y; }
+;
+fn ref Point leak() {
+    let p = own Point { x: 1, y: 2 };
+    return ref p;
+}
+
+fn main() {
+    let r = leak();
+    print(r.x)
+}
+#####
+fn main() {
+let i32 a = 1;
+let u32 b = 2;
+print(a + b);
+}
+#####
+
+fn own i64 pick(bool c) {
+    return if c { own 1 } else { own 2 };
+}
+
+fn main() {
+    let x = if 1 < 2 { own 10 } else { own 20 };
+    print(*x, *pick(false));
+    if true { own 3 } else { own 4 }
+}
+#####
+fn f(Nope n) {
+}
+fn main() {
+}
+#####
+fn main() {
+let i64 n = 1.5;
+}
+#####
+use geom;
+fn main() {
+    let geom = 1;
+}
+#####
+
+fn f<T>(T x) {
+    x.area();
+}
+fn main() {}
+#####
+struct Point {
+    i64 x;
+    i64 y;
+
+    fn i64 len2() {
+        x * x + y * y
+    }
+
+    fn mut move_by(i64 dx, i64 dy) {
+        x += dx;
+        this.y = y + dy;
+    }
+
+    fn i64 plus(i64 d) {
+        d + x + len2()
+    }
+}
+
+fn main() {
+let p = Point { x: 1, y: 1 };
+p.move_by(1, 1);
+}
+#####
+enum A { X; X; }
+fn main() {
+}
+#####
+
+fn main() {
+    let f = () -> 1;
+    let t = spawn(f);
+}
+#####
+fn main() {
+let f = (x) -> x;
+}
+#####
+enum E { A; fn x() {} B; } fn main() {}
+#####
+fn main() {
+    print(0);
+    print(1 + "a");
+}
+#####
+
+struct Point {
+    i64 x;
+    i64 y;
+
+    static fn Point origin() {
+        Point { x: 0, y: 0 }
+    }
+
+    static fn Point at(i64 x, i64 y) {
+        Point { x: x, y: y }
+    }
+
+    fn Point moved(i64 d) {
+        at(x + d, y + d)
+    }
+}
+
+struct Pair<T> {
+    T a;
+    T b;
+
+    static fn Pair<T> same(T v) {
+        Pair { a: v, b: v }
+    }
+}
+
+fn main() {
+    let p = Point.origin();
+    let q = Point.at(1, 2).moved(10);
+    print(p.x, q.x, q.y);
+    let s = Pair.same("w");
+    print(s.a, s.b);
+}
+#####
+enum Shape {
+    Circle(i64 r);
+    Rect(i64 w, i64 h);
+    Empty;
+}
+fn main() {
+    let s = Shape.Rect(1, 2);
+    let n = match s {
+        case Circle(_), Rect(_, _) -> 1;
+        case Empty -> 0;
+    };
+    print(n);
+}
+#####
+
+fn Result<i64, str> f() { Ok(1) }
+fn main() {
+    let x = f()?;
+}
+#####
+enum E { A; B; fn bool x() { true } } fn main() { print(E.x()); }
+#####
+struct P {
+    i64 x;
+}
+fn main() {
+let i64[str] mut m = [];
+m["a"] = 1;
+let r = ref m["a"];
+}
+#####
+use a;
+fn main() {
+}
+#####
+struct Point { i64 x; i64 y; }
+;
+fn main() {
+    let p = Point { x: 1, y: 2 };
+    let q = p;
+    print(p.x)
+}
+#####
+struct Point {
+    i64 x;
+    i64 y;
+
+    fn i64 len2() {
+        x * x + y * y
+    }
+
+    fn mut move_by(i64 dx, i64 dy) {
+        x += dx;
+        this.y = y + dy;
+    }
+
+    fn i64 plus(i64 d) {
+        d + x + len2()
+    }
+}
+
+fn main() {
+let mut o = own Point { x: 1, y: 1 };
+let r = ref o;
+r.move_by(1, 1);
+}
+#####
+fn main() {
+ let n = own 5;
+ print(n.x)
+}
+#####
+fn main() {
+for i in range(0) { } else { break; }
+}
+#####
+fn main() {
+    print(0);
+    let i = 0;
+    for i in range(3) { }
+}
+#####
+
+fn eat(own i64 c) {
+}
+
+fn main() {
+    let a = own 1;
+    let r = ref a;
+    eat(a);
+    print(*r)
+}
+#####
+
+fn main() {
+    let outer = own own 1;
+    let inner = *outer;
+}
+#####
+
+fn main() {
+    let chan<i64> c = chan();
+    let task<()>[] mut ts = [];
+    for i in range(3) {
+        ts.push(spawn(() -> { c.send(i); }));
+    }
+    for t in ts.drain() { t.join(); }
+    let mut s = 0;
+    for i in range(3) {
+        match c.recv() { case Some(x) -> { s += x; } case None -> {} }
+    }
+    print(s);
+}
+#####
+enum Shape {
+    Circle(i64 r);
+    Rect(i64 w, i64 h);
+    Empty;
+}
+fn main() {
+match 1 {
+ case Empty -> print(1);
+ default -> print(2);
+}
+}
+#####
+// ブロックを抜けた後に、中で借りた ref を使ってしまう
+fn main() {
+    let slot = own 0;
+    let mut r = ref slot;
+    if true {
+        let a = own 42;
+        r = ref a;
+    }
+    print(*r)
+}
+#####
+fn i64 main() {
+    return 0;
+}
+#####
+fn main() {
+let u8 mut a = 0;
+a -= 1;
+print(a);
+}
+#####
+fn main() { let i64[] v = [1]; print(v.join(",")); }
+#####
+
+fn main() {
+    let i64[] mut a = [1, 2];
+    let r = ref a[0];
+    a = [3];
+    print(*r);
+}
+#####
+fn main() {
+    let x = 1;
+    x = 2;
+}
+#####
+
+fn main() {
+    let a = own 1;
+    let r = ref a;
+    let t = spawn(() -> *r);
+    print(t.join());
+}
+#####
+fn main() {
+let mut w = [true];
+w.sort();
+}
+#####
+fn main() {
+    let r = ref 5;
+}
+#####
+
+fn main() {
+    let outer = own own 7;
+    print(**outer)
+}
+#####
+fn i64 f() {
+    while true {
+        return 1;
+    }
+}
+fn main() {
+}
+#####
+fn main() {
+let mut a = own 1;
+let r = ref mut a;
+let q = ref r;
+print(*q);
+}
+#####
+fn main() {
+
+    for t in ["1.5", " -2.25e3 ", "1.", ".5", "1e", "e5", "inf", "-Infinity", "NaN", "abc", "", "+0.1", "1_0", "0x10", "7", "1E-2"] {
+        print(t.to_float());
+    }
+    let x = 1.5;
+    let own f64 p = own 2.0;
+    print(x.to_bits(), (0.1).to_bits(), (-0.0).to_bits(), p.to_bits());
+}
+#####
+fn main() {
+let v = if true { 1; } else { 2 };
+}
+#####
+
+interface Shape {
+    fn i64 area();
+}
+
+struct Sq {
+    i64 s;
+
+    fn i64 area() { s * s }
+}
+
+fn show<T: Shape>(ref T x) {
+    print(x.area());
+}
+
+fn show_any(ref Shape x) {
+    print(x.area());
+}
+
+fn i64 sum(ref i64[] v) {
+    let mut t = 0;
+    for x in v {
+        t += x;
+    }
+    t
+}
+
+fn main() {
+    let a = Sq { s: 3 };
+    let b = own Sq { s: 4 };
+    show(a);
+    show(b);
+    show_any(b);
+    print(a.s, b.s); // どちらもムーブされていない
+    let i64[] w = [4, 5];
+    print(sum(w), w);
+}
+#####
+
+struct Box2 {
+    own i64 a;
+    i64 b;
+}
+
+fn main() {
+    let o = own 5;
+    let i64[] v = [1, 2];
+    let r = ref v;
+    let x = Box2 { a: own 7, b: 8 };
+    print(o, r, x);
+    print("{o} {r} {x}");
+}
+#####
+fn main() {
+let i64[] v = [];
+v.push(1);
+}
+#####
+const A = B; const B = 1; fn main() {}
+#####
+
+fn main() {
+    let Option<Option<i64>> x = None;
+    match x { case Some(Some(v)) -> print(v); case None -> {} }
+}
+#####
+fn main() {
+    let a = own 5;
+    let r = ref a;
+    drop(a);
+    let b = own 6;
+    let c = own 7;
+    print(*b, *c);
+    print(*r);
+}
+#####
+
+fn main() {
+    let mut n = 0;
+    loop {
+        match read_line() {
+            case None -> break;
+            case Some(line) -> {
+                n += 1;
+                print("{n}: {line}");
+            }
+        }
+    }
+    print(read_line());
+}
+#####
+interface Shape {
+    fn i64 area();
+    fn str name();
+}
+
+struct Square {
+    i64 side;
+
+    fn i64 area() { side * side }
+    fn str name() { "正方形" }
+}
+
+struct Rect {
+    i64 w;
+    i64 h;
+
+    fn i64 area() { w * h }
+    fn str name() { "長方形" }
+    fn mut grow(i64 n) { w += n; h += n; }
+}
+
+fn describe<T: Shape>(ref T s) {
+    print(s.name(), s.area());
+}
+
+fn i64 twice<T: Shape>(T s) {
+    s.area() * 2
+}
+
+struct Scene {
+    own Shape main;
+    Option<own Shape> extra;
+}
+
+fn i64 area_of(ref Shape s) {
+    s.area()
+}
+
+fn own Shape pick(bool big) {
+    if big { own Rect { w: 10, h: 10 } } else { own Square { side: 1 } }
+}
+
+fn main() {
+    let sq = own Square { side: 3 };
+    let r = own Rect { w: 2, h: 5 };
+    print(area_of(ref sq), area_of(ref r));
+    let ref Shape s = if true { ref sq } else { ref r };
+    print(s.name());
+    let a = pick(true);
+    let b = pick(false);
+    print(a.name(), a.area(), b.name(), b.area());
+    let scene = own Scene { main: own Square { side: 4 }, extra: Some(own Rect { w: 1, h: 2 }) };
+    print(scene.main.area());
+    let Option<own Shape> extra = Some(own Rect { w: 1, h: 2 });
+    match extra {
+        case Some(e) -> print(e.name());
+        case None -> print("なし");
+    }
+}
+#####
+fn main() {
+for i in range(1, 5, 0) { }
+}
+#####
+fn main() {
+    print(0);
+    match 1 {
+        case "a" -> print(1);
+    }
+}
+#####
+
+struct Account {
+    str name;
+    own i64 balance;
+
+    fn mut Result<i64, str> withdraw(i64 n) {
+        if n > *balance {
+            return Err("残高が足りません");
+        }
+        *balance = *balance - n;
+        Ok(*balance)
+    }
+}
+
+fn Result<i64, str> twice(ref mut Account a, i64 n) {
+    a.withdraw(n)?;
+    a.withdraw(n)
+}
+
+fn main() {
+    let mut a = own Account { name: "x", balance: own 100 };
+    print(a.withdraw(30));
+    print(twice(ref mut a, 30));
+    print(twice(ref mut a, 30));
+}
+#####
+fn main() {
+break;
+}
+#####
+fn main() {
+    for i in range(2) {
+        while true {
+            break;
+        }
+    } else {
+        print("empty");
+    }
+    for i in range(2) {
+        break;
+    }
+}
+#####
+fn f(i64 n) {
+    let n = 2;
+}
+fn main() {
+    print(0);
+}
+#####
+interface Shape {
+    fn i64 area();
+    fn str name();
+}
+
+struct Square {
+    i64 side;
+
+    fn i64 area() { side * side }
+    fn str name() { "正方形" }
+}
+
+struct Rect {
+    i64 w;
+    i64 h;
+
+    fn i64 area() { w * h }
+    fn str name() { "長方形" }
+    fn mut grow(i64 n) { w += n; h += n; }
+}
+
+fn describe<T: Shape>(ref T s) {
+    print(s.name(), s.area());
+}
+
+fn i64 twice<T: Shape>(T s) {
+    s.area() * 2
+}
+
+struct Circle {
+    i64 r;
+    fn i64 area() { 3 * r * r }
+}
+fn main() {
+    let c = own Circle { r: 1 };
+    describe(ref c);
+}
+#####
+struct P {
+    i64 x;
+}
+fn main() {
+let m = ["a": 1];
+let x = m[1];
+}
+#####
+
+fn main() {
+    let chan<ref i64> c = chan();
+}
+#####
+
+fn T max<T: ordered>(T a, T b) {
+    if a > b { a } else { b }
+}
+
+struct P {
+    f64 x;
+}
+
+fn main() {
+    let p = P { x: 0.5 };
+    let f64[] mut v = [1.5, 2.5];
+    v.push(p.x);
+    print(max(1.5, 2.5), v, p.x);
+}
+#####
+fn main() {
+let a = own 1;
+let f = () -> *a;
+print(*a);
+}
+#####
+
+struct P { i64 x; }
+
+fn main() {
+    let P[] mut a = [P { x: 1 }, P { x: 2 }];
+    let r = ref a[1];
+    print(r.x);
+    let _ = a.pop();
+    
+    print(r.x);
+}
+#####
+fn main() {
+print("a".nope());
+}
+#####
+fn main() {
+    print(0);
+    let i64 x = "a";
+}
+#####
+struct Point {
+    i64 x;
+    i64 y;
+
+    fn i64 len2() {
+        x * x + y * y
+    }
+
+    fn mut move_by(i64 dx, i64 dy) {
+        x += dx;
+        this.y = y + dy;
+    }
+
+    fn i64 plus(i64 d) {
+        d + x + len2()
+    }
+}
+
+fn main() {
+let p = Point { x: 1, y: 1 };
+p.fly();
+}
+#####
+fn f(a) {
+}
+fn main() {
+}
+#####
+
+fn main() {
+    let a = own 1;
+    let r = ref a;
+    drop(a);
+    let b = own 2;
+    print(*r)
+}
+#####
+// 二分探索木（試しに書いたプログラム）。ref の引数には ref を書かずに渡せる（自動で借りる）
+struct Node {
+    i64 key;
+    Option<own Node> left;
+    Option<own Node> right;
+}
+
+struct Tree {
+    Option<own Node> root;
+    i64 size;
+
+    fn mut insert(i64 key) {
+        size += 1;
+        insert_at(ref mut root, key);
+    }
+
+    fn bool contains(i64 key) {
+        let mut cur = ref root;
+        loop {
+            match cur {
+                case None -> return false;
+                case Some(n) -> {
+                    if n.key == key { return true; }
+                    if key < n.key { cur = ref n.left; } else { cur = ref n.right; }
+                }
+            }
+        }
+    }
+}
+
+fn insert_at(ref mut Option<own Node> slot, i64 key) {
+    match slot {
+        case None -> *slot = Some(own Node { key: key, left: None, right: None });
+        case Some(n) -> {
+            if key < n.key { insert_at(ref mut n.left, key); } else { insert_at(ref mut n.right, key); }
+        }
+    }
+}
+
+fn walk(ref Option<own Node> t, ref mut i64[] out) {
+    match t {
+        case None -> {}
+        case Some(n) -> {
+            walk(n.left, out);
+            out.push(n.key);
+            walk(n.right, out);
+        }
+    }
+}
+
+fn main() {
+    let mut t = Tree { root: None, size: 0 };
+    for k in [5, 3, 8, 1, 4, 9, 7] {
+        t.insert(k);
+    }
+    let i64[] mut keys = [];
+    walk(t.root, ref mut keys);
+    print("size {t.size}: {keys}");
+    print(t.contains(4), t.contains(6));
+}
+#####
+
+fn u64 fnv(str s) {
+    let u64 mut h = 0xcbf29ce484222325;
+    for b in s.bytes() {
+        h = (h ^ b) * 0x100000001b3;
+    }
+    h
+}
+fn main() {
+    print(fnv(""), fnv("a"), fnv("abc"));
+}
+#####
+fn main() {
+let a = own 1;
+let f = () -> a;
+let b = f();
+}
+#####
+struct Point { i64 x; i64 y; }
+fn main() {
+ let p = Point { x: 1, y: 2, z: 3 };
+};
+#####
+fn main() {
+
+    for n in range(5) {
+        match n {
+            case 0 -> print("zero");
+            case 1, 2 -> print("small");
+            case 3 -> {
+                let d = n * 2;
+                print("double", d)
+            }
+        }
+    }
+}
+#####
+fn i64 f() {
+    1;
+}
+fn main() {
+}
+#####
+interface Shape {
+    fn i64 area();
+    fn str name();
+}
+
+struct Square {
+    i64 side;
+
+    fn i64 area() { side * side }
+    fn str name() { "正方形" }
+}
+
+struct Rect {
+    i64 w;
+    i64 h;
+
+    fn i64 area() { w * h }
+    fn str name() { "長方形" }
+    fn mut grow(i64 n) { w += n; h += n; }
+}
+
+fn describe<T: Shape>(ref T s) {
+    print(s.name(), s.area());
+}
+
+fn i64 twice<T: Shape>(T s) {
+    s.area() * 2
+}
+
+fn main() {
+    let r = own Rect { w: 1, h: 1 };
+    describe(ref r);
+}
+interface Bad {
+    fn i64 area();
+}
+fn h<T: Bad>(ref T x) {
+    x.grow(1);
+}
+#####
+use nothing;
+fn main() {
+}
+#####
+
+fn main() {
+    let a = own 7;
+    print("a = {*a}, {a}");
+    print(*a);
+    let t = "{own 1}";
+}
+#####
+fn main() {
+let p = own 1;
+match p {
+ default -> print(1);
+}
+}
+#####
+fn main() {
+
+    for i in range(5, 5) {
+        print("body")
+    } else {
+        print("empty")
+    }
+    for i in range(2) {
+        print(i)
+    } else {
+        print("never")
+    }
+    for i in range(3) {
+        break;
+    } else {
+        print("not after break either")
+    }
+}
+#####
+fn main() { read_file(1); }
+#####
+struct P {
+    i64 x;
+    static fn P at(i64 x) {
+        P { x: x }
+    }
+}
+fn main() {
+    print(P.at(5).x);
+}
+#####
+fn main() {
+    print(0);
+    if 1 { }
+}
+#####
+interface G { fn i64 get(); }
+struct S { i64 v; fn take i64 get() { v } }
+fn i64 need<T: G>(ref T t) { t.get() }
+fn main() { let s = S { v: 1 }; print(need(s)); }
+#####
+fn main() {
+
+    let s = "日本語テキスト";
+    print(s.len(), s.byte_len(), s.slice(0, 3), s.slice(3, 7), s.find("テ"), s.find("x"));
+    print(s.chars());
+    print("  a b  ".trim(), "Hi".to_upper(), "Hi".to_lower(), "ab".repeat(3));
+    print(s.contains("語"), s.starts_with("日本"), s.ends_with("本"));
+    print("a-b-c".replace("-", "+"));
+}
+#####
+const A = 1; fn main() { let A = 2; }
+#####
+fn main() {
+print("abc".slice(1, 5));
+}
+#####
+
+enum Slot {
+    Full(own i64 v);
+    Vacant;
+}
+
+fn main() {
+    let mut s = own Slot.Full(own 5);
+    let r = match ref s {
+        case Full(v) -> Some(v);
+        case Vacant -> None;
+    };
+    *s = Slot.Vacant;
+    match r {
+        case Some(v) -> print(*v);
+        case None -> print("none");
+    }
+}
+#####
+
+fn main() {
+    let t = spawn(() -> 1);
+    print(t.join());
+    print(t.join());
+}
+#####
+
+enum Either<L, R> {
+    Left(L value);
+    Right(R value);
+}
+
+fn describe(Either<i64, str> e) {
+    match e {
+        case Left(n) -> print("数", n);
+        case Right(s) -> print("文字", s);
+    }
+}
+
+fn Either<i64, str> parse(bool b) {
+    if b { Either.Left(42) } else { Either.Right("no") }
+}
+
+fn main() {
+    describe(Either.Left(1));
+    describe(Either.Right("a"));
+    describe(parse(true));
+    describe(parse(false));
+}
+#####
+
+enum Px {
+    Gray(u8 v);
+}
+
+fn main() {
+    let p = Px.Gray(250);
+    match p {
+        case Gray(v) -> print(v + 10);
+    }
+    let Option<u8> o = Some(255);
+    match o {
+        case Some(v) -> print(v + 1);
+        case None -> print(0);
+    }
+}
+#####
+enum Shape {
+    Circle(i64 r);
+    Rect(i64 w, i64 h);
+    Empty;
+}
+fn main() {
+    let s = Shape.Empty;
+    match s {
+        case Circle(r) -> print(r);
+        default -> print("other");
+    }
+}
+#####
+
+fn show(ref i64 r) {
+    print(*r)
+}
+
+fn main() {
+    let r = r0();
+    show(ref r)
+}
+
+fn ref i64 r0() {
+    let x = own 5;
+    return ref x;
+}
+#####
+fn main() {
+match 1 {
+ case (1) -> print(1);
+}
+}
+#####
+fn main() {
+
+    let mut i = 0;
+    let mut sum = 0;
+    while i < 6 {
+        i = i + 1;
+        if i % 2 == 0 { continue; }
+        sum = sum + i;
+    }
+    print(sum);
+}
+#####
+
+fn main() {
+    let i64[] mut v = [1, 2, 3];
+    v.insert(0, 0);
+    v.insert(4, 9);
+    print(v);
+    print(v.remove(1), v);
+    let (own i64)[] mut boxes = [own 1, own 2];
+    let b = boxes.remove(0);
+    boxes.insert(1, own 3);
+    print(*b, boxes.len(), *boxes[1]);
+}
+#####
+
+fn Result<own i64, str> make(bool b) {
+    if b { Ok(own 42) } else { Err("なし") }
+}
+
+fn Result<i64, str> use_it(bool b) {
+    let p = make(b)?;
+    Ok(*p + 1)
+}
+
+fn main() {
+    print(use_it(true), use_it(false));
+}
+#####
+
+fn main() {
+    let i64[str] mut m = [];
+    m["a"] = 1;
+    m["b"] = 2;
+    m["a"] += 10;
+    print(m, m.len(), m["a"], m.get("z"), m.get("b"), m.contains("b"));
+    for (k, v) in m { print(k, v); }
+    print(m.keys());
+    print(m.remove("a"), m.remove("a"), m);
+    let ages = ["x": 3, "y": 4, "x": 5];
+    print(ages);
+}
+#####
+fn main() {
+let Option<i64> x = None;
+match x {
+ case Some(v) -> print(v);
+}
+}
+#####
+
+fn main() {
+    let z = 0;
+    let mut r = ref z;
+    if true {
+        let x = 1;
+        r = ref x;
+    }
+    print("r = {r}");
+}
+#####
+fn main() {
+match 1 {
+ case 1 -> print(1);
+ case 2, 1 -> print(2);
+}
+}
+#####
+fn f() {}
+fn main() {
+let f = 1;
+}
+#####
+
+fn main() {
+    let str[] v = ["a", "bc", "", "日本"];
+    let str[] none = [];
+    print(v.join(", "), v.join(""), none.join("-"), "a b c".split(" ").join("+"));
+}
+#####
+fn main() {
+print(~true);
+}
+#####
+
+fn T max<T>(T a, T b) {
+    if a > b { a } else { b }
+}
+fn main() {}
+#####
+fn main() {
+let x = 200;
+print(x + 100);
+}
+#####
+fn i64 get(ref i64 p) { *p }
+fn main() {
+    let a = own 1;
+    print(get(ref a));
+}
+#####
+fn main() {
+    let x = 9223372036854775807 + 1;
+    print(x);
+}
+#####
+struct P {
+    i64 x;
+}
+fn main() {
+let m = ["a": 1];
+m.clear();
+}
+#####
+fn args() {
+}
+fn main() {
+}
+#####
+
+fn main() {
+    let mut a = [own 1, own 2, own 3];
+    let r = ref a[1];
+    print(*r);
+    a[1] = own 20;
+    print(*a[1]);
+    let o = own [own 5, own 6];
+    print(*o[0] + *o[1], o.len());
+}
+#####
+struct Point {
+    i64 x;
+    i64 y;
+
+    fn i64 len2() {
+        x * x + y * y
+    }
+
+    fn mut move_by(i64 dx, i64 dy) {
+        x += dx;
+        this.y = y + dy;
+    }
+
+    fn i64 plus(i64 d) {
+        d + x + len2()
+    }
+}
+
+fn main() {
+    let p = Point { x: 3, y: 4 };
+    print(p.plus(100));
+}
+#####
+fn main() {
+let x = 1;
+print(x[0]);
+}
+#####
+
+use geom;
+
+struct Mine {
+    i64 w;
+
+    fn i64 size() { w }
+}
+
+fn i64 need<T: geom.Sized>(ref T t) { t.size() }
+
+fn main() {
+    let p = geom.Point.at(3, 4);
+    let q = geom.Point { x: 1, y: 1 };
+    print(p.len2(), q.len2());
+    let s = geom.Shape.Box(2, 5);
+    print(geom.area(s));
+    let geom.Point[] ps = [p, q];
+    print(ps.len());
+    print(geom.apply(geom.twice, 7), geom.apply((x) -> x + 1, 1));
+    let mine = Mine { w: 9 };
+    print(need(ref mine));
+    print("{geom.twice(3)}");
+    let sq = geom.Shape.square(3);
+    print(geom.area(sq), sq.corners(), geom.Shape.Dot(geom.Point.at(0, 0)).corners());
+    let u = geom.Shape.unit2();
+    print(geom.area(u));
+}
+#####
+fn main() {
+let mut n = 1;
+let f = () -> { n = 2; };
+}
+#####
+struct P {
+    i64 x;
+    fn i64 f(i64 x) {
+        x
+    }
+}
+fn main() {
+    print(0);
+}
+#####
+
+enum Slot {
+    Full(own i64 v);
+    Vacant;
+}
+
+fn main() {
+    let a = Slot.Full(own 5);
+    let b = a;
+    match b {
+        case Full(v) -> print(*v);
+        case Vacant -> print("vacant");
+    }
+    let c = Slot.Full(own 6);
+    match c {
+        case Full(_) -> print("dropped");
+        case Vacant -> print("vacant");
+    }
+    let d = Slot.Full(own 7);
+    match d {
+        case Vacant -> print("vacant");
+        default -> print("default");
+    }
+    let e = Slot.Full(own 8);
+}
+#####
+
+fn i64 div(i64 a, i64 b) { a / b }
+
+fn main() {
+    let t = spawn(() -> div(1, 0));
+    print(t.join());
+}
+#####
+use geom;
+fn main() {
+    print(geom.nope(1));
+}
+#####
+fn main() {
+match 1 {
+ default -> print(1);
+ default -> print(2);
+}
+}
+#####
+fn main() {
+print(0x1_0000_0000_0000_0000);
+}
+#####
+fn main() {
+print("a".split(1));
+}
+#####
+enum E { A; B; static fn E mk() { E.A } } fn main() { let e = E.mk(); print(e.mk()); }
+#####
+// 在庫と注文の処理: 構造体の辞書・interface・クロージャのリスト・並べ替え
+struct Item {
+    str name;
+    i64 price;
+    i64 stock;
+}
+
+struct Order {
+    i64 id;
+    str item;
+    i64 qty;
+}
+
+interface Discount {
+    fn i64 apply(ref Order o, i64 total);
+    fn str label();
+}
+
+struct Bulk {
+    i64 min_qty;
+    i64 percent;
+    fn i64 apply(ref Order o, i64 total) {
+        if o.qty >= min_qty { total - total * percent / 100 } else { total }
+    }
+    fn str label() { "まとめ買い {percent}%" }
+}
+
+struct Coupon {
+    i64 off;
+    fn i64 apply(ref Order o, i64 total) {
+        if total > off { total - off } else { 0 }
+    }
+    fn str label() { "クーポン {off} 円" }
+}
+
+struct Shop {
+    Item[str] items;
+    (own Discount)[] discounts;
+    str[] log;
+
+    fn mut Result<i64, str> sell(ref Order o) {
+        if !items.contains(o.item) { return Err("{o.item} は扱っていません"); }
+        let stock = items[o.item].stock;
+        if stock < o.qty { return Err("{o.item} の在庫が足りません（残り {stock}）"); }
+        items[o.item].stock -= o.qty;
+        let mut total = items[o.item].price * o.qty;
+        for d in discounts {
+            let before = total;
+            total = d.apply(o, total);
+            if total != before { log.push("#{o.id}: {d.label()} で {before} → {total}"); }
+        }
+        Ok(total)
+    }
+}
+
+fn main() {
+    let mut shop = Shop { items: [], discounts: [], log: [] };
+    shop.items["りんご"] = Item { name: "りんご", price: 120, stock: 10 };
+    shop.items["みかん"] = Item { name: "みかん", price: 80, stock: 3 };
+    shop.discounts.push(own Bulk { min_qty: 5, percent: 10 });
+    shop.discounts.push(own Coupon { off: 50 });
+
+    let Order[] mut orders = [
+        Order { id: 1, item: "りんご", qty: 6 },
+        Order { id: 2, item: "みかん", qty: 5 },
+        Order { id: 3, item: "ぶどう", qty: 1 },
+        Order { id: 4, item: "みかん", qty: 2 },
+    ];
+    orders.sort_by((a, b) -> a.qty < b.qty);
+    let mut sales = 0;
+    for o in orders {
+        match shop.sell(o) {
+            case Ok(t) -> { sales += t; print("#{o.id} {o.item} x{o.qty}: {t} 円"); }
+            case Err(m) -> print("#{o.id}: {m}");
+        }
+    }
+    print("売上 {sales} 円");
+    for l in shop.log { print(l); }
+    let str[] mut low = [];
+    for (n, it) in shop.items {
+        if it.stock < 5 { low.push(n); }
+    }
+    print("在庫が少ない: {low}");
+}
+#####
+fn main() {
+let u8 a = 1;
+print(-a);
+}
+#####
+
+fn Result<own i64, str> make(bool b) {
+    if b { Ok(own 42) } else { Err("なし") }
+}
+
+fn Result<i64, str> use_it(bool b) {
+    let p = make(b)?;
+    Ok(*p + 1)
+}
+
+fn main() {
+    print(use_it(true), use_it(false));
+    let r = make(true);
+    let s = r;
+    print(r);
+}
+#####
+
+fn main() {
+    let Option<own Option<i64>> x = None;
+    match x { case Some(Some(v)) -> print(v); default -> {} }
+}
+#####
+
+const MAX = 5000;
+const NAME = "jw";
+const HOUR = 60 * 60;
+const BIG = HOUR * 1000;
+const RATE = 1.5;
+const ON = true;
+const MASK = 0xff;
+fn f() {
+    let u8 b = MASK;
+    print(b, MAX + 1, NAME, HOUR, BIG, RATE * 2.0, ON, MASK & 0x0f);
+}
+fn main() {
+    f();
+    let u16 w = HOUR;
+    let g = () -> MAX * 2;
+    print(w, "{NAME}-{MAX}", g());
+}
+#####
+
+fn Result<i64, str> div(i64 a, i64 b) {
+    if b == 0 { Err("0 では割れません") } else { Ok(a / b) }
+}
+
+fn main() {
+    match div(10, 2) {
+        case Ok(v) -> print("答え", v);
+        case Err(e) -> print("失敗", e);
+    }
+    match div(1, 0) {
+        case Ok(v) -> print("答え", v);
+        case Err(e) -> print("失敗", e);
+    }
+    print(div(9, 3));
+    let Result<u8, str> r = Result.Ok(255);
+    print(r);
+}
+#####
+
+fn i64 square(i64 x) {
+    x * x
+}
+
+fn str sign(i64 n) {
+    if n < 0 { "負" } else if n == 0 { "ゼロ" } else { "正" }
+}
+
+fn main() {
+    print(square(7), sign(-3), sign(0), sign(5));
+}
+#####
+
+fn Result<i64, str> num(i64 n) {
+    if n < 0 { Err("負の数") } else { Ok(n) }
+}
+
+fn i64 add(i64 a, i64 b) {
+    a + b
+}
+
+fn Result<i64, str> f(i64 a, i64 b) {
+    Ok(add(num(a)?, num(b)?) * 2)
+}
+
+fn main() {
+    print(f(1, 2), f(-1, 2), f(1, -2));
+}
+#####
+fn f() {
+}
+fn f() {
+}
+fn main() {
+}
+#####
+
+fn i64 find(i64 n) {
+    for i in range(100) {
+        if i * i >= n { return i; }
+    }
+    return -1;
+}
+
+fn main() {
+    print(find(50))
+}
+#####
+
+struct Box2 { own i64 inner; }
+
+fn main() {
+    let b = Box2 { inner: own 1 };
+    let o = b.inner;
+}
+#####
+fn main() {
+let i8 a = -128;
+print(-a);
+}
+#####
+
+fn main() {
+    let c = chan();
+}
+#####
+
+fn main() {
+    print(read_file("/tmp/jw-system-test-8862-errs/ない.txt"));
+    print(read_file("/tmp/jw-system-test-8862-errs/bad.txt"));
+    print(write_file("/tmp/jw-system-test-8862-errs/ないフォルダ/a.txt", "x"));
+    print(read_file("/tmp/jw-system-test-8862-errs").is_err());
+}
+#####
+
+fn main() {
+    let x = Ok(1);
+}
+#####
+
+struct Big { i64[] xs; }
+fn i64 take(own Big a, i64 n) { a.xs.len() + n }
+fn Result<i64, str> pick(Option<i64> o) {
+    let keep = own Big { xs: [1, 2, 3] };
+    let n = match o {
+        case Some(x) -> x;
+        case None -> return Err("なし");
+    };
+    let m = take(own Big { xs: [9] }, match n {
+        case 0 -> return Ok(-1);
+        default -> n * 10;
+    });
+    Ok(m + keep.xs.len())
+}
+fn main() {
+    print(pick(Some(4)), pick(None), pick(Some(0)));
+}
+#####
+// ref mut を渡して、相手の中身を書き換える
+fn inc(ref mut i64 r) {
+    *r += 1;
+}
+
+fn main() {
+    let mut count = own 0;
+    inc(ref mut count);
+    inc(ref mut count);
+    inc(ref mut count);
+    print("count =", *count)
+}
+#####
+
+struct P {
+    i64 hp;
+}
+
+fn i64[str] make() { ["k": 42] }
+
+fn main() {
+    let mut ps = [1: P { hp: 5 }];
+    ps[1].hp = 7;
+    ps[2] = P { hp: 1 };
+    for (k, p) in ps { print(k, p.hp); }
+    print(ps.remove(1));
+    let (own i64)[i64] mut os = [];
+    os[3] = own 9;
+    os[3] = own 10;
+    os[4] = own 11;
+    print(os, *os[4]);
+    print(make()["k"]);
+    let i64[str][str] mut mm = [];
+    mm["a"] = ["b": 1];
+    mm["a"]["c"] = 2;
+    print(mm);
+}
+#####
+
+fn main() {
+    let mut s = "a";
+    let r = ref s;
+    s = "b";
+    print(*r);
+}
+#####
+fn main() {
+ print(1 / 0)
+}
+#####
+
+struct Point { i64 x; i64 y; }
+struct Line { Point a; Point b; }
+
+fn shift(ref mut Point p, i64 d) {
+    p.x += d;
+}
+
+fn i64 sum(ref Point p) {
+    p.x + p.y
+}
+
+fn main() {
+    let Point[] mut ps = [Point { x: 1, y: 2 }, Point { x: 3, y: 4 }];
+    let r = ref mut ps[1];
+    r.y = 40;
+    shift(ref mut ps[0], 10);
+    print(sum(ps[0]), sum(ps[1]));
+    let px = ref ps[0].x;
+    print(*px);
+    let Line[] mut ls = [Line { a: Point { x: 0, y: 0 }, b: Point { x: 5, y: 6 } }];
+    let b = ref mut ls[0].b;
+    b.x = 50;
+    print(ls[0].b.x);
+    print(ps);
+}
+#####
+struct Point { i64 x; i64 y; }
+;
+fn own Point make() {
+    return own Point { x: 7, y: 8 };
+}
+
+fn main() {
+    print(make().x + Point { x: 1, y: 1 }.y)
+}
+#####
+fn i64 f(i64 n) {
+    if n > 0 {
+        return 1;
+    }
+}
+fn main() {
+}
+#####
+fn main() {
+    print(0);
+    let r = ref 5;
+}
+#####
+fn main() {
+let u64 m = 18446744073709551615;
+print(m + 1, m * m);
+}
+#####
+
+fn main() {
+    let z = 0;
+    let mut r = ref z;
+    if true {
+        let x = 5;
+        r = ref x;
+    }
+    print(*r);
+}
+#####
+fn main() {
+let x = match 1 {
+ case 1 -> print(1);
+ default -> { print(2); }
+};
+}
+#####
+enum E { A; B; fn mut flip() { *this = E.B; } } fn main() { let e = E.A; e.flip(); }
+#####
+// 小さな戦闘シミュレーション（試しに書いたプログラム）: interface のリストと、構造体の中の ref
+interface Unit {
+    fn str name();
+    fn i64 hp();
+    fn mut hit(i64 dmg);
+}
+
+struct Slime {
+    i64 life;
+    fn str name() { "スライム" }
+    fn i64 hp() { life }
+    fn mut hit(i64 dmg) { life -= dmg; }
+}
+
+struct Dragon {
+    i64 life;
+    i64 armor;
+    fn str name() { "ドラゴン" }
+    fn i64 hp() { life }
+    fn mut hit(i64 dmg) {
+        if dmg > armor { life -= dmg - armor; }
+    }
+}
+
+struct Hero {
+    str name;
+    i64 power;
+    Option<ref mut Unit> target;
+}
+
+fn main() {
+    let (own Unit)[] mut enemies = [own Slime { life: 10 }, own Dragon { life: 30, armor: 2 }];
+    let mut hero = Hero { name: "勇者", power: 7, target: None };
+    let mut turn = 0;
+    while enemies.len() > 0 {
+        turn += 1;
+        // 先頭の敵を狙う
+        hero.target = Some(ref mut enemies[0]);
+        match hero.target {
+            case Some(t) -> {
+                t.hit(hero.power);
+                print("{turn}: {t.name()} の残り {t.hp()}");
+                if t.hp() <= 0 {
+                    print("{t.name()} を倒した");
+                    enemies.remove(0);
+                }
+            }
+            case None -> {}
+        }
+        if turn > 20 { break; }
+    }
+}
+#####
+fn main() {
+    let mut a = [1, 2, 3];
+    a[1 + 2] = 0;
+}
+#####
+
+struct P {
+    i64 x;
+
+    fn i64 x() {
+        1
+    }
+}
+fn main() {}
+#####
+struct Job { i64 id; own i64 load; }
+fn main() {
+    let chan<own Job> jobs = chan();
+    let chan<i64> done = chan();
+    let w = spawn(() -> {
+        loop {
+            match jobs.recv() {
+                case Some(j) -> { let x = own *j.load + j.id; done.send(*x); }
+                case None -> break;
+            }
+        }
+    });
+    for i in range(200) { jobs.send(own Job { id: i, load: own i }); }
+    jobs.close();
+    let mut s = 0;
+    for i in range(200) { match done.recv() { case Some(v) -> s += v; case None -> {} } }
+    w.join();
+    print(s);
+    let mut extra = 0;
+    for i in range(100) { let y = own i; extra += *y; }
+    print(extra);
+    let last = own Job { id: 1, load: own 2 };
+    let r = ref last;
+    let chan<own Job> c2 = chan();
+    c2.send(last);
+    print(*r.load);
+}
+#####
+const A = 1; const A = 2; fn main() {}
+#####
+fn main() {
+
+    for n in range(-1, 4) {
+        let name = match n {
+            case -1 -> "minus";
+            case 0 -> "zero";
+            case 1, 2 -> "small";
+            default -> {
+                let s = "many";
+                s + "!"
+            }
+        };
+        print(name)
+    }
+}
+#####
+fn main() {
+    print(1);
+    let x = 1;
+    x = 2;
+}
+#####
+
+fn main() {
+    let a = own 1;
+    let r = ref a;
+    let mut i = 0;
+    while i < 2 {
+        print(*r);
+        if i == 0 {
+            drop(a)
+        }
+        i = i + 1;
+    }
+}
+#####
+fn main() {
+let x = 1
+
+}
+#####
+
+struct P { i64 a; }
+fn main() {
+    let P[] ps = [P { a: 1 }];
+    let qs = ps.filter((p) -> p.a > 0);
+}
+#####
+fn main() {
+let a = [];
+}
+#####
+
+fn Result<i64, str> parse(str s) {
+    let n = ok_or(s.to_int(), "数ではない: {s}")?;
+    Ok(n * 2)
+}
+fn main() {
+    print(parse("21"), parse("x"));
+    let Option<own i64> a = None;
+    print(ok_or(a, own 5));
+}
+#####
+fn main() {
+print(0xfg);
+}
+#####
+const A = 1; fn main() { for A in range(3) {} }
+#####
+fn main() {
+let a = [own 1];
+let b = a[0];
+}
+#####
+fn main() {
+let a = own 1;
+let r = ref mut a;
+}
+#####
+
+struct Pixel { u8 r; u8 g; u8 b; }
+
+fn main() {
+    let u8 s = 253;
+    for i in range(s, 255) {
+        let u8 x = i;
+        print(x);
+    }
+    for i in range(s, 250, -1) {
+        print(i);
+    }
+    let u8 a = 1;
+    let wide = if true { a } else { 1000 };
+    print(wide * 1000);
+    let u8 narrow = if false { a } else { 2 };
+    let p = own Pixel { r: 255, g: narrow, b: 0 };
+    print(p.r + 1, p.g);
+    let own u8 q = own 7;
+    print(*q);
+}
+#####
+
+fn ref i64 bad() {
+    let x = 1;
+    ref x
+}
+fn main() {
+    let r = bad();
+    print(*r);
+}
+#####
+struct B { own i64 inner; }
+fn main() {
+    let mut b = own B { inner: own 1 };
+    let r = ref mut b.inner;
+    *r += 41;
+    print(*b.inner);
+}
+#####
+fn main() {
+
+    let a = own 1;
+    let r = ref a;
+    let x = if true {
+        drop(a);
+        1
+    } else {
+        2
+    };
+    print(*r);
+}
+#####
+enum Shape {
+    Circle(i64 r);
+    Rect(i64 w, i64 h);
+    Empty;
+}
+fn main() {
+let s = Shape.Empty;
+match s {
+ case Circle -> print(1);
+ default -> print(2);
+}
+}
+#####
+enum Slot {
+    Full(own i64 v);
+    Vacant;
+}
+fn main() {
+    let a = Slot.Full(own 5);
+    let b = a;
+    print(a);
+}
+#####
+fn main() {
+    print(1 % 0);
+}
+#####
+
+interface Growable {
+    fn mut grow(i64 n);
+    fn i64 size();
+}
+
+struct Ball {
+    i64 r;
+
+    fn mut grow(i64 n) { r += n; }
+    fn i64 size() { r }
+}
+
+fn grow_twice<T: Growable>(ref mut T g) {
+    g.grow(1);
+    g.grow(1);
+}
+
+fn main() {
+    let mut b = own Ball { r: 1 };
+    grow_twice(ref mut b);
+    print(b.size());
+}
+#####
+
+fn main() {
+    let Option<i64> x = None;
+    match x { case Some("a") -> {} default -> {} }
+}
+#####
+fn main() {
+let Option<i64> x = Some("a");
+}
+#####
+interface Shape {
+    fn i64 area();
+    fn str name();
+}
+
+struct Square {
+    i64 side;
+
+    fn i64 area() { side * side }
+    fn str name() { "正方形" }
+}
+
+struct Rect {
+    i64 w;
+    i64 h;
+
+    fn i64 area() { w * h }
+    fn str name() { "長方形" }
+    fn mut grow(i64 n) { w += n; h += n; }
+}
+
+fn describe<T: Shape>(ref T s) {
+    print(s.name(), s.area());
+}
+
+fn i64 twice<T: Shape>(T s) {
+    s.area() * 2
+}
+
+fn main() {
+    let sq = own Square { side: 3 };
+    let r = own Rect { w: 2, h: 5 };
+    describe(ref sq);
+    describe(ref r);
+    print(twice(Square { side: 2 }));
+}
+#####
+fn main() {
+    print(args(), read_line());
+}
+#####
+fn main() {
+    let m = ["a": 1];
+    print(m["zz"]);
+}
+#####
+use a;
+use b;
+fn main() {
+    print(a.f(), b.f());
+}
+#####
+fn main() {
+let n = 1;
+n(2);
+}
+#####
+
+fn Result<i64, str> div(i64 a, i64 b) {
+    if b == 0 { Err("0 では割れません") } else { Ok(a / b) }
+}
+
+fn Result<i64, str> calc(i64 a, i64 b, i64 c) {
+    let x = div(a, b)?;
+    let y = div(x, c)?;
+    print("ここまで来た", y);
+    Ok(x + y)
+}
+
+fn main() {
+    print(calc(100, 5, 2));
+    print(calc(100, 0, 2));
+    print(calc(100, 5, 0));
+}
+#####
+fn main() {
+let f32 x = 1.0;
+}
+#####
+enum A { X, Y }
+fn main() {
+}
+#####
+
+struct P { str name; }
+fn str add(str s) {
+    let mut t = s;
+    t += "!";
+    t
+}
+fn main() {
+    let mut s = "a";
+    let keep = s;
+    s += "b";
+    s = s + s;
+    s += "{s.len()}";
+    let r = ref s;
+    s += "c";
+    print(s, keep, *r, add(s), s);
+    let str[] mut v = [];
+    let mut u = "x";
+    for i in range(3) {
+        v.push(u);
+        u += "y";
+    }
+    let mut p = P { name: "p" };
+    p.name += "q";
+    let str[str] mut m = ["k": "v"];
+    m["k"] += "w";
+    print(v, u, p.name, m);
+    let mut big = "";
+    for i in range(5000) {
+        big += "0123456789";
+    }
+    print(big.byte_len(), big.slice(49990, 50000));
+}
+#####
+fn main() { write_file("a"); }
+#####
+fn consume(own i64 c) {
+    print(*c)
+}
+
+fn main() {
+    let a = own 1;
+    consume(a);
+    print(*a)
+}
+#####
+fn i64 f(i64 a) {
+ let x = if a > 0 { return a * 2; } else { 2 };
+ x + 100
+}
+fn main() {
+ print(f(5), f(-1));
+}
+#####
+
+fn bool desc(i64 a, i64 b) { a > b }
+fn i64 inc(i64 x) { x + 1 }
+
+fn main() {
+    let mut v = [3, 1, 2];
+    v.sort_by(desc);
+    print(v);
+    let fn i64(i64)[] fs = [inc, (x) -> x * 10];
+    for f in fs { print(f(5)); }
+}
+#####
+
+fn T add<T>(T a, T b) {
+    a + b
+}
+
+fn main() {
+}
+#####
+struct Point {
+    i64 x;
+    i64 y;
+
+    fn i64 len2() {
+        x * x + y * y
+    }
+
+    fn mut move_by(i64 dx, i64 dy) {
+        x += dx;
+        this.y = y + dy;
+    }
+
+    fn i64 plus(i64 d) {
+        d + x + len2()
+    }
+}
+
+fn main() {
+let i64 n = 1;
+n.len2();
+}
+#####
+fn main() {
+    let x = 1;
+    let r = ref mut x;
+}
+#####
+struct Point {
+    i64 x;
+    i64 y;
+
+    fn i64 len2() {
+        x * x + y * y
+    }
+
+    fn mut move_by(i64 dx, i64 dy) {
+        x += dx;
+        this.y = y + dy;
+    }
+
+    fn i64 plus(i64 d) {
+        d + x + len2()
+    }
+}
+
+fn main() {
+    let mut p = Point { x: 3, y: 4 };
+    print(p.len2());
+    p.move_by(1, 1);
+    print(p.x, p.y, p.len2());
+    print(Point { x: 2, y: 0 }.len2());
+}
+#####
+
+fn show(ref i64 r) {
+    print(*r);
+}
+
+fn main() {
+    let mut a = own 5;
+    let r = ref mut a;
+    show(r);
+    show(ref a);
+}
+#####
+fn main() {
+    print(0);
+    print(true < false);
+}
+#####
+fn main() {
+    let s = """
+x""";
+    let i64 a = "no";
+}
+#####
+struct Node { i64 v; own Node next; }
+fn main() {
+}
+#####
+
+fn main() {
+    let mut a = own 1;
+    let r = ref mut a;
+    *r = *r + 1;
+    print(*r)
+}
+#####
+fn main() {
+    let n = -1;
+    print(1 << n);
+}
+#####
+
+struct Pair<T> {
+    T a;
+    T b;
+}
+
+fn main() {
+    let Pair p = Pair { a: 1, b: 2 };
+}
+#####
+
+fn main() {
+    let z = own 0;
+    let mut r = ref z;
+    if true {
+        let a = own 1;
+        r = ref a;
+    }
+    if true {
+        let a = own 2;
+        print(*a);
+    }
+    print(*r)
+}
+#####
+// 単語の数え上げ（試しに書いたプログラム）。辞書は入れた順に回る
+// ファイル名のあとに文章を渡すと、それを数える（jabberwock words.jw "a b a"）
+fn i64[str] count_words(ref str[] words) {
+    let i64[str] mut out = [];
+    for w in words {
+        if out.contains(w) {
+            out[w] += 1;
+        } else {
+            out[w] = 1;
+        }
+    }
+    out
+}
+
+fn main() {
+    let mut text = "the cat and the dog and the bird";
+    let a = args();
+    if a.len() > 0 {
+        text = a[0];
+    }
+    let words = text.split(" ");
+    let counts = count_words(words);
+    for (w, n) in counts {
+        print("{w}: {n}");
+    }
+}
+#####
+
+fn T pick<T>(T a, T b) {
+    a
+}
+
+fn main() {
+    print(pick(1, "a"));
+}
+#####
+
+fn i64 sign(i64 n) {
+    if n < 0 {
+        return -1;
+    } else if n == 0 {
+        return 0;
+    } else {
+        return 1;
+    }
+}
+fn main() {
+    print(sign(-5), sign(0), sign(7))
+}
+#####
+fn main() {
+print("{}");
+}
+#####
+
+fn main() {
+    let mut a = own 1;
+    let r = ref a;
+    a = own 2;
+    print(*r)
+}
+#####
+fn main() {
+match 1 {
+ case 1 -> print(1)
+}
+}
+#####
+
+struct P {
+    i64 x;
+
+    fn ref P me() {
+        this
+    }
+}
+
+fn main() {
+    let p = P { x: 1 };
+    let r = p.me();
+    print(r.x);
+}
+#####
+
+struct P { i64 x; }
+
+fn main() {
+    let P[] mut a = [P { x: 1 }, P { x: 2 }];
+    let r = ref a[1];
+    let mut b = a;
+    print(r.x);
+    b[1] = P { x: 20 };
+    print(r.x);
+    b[1].x = 30;
+    print(r.x);
+    let i64[][] mut g = [[1, 2], [3]];
+    let e = ref g[0][1];
+    g.push([4]);
+    print(*e, g);
+}
+#####
+fn main() {
+    let a = own 1;
+    let r = ref a;
+    match 2 {
+        case 1 -> print(0);
+        case 2 -> drop(a);
+    }
+    print(*r)
+}
+#####
+fn main() {
+let mut x = 1;
+x = 2;
+print(x);
+}
+#####
+fn main() {
+let b = true as f64;
+}
+#####
+
+struct Stack2<T> {
+    Option<T> top;
+    i64 count;
+
+    fn mut push(T v) {
+        top = Some(v);
+        count++;
+    }
+
+    fn bool empty() {
+        count == 0
+    }
+}
+
+fn main() {
+    let Stack2<own i64> mut s = Stack2 { top: None, count: 0 };
+    s.push(own 1);
+    s.push(own 2);
+    print(s.empty(), s.count);
+    let mut t = Stack2 { top: Some("a"), count: 1 };
+    t.push("b");
+    print(t.top);
+}
+#####
+
+struct P {
+    i64 x;
+
+    fn ref P me() {
+        this
+    }
+}
+
+fn main() {
+    let r = P { x: 1 }.me();
+    print(r.x);
+}
+#####
+
+fn f(ref i64 r, own i64 c) {
+    drop(c);
+    print(*r)
+}
+
+fn main() {
+    let a = own 1;
+    f(ref a, a)
+}
+#####
+interface Shape {
+    fn i64 area();
+    fn str name();
+}
+
+struct Square {
+    i64 side;
+
+    fn i64 area() { side * side }
+    fn str name() { "正方形" }
+}
+
+struct Rect {
+    i64 w;
+    i64 h;
+
+    fn i64 area() { w * h }
+    fn str name() { "長方形" }
+    fn mut grow(i64 n) { w += n; h += n; }
+}
+
+fn describe<T: Shape>(ref T s) {
+    print(s.name(), s.area());
+}
+
+fn i64 twice<T: Shape>(T s) {
+    s.area() * 2
+}
+
+fn main() {
+    let r = own Rect { w: 1, h: 1 };
+    let ref Shape s = ref r;
+    s.grow(1);
+}
+#####
+struct Point {
+    i64 x;
+    i64 y;
+
+    fn i64 len2() {
+        x * x + y * y
+    }
+
+    fn mut move_by(i64 dx, i64 dy) {
+        x += dx;
+        this.y = y + dy;
+    }
+
+    fn i64 plus(i64 d) {
+        d + x + len2()
+    }
+}
+
+struct S {
+    i64 v;
+
+    static fn S make() {
+        S { v: 1 }
+    }
+}
+fn main() {
+let v = S.v;
+}
+#####
+fn main() {
+ let p = Nope { x: 1 };
+}
+#####
+fn main() {
+
+    let a = own 1;
+    let r = ref a;
+    let mut i = 0;
+    while i < 3 {
+        i = i + 1;
+        if i == 2 {
+            drop(a);
+            continue;
+        }
+        print(*r)
+    }
+}
+#####
+fn main() {
+    let n = 3;
+    let s = """
+こんにちは "世界"
+  n = {n}
+{{}}""";
+    print(s);
+    print(s.lines().len());
+}
+#####
+fn main() {
+    let mut n = 0;
+    for i in range(10) {
+        let x = own i;
+        if i == 3 { continue; }
+        if i == 6 { break; }
+        n += *x;
+    }
+    print(n);
+}
+#####
+struct Job { i64 id; own i64 data; }
+fn Job[] make() { [Job { id: 1, data: own 10 }, Job { id: 2, data: own 20 }] }
+fn i64 take(Job j) { j.id + *j.data }
+fn main() {
+    let Job[] mut jobs = [Job { id: 1, data: own 1 }, Job { id: 2, data: own 2 }, Job { id: 3, data: own 3 }];
+    let mut t = 0;
+    for (i, j) in jobs.drain() {
+        t += take(j) * (i + 1);
+    }
+    print(t, jobs.len());
+    jobs.push(Job { id: 9, data: own 9 });
+    for j in jobs.drain() { if j.id == 9 { break; } }
+    for j in make() {
+        print(take(j));
+        if j2() { break; }
+    }
+    let (own i64)[] mut xs = [own 1, own 2, own 3];
+    xs.reverse();
+    print(xs);
+    for x in xs.drain() { print(*x); if *x == 2 { break; } }
+    for x in xs.drain() { print(*x); } else { print("空"); }
+    let chan<Job> c = chan();
+    let Job[] mut js = [Job { id: 5, data: own 5 }];
+    let task<i64>[] mut ts = [];
+    for j in js.drain() {
+        ts.push(spawn(() -> take(j)));
+    }
+    for t2 in ts.drain() { print(t2.join()); }
+}
+fn bool j2() { false }
+#####
+fn main() {
+print("abc".split(""));
+}
+#####
+struct Point { i64 x; i64 y; }
+;
+fn main() {
+    let p = own Point { x: 1, y: 2 };
+    let q = *p;
+}
+#####
+fn main() {
+let x = 1.5; print(x.round());
+}
+#####
+struct S { i64 a; }
+fn main() {
+    let S[str] mut m = ["k": S { a: 1 }];
+    let r = ref m["k"];
+}
+#####
+fn main() {
+let u8 b = 300;
+}
+#####
+
+fn f<T: Nothing>(T x) {
+}
+fn main() {}
+#####
+struct Point { i64 x; i64 y; }
+fn main() {
+ let p = Point { x: 1 };
+};
+#####
+fn main() {
+    print(0);
+    let a = 1;
+    if true {
+        let a = 2;
+    }
+}
+#####
+
+fn main() {
+    let mut a = [own 1, own 2];
+    let r = ref a[0];
+    a[0] = own 9;
+    print(*r);
+}
+#####
+struct P { i64 x; }
+fn main() {
+ let a = own P { x: 1 };
+ a.x = 2;
+}
+#####
+
+struct Pair<T> {
+    T a;
+    T b;
+}
+
+fn Pair<T> swap<T>(Pair<T> p) {
+    Pair { a: p.b, b: p.a }
+}
+
+fn main() {
+    let p = Pair { a: 1, b: 2 };
+    let q = swap(p);
+    print(q.a, q.b);
+    let Pair<str> s = Pair { a: "x", b: "y" };
+    print(swap(s).a);
+    let Pair<u8> u = Pair { a: 255, b: 0 };
+    print(u.a + 1);
+}
+#####
+
+fn i64 find() {
+    let mut i = 0;
+    loop {
+        let tmp = own i;
+        if *tmp == 3 { return i; }
+        i = i + 1;
+    }
+}
+fn main() {
+    print(find())
+}
+#####
+struct Point { i64 x; i64 y; }
+;
+fn main() {
+    let mut p = own Point { x: 0, y: 3 };
+    while p.x < p.y {
+        p.x = p.x + 1;
+    }
+    if p.x == 3 {
+        print("ok")
+    }
+    if (Point { x: 1, y: 2 }).x == 1 {
+        print("paren")
+    }
+}
+#####
+fn main() {
+print(true as u8);
+}
+#####
+fn main() {
+
+    let a = 3;
+    let b = 7;
+    let m = if a > b { a } else { b };
+    print(m);
+    print(if a < 0 { "負" } else if a == 0 { "ゼロ" } else { "正" });
+    let n = if true {
+        let t = a * 10;
+        t + 1
+    } else {
+        0
+    };
+    print(n);
+}
+#####
+enum Shape {
+    Circle(i64 r);
+    Rect(i64 w, i64 h);
+    Empty;
+}
+fn main() {
+let s = Shape.Circle(1, 2);
+}
+#####
+fn main() {
+let u8 a = 1;
+match a {
+ case 300 -> print(1);
+}
+}
+#####
+
+fn main() {
+    let mut a = own 1;
+    a = own 2;
+    print(*a)
+}
+#####
+fn main() {
+
+    let n = 10;
+    print(n as f64 / 4.0, 2.9 as i64, -2.9 as i64, 300.7 as u8);
+    let f64 mut s = 0.0;
+    for i in range(4) {
+        s += i as f64 * 0.5;
+    }
+    print(s);
+}
+#####
+pub const A = 1; fn main() {}
+#####
+fn main() {
+let i64[] mut v = [];
+v.remove();
+}
+#####
+
+struct Pair<T> {
+    T a;
+    T b;
+}
+
+fn main() {
+    let Pair<i64, i64> p = Pair { a: 1, b: 2 };
+}
+#####
+fn f() {
+}
+fn main() {
+    let x = f();
+}
+#####
+struct P {
+    i64 x;
+}
+fn main() {
+let m = ["a": 1];
+m.remove("a");
+}
+#####
+fn main() {
+let i8 m = -128;
+print(m / -1, m % -1);
+}
+#####
+fn main() {
+let Option<i64> x = None;
+print(x + 1);
+}
+#####
+
+fn T max<T: ordered>(T a, T b) {
+    if a > b { a } else { b }
+}
+
+fn T max3<T: ordered>(T a, T b, T c) {
+    max(max(a, b), c)
+}
+
+fn main() {
+    print(max(3, 7), max("apple", "banana"));
+    print(max3(5, 9, 2));
+    let u8 small = 200;
+    print(max(small, 100));
+    print("a" < "b");
+}
+#####
+fn main() {
+let u8 b = 200;
+let u64 m = 18446744073709551615;
+let i8 n = -128;
+print(b, m, n);
+}
+#####
+
+fn main() {
+    print(run_command("true", []), run_command("sh", ["-c", "exit 3"]));
+    print(run_command("sh", ["-c", "printf '%s' \"$0\" > /tmp/jw-system-test-8862-cmd/arg.txt", "空白 と \"かっこ\""]));
+    print(read_file("/tmp/jw-system-test-8862-cmd/arg.txt"));
+    print(run_command("no-such-command-jw", ["x"]));
+}
+#####
+fn main() {
+
+    let cmd = "stop";
+    match cmd {
+        case "go" -> print("進む");
+        case "stop" -> print("止まる");
+        default -> print("?");
+    }
+    let b = 3 > 2;
+    let s = match b {
+        case true -> "はい";
+        case false -> "いいえ";
+    };
+    print(s);
+}
+#####
+
+fn main() {
+    let chan<i64> c = chan();
+    print(c.recv());
+}
+#####
+
+struct P { i64 x; }
+
+fn ref P first(ref P[] a) {
+    ref a[0]
+}
+
+fn ref P bad() {
+    let P[] a = [P { x: 1 }];
+    first(a)
+}
+
+fn main() {
+    let r = bad();
+    print(r.x);
+}
+#####
+
+enum Slot {
+    Full(own i64 v, i64 tag);
+    Vacant;
+}
+
+fn main() {
+    let mut s = own Slot.Full(own 5, 1);
+    match ref mut s {
+        case Full(v, tag) -> {
+            *v += 10;
+            print(*v, tag);
+        }
+        case Vacant -> print("vacant");
+    }
+    match ref s {
+        case Full(v, _) -> print(*v);
+        case Vacant -> print("vacant");
+    }
+    match s {
+        case Full(v, _) -> print(*v + 1);
+        case Vacant -> print("vacant");
+    }
+}
+#####
+
+struct P { i64 x; }
+
+fn main() {
+    let P[] mut a = [P { x: 1 }, P { x: 2 }];
+    let r = ref a[1];
+    print(r.x);
+    let d = a.drain();
+    print(d.len());
+    print(r.x);
+}
+#####
+fn main() {
+    let あ = own 1;
+    drop(あ);
+    print(*あ)
+}
+#####
+
+fn i64 sum(i64[3] a) {
+    a[0] + a[1] + a[2]
+}
+
+fn main() {
+    let a = [1, 2, 3];
+    let b = a;
+    print(sum(a), b[0]);
+}
+#####
+fn main() {
+let i64[] mut v = [];
+v.insert("a", 1);
+}
+#####
+fn main() {
+
+    let a = own 1;
+    let r = ref a;
+    for i in range(0) {
+    } else {
+        drop(a)
+    }
+    print(*r);
+}
+#####
+
+fn main() {
+    if true {
+        let a = 1;
+        print(a);
+    }
+    if true {
+        let a = "two";
+        print(a);
+    }
+    for i in range(1) { print(i); }
+    for i in range(1) { print(i); }
+}
+#####
+// own は唯一の所有者。渡すと所有権が移る。
+fn own i64 make(i64 n) {
+    let cell = own n * 2;
+    return cell; // 所有権を呼び出し元へ移す（ここでは解放されない）
+}
+
+fn consume(own i64 c) {
+    print("consume:", *c)
+} // ここで c が解放される
+
+fn main() {
+    let a = make(21);
+    print("a =", *a);
+    consume(a)
+}
+#####
+fn main() {
+
+    let words = "the cat  sat".split(" ");
+    print(words, words.len());
+    print("one\ntwo\n".lines());
+    print(" 42 ".to_int(), "-7".to_int(), "x".to_int());
+    let mut total = 0;
+    for w in "1,2,3".split(",") {
+        match w.to_int() {
+            case Some(n) -> total += n;
+            case None -> {}
+        }
+    }
+    print(total);
+}
+#####
+
+struct P { str name; }
+fn Result<i64, str> half(i64 n) { if n % 2 == 0 { Ok(n / 2) } else { Err("odd") } }
+fn Result<i64, str> parse(str s) {
+    let n = s.to_int().ok_or("数ではない")?;
+    Ok(n * 10)
+}
+fn i64 d(i64 x) { x }
+fn main() {
+    print("12".to_int().unwrap_or(0), "x".to_int().unwrap_or(d(-1)));
+    print(parse("4"), parse("q"));
+    print(half(4).unwrap_or(0), half(3).unwrap_or(0), half(3).ok(), half(8).ok());
+    print(Some(3).map((x) -> x * 2), half(6).map((x) -> "v{x}"));
+    let Option<own P> op = Some(own P { name: "a" });
+    let p = op.unwrap_or(own P { name: "b" });
+    let Option<own P> none = None;
+    let q = none.unwrap_or(own P { name: "c" });
+    print(p.name, q.name, Some(own P { name: "z" }).map((pp) -> pp.name));
+}
+#####
+enum A { X(A a); }
+fn main() {
+}
+#####
+fn main() {
+    let a = own 1;
+    let r = ref a;
+    drop(a);
+    let mut s = 0;
+    for i in range(1000) {
+        let x = own i;
+        s += *x;
+    }
+    print(s);
+    print(*r);
+}
+#####
+
+fn i64 apply(fn i64(i64) f, i64 x) { f(x) }
+
+fn fn i64(i64) adder(i64 n) { (x) -> x + n }
+
+fn main() {
+    let k = 10;
+    let add = (i64 x) -> x + k;
+    print(add(1), add(2));
+    print(apply((x) -> x * 2, 21));
+    print(apply(add, 5));
+    let a3 = adder(3);
+    print(a3(4));
+    let g = () -> { print("k = {k}"); };
+    g();
+    print(g);
+}
+#####
+enum Shape {
+    Circle(i64 r);
+    Rect(i64 w, i64 h);
+    Empty;
+}
+fn main() {
+    let s = Shape.Empty;
+    match s {
+        case Circle(r) -> print(r);
+    }
+}
+#####
+fn main() {
+
+    print("aé語".bytes(), "".bytes().len());
+    print("a".code(), "é".code(), "語".code(), "😀".code(), "ab".code());
+    print(chr(97), chr(233), chr(35486), chr(128512), chr(0).byte_len());
+    let mut n = 0;
+    for c in "x9_".chars() {
+        let k = c.code();
+        if k >= 48 && k <= 57 { n += 1; }
+    }
+    let u8[] b = "AZ".bytes();
+    print(n, b[0] + 1, b[1] as i64 - 65);
+}
+#####
+fn main() {
+print(true & false);
+}
+#####
+fn main() {
+if true { continue; }
+}
+#####
+fn main() {
+
+    let a = own 1;
+    let r = ref a;
+    loop {
+        drop(a);
+        break;
+    }
+    print(*r);
+}
+#####
+fn read_file() {} fn main() {}
+#####
+fn main() {
+    let u8 b = 200 + 100;
+    print(b);
+}
+#####
+fn main() {
+print("".code());
+}
+#####
+fn main() {
+for i in range(1, 2, 3, 4) { }
+}
+#####
+enum E { A(own i64 x); B; fn take i64 get() { match this { case A(x) -> *x; case B -> 0; } } }
+fn main() { let e = E.A(own 3); print(e.get()); print(e.get()); }
+#####
+fn main() {
+
+    for i in range(3) { print(i) }
+    for i in range(1, 10, 2) { print(i) }
+    for i in range(10, 0, -4) { print(i) }
+}
+#####
+struct S { i64 v; fn i64 take() { v } } fn main() { let s = S { v: 1 }; print(s.take()); }
+#####
+
+struct Box2 { own i64 inner; }
+
+fn main() {
+    let mut b = own Box2 { inner: own 1 };
+    let r = ref b.inner;
+    b.inner = own 2;
+    print(*r)
+}
+#####
+fn main() {
+let u8 a = 250;
+print(a as i64 + 10, (a + 10) as i64);
+}
+#####
+// 電卓: 字句解析 → 構文木（再帰する enum）→ 計算。エラーは Result と ?。match は形を重ねて書ける（`Some(Op("-"))`）
+enum Tok {
+    Num(i64 n);
+    Op(str op);
+    LParen;
+    RParen;
+}
+
+enum Expr {
+    Num(i64 n);
+    Bin(str op, own Expr l, own Expr r);
+    Neg(own Expr e);
+}
+
+fn Result<Tok[], str> lex(str src) {
+    let Tok[] mut out = [];
+    let cs = src.chars();
+    let mut i = 0;
+    while i < cs.len() {
+        let c = cs[i];
+        if c == " " { i += 1; continue; }
+        if "0123456789".contains(c) {
+            let mut n = 0;
+            while i < cs.len() && "0123456789".contains(cs[i]) {
+                n = n * 10 + ok_or(cs[i].to_int(), "数ではない")?;
+                i += 1;
+            }
+            out.push(Tok.Num(n));
+            continue;
+        }
+        match c {
+            case "(" -> out.push(Tok.LParen);
+            case ")" -> out.push(Tok.RParen);
+            case "+", "-", "*", "/" -> out.push(Tok.Op(c));
+            default -> return Err("知らない文字 '{c}'（{i} 文字目）");
+        }
+        i += 1;
+    }
+    Ok(out)
+}
+
+struct Parser {
+    Tok[] toks;
+    i64 pos;
+
+    fn Option<Tok> peek() {
+        if pos < toks.len() { Some(toks[pos]) } else { None }
+    }
+
+    fn mut Result<own Expr, str> expr() {
+        let mut l = term()?;
+        loop {
+            match peek() {
+                case Some(Op(op)) -> {
+                    if op != "+" && op != "-" { break; }
+                    pos += 1;
+                    let r = term()?;
+                    l = own Expr.Bin(op, l, r);
+                }
+                default -> break;
+            }
+        }
+        Ok(l)
+    }
+
+    fn mut Result<own Expr, str> term() {
+        let mut l = atom()?;
+        loop {
+            match peek() {
+                case Some(Op(op)) -> {
+                    if op != "*" && op != "/" { break; }
+                    pos += 1;
+                    let r = atom()?;
+                    l = own Expr.Bin(op, l, r);
+                }
+                default -> break;
+            }
+        }
+        Ok(l)
+    }
+
+    fn mut Result<own Expr, str> atom() {
+        let t = peek();
+        pos += 1;
+        match t {
+            case Some(Num(n)) -> Ok(own Expr.Num(n));
+            case Some(Op("-")) -> Ok(own Expr.Neg(atom()?));
+            case Some(Op(op)) -> Err("ここに {op} は書けません");
+            case Some(LParen) -> {
+                let e = expr()?;
+                match peek() {
+                    case Some(RParen) -> { pos += 1; Ok(e) }
+                    default -> Err("')' がありません");
+                }
+            }
+            case Some(RParen) -> Err("')' が多すぎます");
+            case None -> Err("式が途中で終わっています");
+        }
+    }
+}
+
+fn Result<i64, str> eval(ref Expr e) {
+    match e {
+        case Num(n) -> Ok(n);
+        case Neg(x) -> Ok(-eval(x)?);
+        case Bin(op, l, r) -> {
+            let a = eval(l)?;
+            let b = eval(r)?;
+            match op {
+                case "+" -> Ok(a + b);
+                case "-" -> Ok(a - b);
+                case "*" -> Ok(a * b);
+                default -> if b == 0 { Err("0 で割りました") } else { Ok(a / b) }
+            }
+        }
+    }
+}
+
+fn Result<i64, str> run(str src) {
+    let mut p = Parser { toks: lex(src)?, pos: 0 };
+    let e = p.expr()?;
+    if p.pos < p.toks.len() { return Err("余分なものがあります"); }
+    eval(e)
+}
+
+fn main() {
+    for src in ["1 + 2 * 3", "(1 + 2) * 3", "-4 + 10 / 2", "2 * (3 + ", "8 / (4 - 4)", "7 % 2"] {
+        match run(src) {
+            case Ok(v) -> print("{src} = {v}");
+            case Err(m) -> print("{src}: エラー: {m}");
+        }
+    }
+}
+#####
+use geom;
+fn main() {
+    print(geom.helper(1, 2));
+}
+#####
+fn main() {
+
+    for i in range(3) {
+        for j in range(3) {
+            if j == 1 { break; }
+            print(i, j)
+        }
+    }
+}
+#####
+enum E { A; fn take i64 get() { 1 } fn i64 peek() { get() } } fn main() {}
+#####
+
+fn main() {
+    let a = own 1;
+    let r = ref a;
+    drop(a);
+    print(*r)
+}
+#####
+fn main() {
+print("{1 + }");
+}
+#####
+fn main() {
+match 1 {
+ case "a" -> print(1);
+}
+}
+#####
+fn main() {
+let x = 3;
+for i in x { }
+}
+#####
+fn show(ref i64 r) {
+    print(*r);
+}
+fn main() {
+    let a = own (5 as u8);
+    show(ref a);
+}
+#####
+fn main() {
+    let ms = [["a": 1]];
+    for (k, v) in ms[0] {
+        print(k, v);
+    }
+}
+#####
+fn main() {
+print("\u{zz}");
+}
+#####
+fn main() {
+print(chr("a"));
+}
+#####
+struct A { i64 x; bool x; }
+fn main() {
+}
+#####
+fn main() { run_command("a", "b"); }
+#####
+
+struct C {
+    str w;
+    own i64 b;
+}
+
+fn main() {
+    let C[] mut cs = [C { w: "a", b: own 10 }, C { w: "b", b: own 20 }];
+    for c in cs {
+        print(c.w, *c.b);
+    }
+    let mut total = 0;
+    for c in cs {
+        total += *c.b;
+    }
+    print(total);
+}
+#####
+
+fn main() {
+    print(*own 5);
+    own 6;
+    let x = own 1;
+    drop(x)
+}
+#####
+fn main() {
+let mut a = own 1;
+let r = ref a;
+let q = ref mut r;
+}
+#####
+struct Point { i64 x; i64 y; }
+;
+fn shift(ref mut Point p) {
+    p.x = p.x + 10;
+}
+
+fn main() {
+    let mut pt = own Point { x: 1, y: 2 };
+    shift(ref mut pt);
+    shift(ref mut pt);
+    print(pt.x)
+}
+#####
+
+interface Growable {
+    fn mut grow(i64 n);
+    fn i64 size();
+}
+
+struct Ball {
+    i64 r;
+
+    fn mut grow(i64 n) { r += n; }
+    fn i64 size() { r }
+}
+
+fn grow_all(ref mut Growable g) {
+    g.grow(2);
+}
+
+fn main() {
+    let mut b = own Ball { r: 1 };
+    grow_all(ref mut b);
+    print(b.size());
+}
+#####
+struct Point {
+    i64 x;
+    i64 y;
+
+    fn i64 len2() {
+        x * x + y * y
+    }
+
+    fn mut move_by(i64 dx, i64 dy) {
+        x += dx;
+        this.y = y + dy;
+    }
+
+    fn i64 plus(i64 d) {
+        d + x + len2()
+    }
+}
+
+fn main() {
+    let p = Point { x: 1, y: 2 };
+    print(p.len2());
+}
+#####
+fn main() {
+    let = 5;
+}
+#####
+fn main() {
+let x = 1
+print(x);
+}
+#####
+fn main() {
+let Option x = None;
+}
+#####
+
+struct S { i64 a; }
+fn main() {
+    let s = S { a: 1 };
+    let r = ref s;
+    let t = s;
+    print(r.a);
+}
+#####
+enum E { A; B; fn flip() { *this = E.B; } } fn main() {}
+#####
+
+fn T pick<T>(bool first, T a, T b) {
+    if first { a } else { b }
+}
+
+fn show<T>(T x) {
+    print("値:", x);
+}
+
+fn main() {
+    print(pick(true, 1, 2));
+    print(pick(false, "a", "b"));
+    show(3);
+    show(true);
+    let u8 small = 200;
+    let big = pick(false, small, 100);
+    print(big + 100);
+}
+#####
+
+fn main() {
+    let mut sum = own 0;
+    let r = ref mut sum;
+    let mut i = 0;
+    while i < 10 {
+        *r = *r + i;
+        i = i + 1;
+    }
+    print(*sum)
+}
+#####
+fn main() {
+    print(0);
+    let x = match 1 {
+        case 1 -> 1;
+        default -> false;
+    };
+}
+#####
+fn main() {
+    print(0);
+    let x = 0;
+    for x in [1, 2] { }
+}
+#####
+struct Point { i64 x; i64 y; }
+;
+fn main() {
+    let p = Point { y: 2, x: 1 };
+    print(p, p.x + p.y)
+}
+#####
+fn main() {
+print(0x);
+}
+#####
+fn main() {
+let u8 b = 200;
+print(b + 100);
+}
+#####
+
+fn main() {
+    let mut f = () -> 0;
+    if true {
+        let x = 5;
+        let r = ref x;
+        f = () -> *r;
+    }
+    print(f());
+}
+#####
+interface Shape {
+    fn i64 area();
+    fn str name();
+}
+
+struct Square {
+    i64 side;
+
+    fn i64 area() { side * side }
+    fn str name() { "正方形" }
+}
+
+struct Rect {
+    i64 w;
+    i64 h;
+
+    fn i64 area() { w * h }
+    fn str name() { "長方形" }
+    fn mut grow(i64 n) { w += n; h += n; }
+}
+
+fn describe<T: Shape>(ref T s) {
+    print(s.name(), s.area());
+}
+
+fn i64 twice<T: Shape>(T s) {
+    s.area() * 2
+}
+
+fn main() {
+    describe(ref (own 5));
+}
+#####
+struct Big { i64[60][5] xs; i64 tag; }
+struct Pair { i64 a; own i64 b; }
+fn main() {
+    let mut total = 0;
+    for round in range(50) {
+        let (own i64)[] mut small = [];
+        let (own Pair)[] mut mid = [];
+        let (own Big)[] mut big = [];
+        for i in range(20) {
+            small.push(own i);
+            mid.push(own Pair { a: i, b: own i * 2 });
+            if i % 5 == 0 { big.push(own Big { xs: [[round; 60]; 5], tag: i }); }
+        }
+        for x in small { total += *x; }
+        for p in mid { total += p.a + *p.b; }
+        for b in big { total += b.xs[4][59] + b.tag; }
+        if round % 2 == 0 { small.pop(); big.pop(); }
+    }
+    print(total);
+    let keep = own Big { xs: [[7; 60]; 5], tag: 1 };
+    let r = ref keep;
+    drop(keep);
+    let other = own Big { xs: [[8; 60]; 5], tag: 2 };
+    print(other.tag);
+    print(r.tag);
+}
+#####
+// 構造体: フィールドごとに所有する。own / ref の先のフィールドは自動でたどる。
+struct Point { i64 x; i64 y; }
+
+struct Player {
+    str name;
+    own Point pos;
+    i64 score;
+}
+
+fn move_by(ref mut Player p, i64 dx, i64 dy) {
+    p.pos.x += dx; // p は ref mut。p.pos は own。どちらも自動でたどる
+    p.pos.y += dy;
+}
+
+fn main() {
+    let mut hero = own Player {
+        name: "勇者",
+        pos: own Point { x: 0, y: 0 },
+        score: 0,
+    };
+    let h = ref mut hero;
+    move_by(h, 3, 4);
+    h.score += 10;
+    print(hero.name, "は", *hero.pos, "にいる。スコア", hero.score);
+
+    hero.pos = own Point { x: 9, y: 9 }; // 古い Point はここで解放される
+    print(*hero.pos)
+}
+#####
+fn f(i64 a, i64 a) {
+}
+fn main() {
+}
+#####
+
+struct Counter {
+    i64 n;
+
+    fn mut bump() { n += 1; }
+    fn ref Counter me() { this }
+}
+
+fn main() {
+    let mut c = Counter { n: 0 };
+    c.bump();
+    c.bump();
+    let r = c.me();
+    print(r.n);
+}
+#####
+struct Point {
+    i64 x;
+    i64 y;
+
+    fn i64 len2() {
+        x * x + y * y
+    }
+
+    fn mut move_by(i64 dx, i64 dy) {
+        x += dx;
+        this.y = y + dy;
+    }
+
+    fn i64 plus(i64 d) {
+        d + x + len2()
+    }
+}
+
+struct S {
+    i64 v;
+
+    static fn S make() {
+        S { v: 1 }
+    }
+}
+fn main() {
+let s = S.make();
+s.make();
+}
+#####
+fn main() {
+let x = 1
+    + 2
+    + 3;
+print(x);
+}
+#####
+
+fn main() {
+    let base = own 10;
+    let g = (i64 v) -> v + *base;
+    print(*base);
+}
+#####
+
+fn Result<i64, str> go(str dir) {
+    let path = dir + "/a.txt";
+    write_file(path, "一行目\n二行目\n")?;
+    let t = read_file(path)?;
+    print(t.lines());
+    write_file(path, "")?;
+    print(read_file(path)?.len());
+    Ok(t.len())
+}
+fn main() {
+    print(go("/tmp/jw-system-test-8862-rw"));
+}
+#####
+fn main() {
+let a = [1, 2];
+let b = a[true];
+}
+#####
+fn main() {
+    for x in [1, 0, 2] {
+        if x == 0 {
+            break;
+        }
+    } else {
+        print("empty");
+    }
+    print("done");
+}
+#####
+fn main() {
+let i64 x = 5;
+let u8 y = x;
+}
+#####
+enum A { X(i64); }
+fn main() {
+}
+#####
+
+struct Point {
+    i64 x;
+    i64 y;
+
+    static fn Point origin() {
+        Point { x: 0, y: 0 }
+    }
+
+    static fn Point at(i64 x, i64 y) {
+        Point { x: x, y: y }
+    }
+
+    fn Point moved(i64 d) {
+        at(x + d, y + d)
+    }
+}
+
+struct Pair<T> {
+    T a;
+    T b;
+
+    static fn Pair<T> same(T v) {
+        Pair { a: v, b: v }
+    }
+}
+
+fn main() {
+    let p = Point.origin();
+    let q = Point.at(1, 2).moved(10);
+    print(p.x, q.x, q.y);
+    let s = Pair.same(own 3);
+    print(*s.a + 0);
+}
+#####
+fn main() {
+
+    let mut x = 10;
+    x += 5;
+    x -= 3;
+    x *= 2;
+    x /= 4;
+    x %= 4;
+    print(x);
+    let mut i = 0;
+    i++;
+    i++;
+    i--;
+    print(i);
+    let mut p = own 1;
+    *p += 1;
+    *p++;
+    print(*p);
+}
+#####
+fn main() {
+let u16 a = 65535;
+print(a * a);
+}
+#####
+fn main() {
+let x = 1;
+let f = (i64 x) -> x;
+}
+#####
+
+fn Result<i64, str> g() {
+    let i64 x = 1;
+    Ok(x?)
+}
+fn main() {}
+#####
+
+fn main() {
+    let chan<i64> a = chan();
+    let chan<i64> b = chan();
+    let t = spawn(() -> { let x = a.recv(); b.send(1); });
+    print(b.recv());
+    a.send(1);
+}
+#####
+fn main() {
+    print(0);
+    while "x" { }
+}
+#####
+// 関数のローカルな own への ref を返してしまう、古典的なダングリング
+fn ref i64 leak() {
+    let a = own 42;
+    return ref a;
+}
+
+fn main() {
+    let r = leak();
+    print(*r)
+}
+#####
+enum Shape {
+    Circle(i64 r);
+    Rect(i64 w, i64 h);
+    Empty;
+}
+fn main() {
+let s = Shape.Square(1);
+}
+#####
+struct Point { i64 x; i64 y; }
+fn main() {
+ let p = Point { x: 1, x: 2 };
+};
+#####
+fn main() { let u = (); }
+#####
+struct Node { i64 v; Option<own Node> next; }
+enum Slot { Empty; Full(own i64 v); }
+fn i64 sum(ref Option<own Node> l) {
+    let mut s = 0;
+    let mut cur = l;
+    loop {
+        match cur {
+            case None -> return s;
+            case Some(n) -> { s += n.v; cur = ref n.next; }
+        }
+    }
+}
+fn Option<own Node> build(i64 n) {
+    let Option<own Node> mut head = None;
+    for i in range(n) { head = Some(own Node { v: i, next: head }); }
+    head
+}
+fn main() {
+    let l = build(100);
+    print(sum(l));
+    let Option<own i64> mut o = None;
+    print(o);
+    o = Some(own 3);
+    print(o, o.is_some());
+    match o {
+        case Some(x) -> print(*x + 1);
+        case None -> print("none");
+    }
+    let Slot[] mut slots = [Slot.Empty, Slot.Full(own 4), Slot.Empty];
+    slots[2] = Slot.Full(own 5);
+    for s in slots {
+        match s {
+            case Empty -> print("empty");
+            case Full(v) -> print(*v);
+        }
+    }
+    let short = build(1);
+    match short {
+        case Some(n) -> print(n.v, n.next);
+        case None -> {}
+    }
+}
+#####
+
+fn add(ref mut i64[] v, i64 n) {
+    v.push(n);
+}
+
+fn i64[] make() {
+    [1, 2, 3]
+}
+
+fn main() {
+    let own i64[] mut v = own make();
+    add(ref mut v, 4);
+    print(v.len(), v[3]);
+    let (own i64)[] mut owners = [];
+    owners.push(own 1);
+    owners.push(own 2);
+    let r = ref owners[0];
+    print(*r);
+    match owners.pop() {
+        case Some(p) -> print(*p);
+        case None -> print("空");
+    }
+    print(owners.len(), make().len());
+}
+#####
+
+enum Shape {
+    Circle(f64 r);
+    Rect(f64 w, f64 h);
+
+    fn f64 area() {
+        match this {
+            case Circle(r) -> 3.0 * r * r;
+            case Rect(w, h) -> w * h;
+        }
+    }
+    fn mut grow() {
+        match this {
+            case Circle(r) -> *this = Shape.Circle(r * 2.0);
+            case Rect(w, h) -> *this = Shape.Rect(w * 2.0, h * 2.0);
+        }
+    }
+    static fn Shape square(f64 s) { Shape.Rect(s, s) }
+    fn bool big() { area() > 100.0 }
+}
+
+enum Tree<T> {
+    Leaf(T v);
+    Node(own Tree<T> l, own Tree<T> r);
+
+    fn i64 count() {
+        match this {
+            case Leaf(_) -> 1;
+            case Node(l, r) -> l.count() + r.count();
+        }
+    }
+}
+
+fn main() {
+    let mut s = Shape.square(3.0);
+    print(s.area());
+    s.grow();
+    print(s.area(), s.big());
+    let o = own Shape.Circle(10.0);
+    print(o.big(), Shape.Rect(1.0, 2.0).area());
+    let mut xs = [Shape.Circle(1.0), Shape.Circle(1.0)];
+    xs[1].grow();
+    print(xs[0].area(), xs[1].area());
+    let t = Tree.Node(own Tree.Leaf("a"), own Tree.Node(own Tree.Leaf("b"), own Tree.Leaf("c")));
+    print(t.count());
+}
+#####
+struct P { i64 x; own i64 o; }
+fn main() {
+    let a = P { x: 1, o: own 1 };
+    print(a.y);
+}
+#####
+
+fn Result<i64, str> f() { Ok(1) }
+fn Option<i64> g() {
+    Some(f()?)
+}
+fn main() {}
+#####
+struct P {
+    i64 x;
+}
+fn main() {
+let m = ["a": 1];
+for k in m {
+}
+}
+#####
+fn main() {
+print(chr(-1));
+}
+#####
+fn main() {
+    let i64[str] m = ["k": 1];
+    let r = ref m["k"];
+}
+#####
+fn i64 twice(i64 n) {
+    return n * 2;
+}
+fn main() {
+    twice(1, 2);
+}
+#####
+fn main() {
+
+    let mut i = 0;
+    loop {
+        i = i + 1;
+        if i == 3 { break; }
+    }
+    print(i);
+}
+#####
+
+fn main() {
+    let a = [10, 20];
+    for (i, x) in a { print(i, x); }
+    let str[] mut l = [];
+    l.push("p");
+    for (i, s) in l { print("{i}:{s}"); }
+}
+#####
+struct Point {
+    i64 x;
+    i64 y;
+
+    fn i64 len2() {
+        x * x + y * y
+    }
+
+    fn mut move_by(i64 dx, i64 dy) {
+        x += dx;
+        this.y = y + dy;
+    }
+
+    fn i64 plus(i64 d) {
+        d + x + len2()
+    }
+}
+
+fn main() {
+    let mut o = own Point { x: 1, y: 2 };
+    o.move_by(1, 1);
+    print(o.len2(), o.plus(1));
+}
+#####
+
+struct P { i64 x; }
+
+fn main() {
+    let P[] mut a = [P { x: 1 }, P { x: 2 }];
+    let r = ref a[1];
+    print(r.x);
+    a.reverse();
+    
+    print(r.x);
+}
+#####
+fn main() {
+let x = None;
+}
+#####
+enum E { A; B; fn mut flip() { this = E.B; } } fn main() {}
+#####
+fn main() {
+let u64 all = 0xFFFF_FFFF_FFFF_FFFF;
+let u8 m = 0x0f;
+print(0xff, 0xFF + 0, 0b1010, 0o17, 1_000_000, 0x_ff, all, m);
+}
+#####
+fn main() {
+    let i64[] v = [1];
+    print(v[3]);
+}
+#####
+
+fn main() {
+    let chan<i64> c = chan();
+    if true {
+        let t = spawn(() -> { c.send(1); own 2 });
+    }
+    print(c.recv());
+}
+#####
+
+fn Option<i64> find(i64 n) {
+    for i in range(10) {
+        if i * i == n { return Some(i); }
+    }
+    None
+}
+
+fn main() {
+    for n in range(8, 10) {
+        match find(n) {
+            case Some(i) -> print(n, "の平方根は", i);
+            case None -> print(n, "は平方数ではない");
+        }
+    }
+    let Option<i64> x = None;
+    let y = Some(3);
+    print(x, y);
+    let z = if true { Some("a") } else { None };
+    print(z);
+}
+#####
+fn main() {
+    print(0);
+    print(!3);
+}
+#####
+use bad;
+fn main() {
+    bad.f();
+}
+#####
+
+fn main() {
+    let mut s = own 0;
+    let r = ref mut s;
+    for i in range(10) {
+        *r = *r + i;
+        if i == 5 { break; }
+    }
+    print(*r)
+}
+#####
+
+fn fn i64(i64) keep(fn i64(i64) f) { f }
+fn main() {
+    let mut f = keep((v) -> v);
+    if true {
+        let o = own 7;
+        f = keep((v) -> v + *o);
+        print(f(1));
+    }
+    print(f(1));
+}
+#####
+fn main() {
+let x = 1.5;
+let n = 3;
+print(x + n);
+}
+#####
+
+interface Named { fn str name(); }
+struct A { fn str name() { "a" } }
+struct B { i64 n; fn str name() { "b{n}" } }
+fn main() {
+    let (own Named)[] mut xs = [];
+    xs.push(own A {});
+    xs.push(own B { n: 2 });
+    for x in xs { print(x.name()); }
+}
+#####
+fn main() {
+let a = own 1;
+*a = 2;
+}
+#####
+
+fn i64 get(ref i64 p) {
+    *p
+}
+
+fn main() {
+    let a = own 5;
+    print(get(a), get(a));
+}
+#####
+enum Tok { Num(i64 n); Op(str op); End; }
+enum E { Lit(i64 n); Add(own E l, own E r); Neg(own E e); }
+struct Box2 { own i64 v; }
+
+fn str show(Option<Tok> t) {
+    match t {
+        case Some(Num(0)) -> "zero";
+        case Some(Num(n)) -> "num {n}";
+        case Some(Op("+")) -> "plus";
+        case Some(Op(o)) -> "op {o}";
+        case Some(End), None -> "end";
+    }
+}
+
+fn i64 simp(ref E e) {
+    match e {
+        case Add(Lit(0), r) -> simp(r);
+        case Add(l, Lit(0)) -> simp(l);
+        case Add(l, r) -> simp(l) + simp(r);
+        case Neg(Neg(x)) -> simp(x);
+        case Neg(x) -> -simp(x);
+        case Lit(n) -> n;
+    }
+}
+
+fn main() {
+    print(show(Some(Tok.Num(0))), show(Some(Tok.Num(5))), show(Some(Tok.Op("+"))), show(Some(Tok.Op("*"))), show(None), show(Some(Tok.End)));
+    let e = own E.Add(own E.Lit(0), own E.Neg(own E.Neg(own E.Add(own E.Lit(3), own E.Lit(0)))));
+    print(simp(e));
+    let Option<Option<own i64>> x = Some(Some(own 4));
+    match x {
+        case Some(Some(v)) -> print(*v);
+        case Some(None) -> print("inner none");
+        case None -> print("none");
+    }
+    let Result<Option<Box2>, str> y = Ok(Some(Box2 { v: own 9 }));
+    match ref y {
+        case Ok(Some(_)) -> print("ref");
+        default -> print("other");
+    }
+    match y {
+        case Ok(Some(b)) -> print(*b.v);
+        case Ok(None) -> {}
+        case Err(_) -> {}
+    }
+    let Option<bool> z = Some(true);
+    match z { case Some(true) -> print("t"); case Some(false) -> print("f"); case None -> {} }
+}
+#####
+fn i64 fib(i64 n) {
+    if n < 2 {
+        return n;
+    }
+    return fib(n - 1) + fib(n - 2);
+}
+
+fn main() {
+    let mut i = 0;
+    while i <= 15 {
+        print("fib(", i, ") =", fib(i));
+        i++;
+    }
+}
+#####
+fn main() {
+let x = 1;
+match 1 {
+ case x -> print(1);
+}
+}
+#####
+struct P { i64 x; own i64 o; }
+fn main() {
+    let a = P { x: "s", o: own 1 };
+}
+#####
+fn main() {
+    let i64[] mut v = [1];
+    v.insert(3, 1);
+}
+#####
+
+fn ref i64 f(Option<i64> o) {
+    let a = own 7;
+    let n = match o {
+        case Some(x) -> x;
+        case None -> return ref a;
+    };
+    return ref a;
+}
+fn main() {
+    let r = f(None);
+    print(*r);
+}
+#####
+
+struct P { i64 x; }
+
+fn main() {
+    let P[] mut a = [P { x: 1 }, P { x: 2 }];
+    let r = ref a[1];
+    print(r.x);
+    let _ = a.remove(0);
+    
+    print(r.x);
+}
+#####
+
+struct S {
+    i64 v;
+
+    static fn i64 get() {
+        v
+    }
+}
+fn main() {}
+#####
+fn i64 f() {
+    return "x";
+}
+fn main() {
+}
+#####
+fn inc(ref mut i64 r) {
+    *r += 1;
+}
+fn main() {
+    let mut a = own 1;
+    inc(ref a);
+}
+#####
+enum Shape {
+    Circle(i64 r);
+    Rect(i64 w, i64 h);
+    Empty;
+}
+fn main() {
+let s = Shape.Circle(true);
+}
+#####
+fn main() {
+for i in range() { }
+}
+#####
+fn main() {
+for i in range("a") { }
+}
+#####
+fn main() {
+let mut v = [3, 1];
+v.sort_by((i64 a, i64 b) -> 1);
+}
+#####
+fn main() {
+let i64[2] a = [1, 2, 3];
+}
+#####
+struct Point {
+    i64 x;
+    i64 y;
+
+    fn i64 len2() {
+        x * x + y * y
+    }
+
+    fn mut move_by(i64 dx, i64 dy) {
+        x += dx;
+        this.y = y + dy;
+    }
+
+    fn i64 plus(i64 d) {
+        d + x + len2()
+    }
+}
+
+struct Box2 {
+    Point a;
+    own Point b;
+}
+
+fn main() {
+    let mut bx = Box2 { a: Point { x: 0, y: 0 }, b: own Point { x: 5, y: 5 } };
+    bx.a.move_by(1, 2);
+    bx.b.move_by(1, 1);
+    print(bx.a.x, bx.a.y, bx.b.x);
+    let o = own Box2 { a: Point { x: 1, y: 1 }, b: own Point { x: 0, y: 0 } };
+    print(o.a.len2());
+}
+#####
+interface Shape {
+    fn i64 area();
+    fn str name();
+}
+
+struct Square {
+    i64 side;
+
+    fn i64 area() { side * side }
+    fn str name() { "正方形" }
+}
+
+struct Rect {
+    i64 w;
+    i64 h;
+
+    fn i64 area() { w * h }
+    fn str name() { "長方形" }
+    fn mut grow(i64 n) { w += n; h += n; }
+}
+
+fn describe<T: Shape>(ref T s) {
+    print(s.name(), s.area());
+}
+
+fn i64 twice<T: Shape>(T s) {
+    s.area() * 2
+}
+
+struct Circle {
+    i64 r;
+    fn i64 area() { r }
+}
+fn main() {
+    let c = own Circle { r: 1 };
+    let ref Shape s = ref c;
+}
+#####
+fn main() {
+let a = [own 1; 3];
+}
+#####
+fn main() {
+let s = "x";
+print("{s + "y"}");
+}
+#####
+fn i64 f() {
+    return;
+}
+fn main() {
+}
+#####
+enum Shape {
+    Circle(i64 r);
+    Rect(i64 w, i64 h);
+    Empty;
+}
+fn main() {
+let s = Shape.Empty;
+match s {
+ case Box -> print(1);
+ default -> print(2);
+}
+}
+#####
+
+struct Two {
+    own i64 a;
+    own i64 b;
+}
+
+fn Result<i64, str> fail(bool b) {
+    if b { Err("だめ") } else { Ok(1) }
+}
+
+fn i64 sum(own i64 a, own i64 b) {
+    *a + *b
+}
+
+fn Result<i64, str> run(bool b) {
+    let keep = own 10;
+    let total = if true {
+        let inner = own 20;
+        sum(own 1, own fail(b)?)
+    } else {
+        0
+    };
+    loop {
+        let inner = own 30;
+        if fail(b)? == 1 {
+            break;
+        }
+    }
+    let t = Two { a: own 3, b: own fail(b)? };
+    print(*t.a + *t.b);
+    print(own 5, fail(b)?);
+    Ok(*keep + total)
+}
+
+fn main() {
+    print(run(false));
+    print(run(true));
+}
+#####
+struct P { str name; i64 age; own i64 score; }
+fn i64 dbl(i64 x) { x * 2 }
+fn main() {
+    let xs = [1, 2, 3, 4, 5];
+    let k = 3;
+    print(xs.filter((x) -> x > k), xs.map((x) -> x * x), xs.map(dbl));
+    let P[] ps = [P { name: "a", age: 30, score: own 5 }, P { name: "b", age: 20, score: own 7 }];
+    let names = ps.map((p) -> p.name);
+    let total = ps.map((p) -> *p.score + p.age);
+    print(names, total);
+    let (own i64)[] os = [own 1, own 2];
+    print(os.map((o) -> *o + 10));
+    print("a,b,,c".split(",").filter((s) -> s != "").map((s) -> s.to_upper()));
+    let ys = ps.map((p) -> own (p.age));
+    print(ys);
+    let m = ["x": 1];
+    print(xs.map((x) -> x + m["x"]), m);
+}
+#####
+
+fn add(ref mut i64[str] m, str k) { m[k] = m.len(); }
+
+fn i64 total(ref i64[str] m) {
+    let mut t = 0;
+    for (k, v) in m { t += v; }
+    t
+}
+
+fn main() {
+    let i64[str] mut m = [];
+    add(ref mut m, "x");
+    add(ref mut m, "y");
+    print(m, total(m));
+    let n = m;
+    print(n);
+}
+#####
+const A = 1; fn A() {} fn main() {}
+#####
+
+struct Counter {
+    i64 n;
+
+    fn mut bump() { n += 1; }
+    fn i64 get() { n }
+}
+
+fn main() {
+    let Counter[] mut cs = [Counter { n: 0 }, Counter { n: 10 }];
+    cs[1].bump();
+    cs[1].bump();
+    cs[0].bump();
+    print(cs[0].get(), cs[1].get());
+    for i in range(cs.len()) {
+        cs[i].bump();
+    }
+    print(cs[0].n, cs[1].n);
+}
+#####
+fn main() {
+print(chr(55296));
+}
+#####
+fn main() {
+    nope();
+}
+#####
+fn main() {
+print("a { b");
+}
+#####
+
+struct C {
+    own i64 b;
+}
+
+fn main() {
+    let C[] mut cs = [C { b: own 1 }];
+    for c in cs {
+        cs.remove(0);
+        print(*c.b);
+    }
+}
+#####
+fn main() {
+print("\q");
+}
+#####
+
+fn add(ref mut i64 r, i64 n) {
+    if n > 0 {
+        *r = *r + 1;
+        add(ref mut r, n - 1)
+    }
+}
+
+fn main() {
+    let mut total = own 0;
+    let r = ref mut total;
+    add(r, 100);
+    print(*total)
+}
+#####
+fn main() {
+let i64[] v = [1, 2];
+let i64[2] w = v;
+}
+#####
+
+fn main() {
+    let t = spawn(() -> {
+        print("thread");
+        exit(2);
+    });
+    t.join();
+    loop {}
+}
+#####
+fn main() {
+    print(0);
+    let x = if true { 1 } else { "one" };
+}
+#####
+fn main() {
+    print(0);
+    let mut x = 1;
+    x = true;
+}
+#####
+
+struct P { i64 x; }
+
+fn main() {
+    let P[] mut a = [P { x: 1 }, P { x: 2 }];
+    let r = ref a[1];
+    print(r.x);
+    a.insert(0, P { x: 0 });
+    
+    print(r.x);
+}
+#####
+
+fn main() {
+    let mut a = own 5;
+    let r = ref mut a;
+    let q = ref mut r;
+    *q = 9;
+    print(*a)
+}
+#####
+
+enum E {
+    A(own i64 x);
+    B;
+    fn mut f() {
+        match this {
+            case A(x) -> { *this = E.B; print(*x); }
+            case B -> {}
+        }
+    }
+}
+fn main() { let mut e = E.A(own 1); e.f(); }
+#####
+fn main() {
+    print(0);
+    print(1 == true);
+}
+#####
+
+fn main() {
+    let a = own 1;
+    let r = ref a;
+    if 1 < 2 {
+        drop(a)
+    }
+    print(*r)
+}
+#####
+fn main() {
+let i64[] mut v = [];
+v.shuffle();
+}
+#####
+fn main() {
+    let i64[] mut v = [1];
+    v.remove(1);
+}
+#####
+
+fn Result<i64[], str> a() { Err("x") }
+fn Result<i64, str> b() { let v = a()?; Ok(v.len()) }
+fn Option<str> c() { let i64[] v = None?; Some("no") }
+fn main() {
+    let r = b();
+    let s = r;
+    print(r, s, c());
+}
+#####
+
+fn add(ref mut i64[] v, i64 x) {
+    v.push(x);
+}
+
+fn main() {
+    let i64[] mut v = [];
+    add(ref mut v, 1);
+    add(ref mut v, 2);
+    let r = ref v;
+    print(r.len(), r[1], v);
+}
+#####
+fn main() {
+print("\u{41");
+}
+#####
+fn main() {
+    let Option<own i64> mut o = Some(own 9);
+    let a = own 0;
+    let mut r = ref a;
+    match ref o {
+        case Some(x) -> r = x;
+        case None -> {}
+    }
+    o = None;
+    print(*r);
+}
+#####
+fn main() {
+    let str[] mut keep = [];
+    let mut total = 0;
+    for i in range(300) {
+        let s = "x".repeat(i * 7) + "{i}";
+        let t = "[{s}|{i}|{-i}]";
+        total += t.len();
+        if i % 3 == 0 { keep.push(t); }
+    }
+    print(total, keep.len(), keep[keep.len() - 1].len());
+    let mut joined = "";
+    for k in keep { if k.len() < 40 { joined = joined + k; } }
+    print(joined);
+    print("{9223372036854775807} {-9223372036854775807 - 1} {0}");
+    let u64 big = 18446744073709551615;
+    print("{big}");
+}
+#####
+struct P {
+    i64 x;
+}
+fn main() {
+for (i, x) in range(3) {
+}
+}
+#####
+
+struct Box2 { own i64 inner; }
+
+fn main() {
+    let mut b = Box2 { inner: own 1 };
+    b.inner = own 2;
+    b.inner = own 3;
+    print(*b.inner)
+}
+#####
+struct Point {
+    i64 x;
+    i64 y;
+
+    fn i64 len2() {
+        x * x + y * y
+    }
+
+    fn mut move_by(i64 dx, i64 dy) {
+        x += dx;
+        this.y = y + dy;
+    }
+
+    fn i64 plus(i64 d) {
+        d + x + len2()
+    }
+}
+
+struct S {
+    i64 v;
+
+    static fn S make() {
+        S { v: 1 }
+    }
+}
+fn main() {
+S.nothing();
+}
+#####
+enum E { A; B; fn bool A() { true } } fn main() {}
+#####
+fn main() {
+
+    let x = 5;
+    let s = if x > 0 {
+        if x > 3 { "big" } else { "small" }
+    } else {
+        "neg"
+    };
+    print(s);
+}
+#####
+fn main() {
+    let x = 2.0;
+    let own f64 p = own 9.0;
+    print(x.sqrt(), (x - 5.0).abs(), x.max(3), x.min(1.5), p.sqrt(), (16.0).sqrt());
+    let i32 a = -7;
+    let u8 b = 200;
+    let i8 n = -128;
+    let ref i32 r = ref a;
+    print(a.abs(), a.max(3), a.min(-10), b.max(100), b.min(201), b.abs(), n.abs(), r.abs());
+    let u64 big = 18446744073709551615;
+    print(big.max(1), big.min(1), (3 - 10).abs());
+}
+#####
+fn main() {
+    let i32 n = 1;
+    print(n.sqrt());
+}
+#####
+fn main() {
+    let x = 1.0;
+    print(x.round());
+}
+#####
+fn main() {
+    let i32 a = 1;
+    let i64 b = 2;
+    print(a.max(b));
+}
+#####
+struct E { i64 k; i64 i; }
+
+fn main() {
+    let mut calls = 0;
+    let cr = ref mut calls;
+    let mut v = [E { k: 3, i: 0 }, E { k: 1, i: 1 }, E { k: 3, i: 2 }, E { k: 2, i: 3 }];
+    v.sort_by((x, y) -> { *cr = *cr + 1; x.k < y.k });
+    v.sort_unstable_by((x, y) -> { *cr = *cr + 1; x.i > y.i });
+    let mut ns = [5, 2, 9, 1];
+    ns.sort_unstable();
+    let mut a = [4.5, -1.0, 2.0];
+    a.sort_unstable();
+    a.sort_unstable_by((x, y) -> x > y);
+    for e in v { print(e.k, e.i); }
+    print(ns, a, calls);
+}
+#####
+fn main() {
+    let mut w = [true];
+    w.sort_unstable();
+}
+#####
+fn main() {
+    let v = [1, 2];
+    v.foo();
+}
+#####
+fn main() {
+    let i64[2] v = [1, 2];
+    v.foo();
+}
+#####
+fn main() {
+    let o = own 1;
+    let f = () -> { *o = 2; };
+    f();
+}
+#####
+fn T scalar_id<T>(T x) { x }
+fn i64 scalar_add(i64 n) { n + 1 }
+fn main() {
+    let i64[] mut xs = [1];
+    let p = ref mut xs[0];
+    for i in range(4) {
+        if scalar_id(true) { *p += scalar_add(i); }
+    }
+    print(*p);
+}
+#####
+fn i64 scalar_id(i64 n) { n }
+fn i64 change(ref mut i64[] xs) { xs.push(2); 3 }
+fn main() {
+    let i64[] mut xs = [1];
+    let p = ref xs[0];
+    print(scalar_id(change(ref mut xs)));
+    print(*p);
+}
+#####
+fn change(ref mut i64[] xs) { xs.push(2); }
+fn call(fn() f) { f(); }
+fn main() {
+    let i64[] mut xs = [1];
+    let p = ref xs[0];
+    let q = ref mut xs;
+    call(() -> change(q));
+    print(*p);
+}
+#####
+// 配列の大きさの上限（ちょうど 1 MiB まで）
+struct S { i64[1000] a; }
+enum E { A(S[10] s); B; }
+fn main() {
+    let mut a = [0; 131072];
+    a[1] = 2;
+    let E[12] es = [E.B, E.B, E.B, E.B, E.B, E.B, E.B, E.B, E.B, E.B, E.B, E.B];
+    let i64[] l = [7; 100];
+    print(a[1], es.len(), l.len());
+}
+#####
+fn main() { let a = [[0; 1000]; 1000]; }
+#####
+struct S { i64[100000] a; }
+fn main() { let S[2] b = [S { a: [0; 100000] }, S { a: [0; 100000] }]; }
+#####
+fn main() { let Option<i64[100000]>[2] b = [None, None]; }
+#####
+fn main() { let i64[] a = [0; 9223372036854775807]; }

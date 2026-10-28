@@ -1,0 +1,17 @@
+fn main() {
+    let chan<i64> c = chan();
+    let n = 5000000;
+    let t = spawn(() -> {
+        for i in range(n) { c.send(i); }
+        c.close();
+    });
+    let mut sum = 0;
+    loop {
+        match c.recv() {
+            case Some(v) -> sum += v;
+            case None -> break;
+        }
+    }
+    t.join();
+    print(sum);
+}

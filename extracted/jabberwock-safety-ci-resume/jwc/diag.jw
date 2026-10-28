@@ -1,0 +1,191 @@
+// エラー表示（Rust 版の src/diag.rs と同じ形で出す）
+
+// 位置は 1 つの i64 にまとめる（ファイル 9 ビット・行 20 ビット・列 16 ビット・長さ 18 ビット）。
+// 構造体にすると enum の中身に置くとき own が要るので、コピーできる数にしている
+const L_UNIT = 262144;            // 2^18
+const C_UNIT = 17179869184;       // 2^34（行の 1）
+const F_UNIT = 18014398509481984; // 2^54（ファイルの 1）
+
+pub fn i64 span_in(i64 file, i64 line, i64 col, i64 len) {
+    file * F_UNIT + line * C_UNIT + col * L_UNIT + len
+}
+pub fn i64 mk_span(i64 line, i64 col, i64 len) { span_in(0, line, col, len) }
+pub fn i64 file_of(i64 s) { s / F_UNIT }
+pub fn i64 line_of(i64 s) { (s / C_UNIT) % 1048576 }
+pub fn i64 col_of(i64 s) { (s / L_UNIT) % 65536 }
+pub fn i64 len_of(i64 s) { s % L_UNIT }
+pub fn i64 with_file(i64 s, i64 file) { s % F_UNIT + file * F_UNIT }
+
+/// 同じ行にある 2 つの範囲をつなぐ。別の行なら a をそのまま返す
+pub fn i64 join(i64 a, i64 b) {
+    if file_of(a) == file_of(b) && line_of(a) == line_of(b) && col_of(b) + len_of(b) > col_of(a) {
+        span_in(file_of(a), line_of(a), col_of(a), col_of(b) + len_of(b) - col_of(a))
+    } else {
+        a
+    }
+}
+
+/// 突き合わせ用の表示 `@ファイル:行:列:長さ`
+pub fn str show(i64 s) {
+    "@{file_of(s)}:{line_of(s)}:{col_of(s)}:{len_of(s)}"
+}
+
+pub struct Label {
+    i64 span;
+    str text;
+    bool primary;
+}
+
+pub struct Diag {
+    str title;
+    Label[] labels;
+    str note;        // 空なら note なし
+    bool warning;
+
+    // Rust 版の `Diagnostic` の組み立てと同じ: `diag.make(題).also(位置, 文).at(位置, 文).with_note(文)`
+
+    /// 主な位置
+    fn take Diag at(i64 s, str text) {
+        let mut d = this;
+        d.labels.push(Label { span: s, text: text, primary: true });
+        d
+    }
+
+    /// 補足の位置
+    fn take Diag also(i64 s, str text) {
+        let mut d = this;
+        d.labels.push(Label { span: s, text: text, primary: false });
+        d
+    }
+
+    fn take Diag with_note(str n) {
+        let mut d = this;
+        d.note = n;
+        d
+    }
+}
+
+/// 位置のまだないエラー
+pub fn Diag make(str title) {
+    Diag { title: title, labels: [], note: "", warning: false }
+}
+
+pub fn Diag warn(str title) {
+    Diag { title: title, labels: [], note: "", warning: true }
+}
+
+/// 主な位置が 1 つのエラー
+pub fn Diag error(str title, i64 s, str text) {
+    Diag { title: title, labels: [Label { span: s, text: text, primary: true }], note: "", warning: false }
+}
+
+pub fn Diag error_note(str title, i64 s, str text, str note) {
+    Diag { title: title, labels: [Label { span: s, text: text, primary: true }], note: note, warning: false }
+}
+
+fn bool before(ref Label a, ref Label b, i64 mainf) {
+    let am = file_of(a.span) != mainf;
+    let bm = file_of(b.span) != mainf;
+    if am != bm { return !am; }
+    if file_of(a.span) != file_of(b.span) { return file_of(a.span) < file_of(b.span); }
+    if line_of(a.span) != line_of(b.span) { return line_of(a.span) < line_of(b.span); }
+    col_of(a.span) < col_of(b.span)
+}
+
+/// 全角文字を 2 桁として数える（下線の位置合わせ用）
+fn i64 width_of(str c) {
+    if c.code() < 128 { 1 } else { 2 }
+}
+
+fn str right(str s, i64 w) {
+    " ".repeat(w - s.len()) + s
+}
+
+/// names[i] / srcs[i] は Span.file が i のファイル
+pub fn str render(ref Diag d, ref str[] names, ref str[] srcs) {
+    let kind = if d.warning { "warning" } else { "error" };
+    let mut out = "{kind}: {d.title}\n";
+
+    // 主な位置（なければ最初の位置）
+    let mut p = -1;
+    for (i, l) in d.labels {
+        if p < 0 && l.primary { p = i; }
+    }
+    if p < 0 && d.labels.len() > 0 { p = 0; }
+    let mainf = if p >= 0 { file_of(d.labels[p].span) } else { 0 };
+
+    // 主な位置のファイルを先に、あとはファイルごとに行の順（安定な挿入ソート）
+    let i64[] mut order = [];
+    for (i, l) in d.labels {
+        let mut k = order.len();
+        while k > 0 && before(l, d.labels[order[k - 1]], mainf) {
+            k -= 1;
+        }
+        order.insert(k, i);
+    }
+
+    let mut maxline = 0;
+    for l in d.labels {
+        if line_of(l.span) > maxline { maxline = line_of(l.span); }
+    }
+    let width = if d.labels.len() > 0 { "{maxline}".len() } else { 1 };
+    let pad = " ".repeat(width);
+
+    if p >= 0 {
+        let fs = file_of(d.labels[p].span);
+        out += "{pad}--> {name_of(names, fs)}:{line_of(d.labels[p].span)}:{col_of(d.labels[p].span)}\n";
+        out += "{pad} |\n";
+    }
+
+    let mut last_line = 0;
+    let mut cur_file = mainf;
+    for k in order {
+        let l = ref d.labels[k];
+        if file_of(l.span) != cur_file {
+            cur_file = file_of(l.span);
+            last_line = 0;
+            out += "{pad}--> {name_of(names, cur_file)}:{line_of(l.span)}:{col_of(l.span)}\n";
+            out += "{pad} |\n";
+        }
+        let lines = src_of(srcs, cur_file).lines();
+        let ln = line_of(l.span);
+        let text = if ln >= 1 && ln <= lines.len() { lines[ln - 1].replace("\t", " ") } else { "" };
+        let cs = text.chars();
+        if ln != last_line {
+            if last_line != 0 && ln > last_line + 1 {
+                out += "{pad} ...\n";
+            }
+            let num = right("{ln}", width);
+            out += "{num} | {text}\n";
+            last_line = ln;
+        }
+        let start = if col_of(l.span) > 0 { col_of(l.span) - 1 } else { 0 };
+        let mut lead = 0;
+        let mut mark = 0;
+        let n = if len_of(l.span) > 1 { len_of(l.span) } else { 1 };
+        for (i, c) in cs {
+            if i < start {
+                lead += width_of(c);
+            } else if i < start + n {
+                mark += width_of(c);
+            }
+        }
+        if mark < 1 { mark = 1; }
+        let ch = if l.primary { "^" } else { "-" };
+        let sp = " ".repeat(lead);
+        out += "{pad} | {sp}{ch.repeat(mark)} {l.text}\n";
+    }
+
+    if d.note != "" {
+        out += "{pad} |\n{pad} = note: {d.note}\n";
+    }
+    out
+}
+
+fn str name_of(ref str[] names, i64 i) {
+    if i < names.len() { names[i] } else if names.len() > 0 { names[0] } else { "?" }
+}
+
+fn str src_of(ref str[] srcs, i64 i) {
+    if i < srcs.len() { srcs[i] } else if srcs.len() > 0 { srcs[0] } else { "" }
+}

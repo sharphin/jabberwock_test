@@ -1,0 +1,26 @@
+// 並べ替えの苦手な形: 並んだもの・逆に並んだもの・全部同じ・のこぎり形（各 300 万個）
+fn i64 sorted_sum(i64[] mut v) {
+    v.sort();
+    let mut s = 0;
+    let mut i = 0;
+    while i < v.len() {
+        s += v[i] * (i % 7);
+        i += 997;
+    }
+    s
+}
+
+fn main() {
+    let n = 3000000;
+    let i64[] mut a = [];
+    let i64[] mut b = [];
+    let i64[] mut c = [];
+    let i64[] mut d = [];
+    for i in range(n) {
+        a.push(i);
+        b.push(n - i);
+        c.push(42);
+        d.push(i % 1000);
+    }
+    print(sorted_sum(a), sorted_sum(b), sorted_sum(c), sorted_sum(d));
+}

@@ -1,0 +1,71 @@
+name: formal-infrastructure
+
+on:
+  push:
+    branches: [safety-ci-resume]
+    paths:
+      - 'scripts/**'
+      - 'formal/**'
+      - 'runtime/**'
+      - 'src/**'
+      - 'jwc/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/formal-infrastructure.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  formal-infrastructure:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install pinned Lean toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/lean-4.24.0-linux.tar.zst"
+          root="$RUNNER_TEMP/jw-lean"
+          curl --fail --location --silent --show-error --retry 3 --max-time 300 \
+            -o "$archive" https://github.com/leanprover/lean4/releases/download/v4.24.0/lean-4.24.0-linux.tar.zst
+          printf '%s  %s\n' b14f5e5159219dd1a1956c3b806813319f5e94ccd5bdfd56f54520609a5bb5ec "$archive" | sha256sum -c -
+          mkdir -p "$root"
+          tar --zstd -xf "$archive" -C "$root" --strip-components=1
+          echo "$root/bin" >> "$GITHUB_PATH"
+      - name: Run formal infrastructure (no test cases)
+        shell: bash
+        run: |
+          set +e
+          python scripts/formal_tool.py --output target/formal-tool
+          code=$?
+          set -e
+          if [ "$code" -eq 2 ]; then
+            echo 'Formal verification infrastructure reported TOOL_ERROR'
+            exit 2
+          fi
+          if [ "$code" -ne 0 ] && [ "$code" -ne 1 ]; then
+            echo "Unexpected runner exit: $code"
+            exit 2
+          fi
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          result = json.loads(Path('target/formal-tool/summary.json').read_text(encoding='utf-8'))
+          print('Infrastructure:', result.get('infrastructure_status'))
+          print('Implementation proof:', result.get('status'))
+          if result.get('infrastructure_status') != 'OPERATIONAL':
+              raise SystemExit('Formal infrastructure did not complete successfully')
+          PY
+      - name: Preserve full formal audit
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: formal-infrastructure-audit
+          path: target/formal-tool/
+          if-no-files-found: warn

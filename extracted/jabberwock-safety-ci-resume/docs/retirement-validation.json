@@ -1,0 +1,451 @@
+{
+  "recorded_date_utc": "2026-10-26",
+  "branch": "safety-ci-resume",
+  "pull_request": 7,
+  "base_commit": "773be3f76fde5df56a4e62f1b63b4d17e4f01ce7",
+  "scope": "Local Linux retirement implementation retest. Not a GitHub Actions attestation or a proof of the whole compiler.",
+  "overall_items_1_to_9": "not_passed",
+  "environment": {
+    "os": "Debian 13.6",
+    "kernel": "Linux 6.18.55",
+    "rustc": "1.99.1 (58cf8f9c3 2026-10-13)",
+    "clang": "Debian clang 19.1.7 (3~deb12u1)",
+    "lean": "4.24.0",
+    "rust_test_profile": "debug",
+    "required_native_retirement_tests": true
+  },
+  "changed_code_test_and_workflow_sha256": {
+    ".github/workflows/safety-edges.yml": "b727544136f951b5a3f3ef4346ea9819da2ef124464e503f55e667d8435e81e2",
+    ".github/workflows/safety.yml": "d44f6f5703ba8b169a514362accd0a2357ff72f9e0ba90fb9f12220f5d7af190",
+    ".github/workflows/test.yml": "b8f60b99ae57ed5f7ad85cff0f0d108a9b0c7095bee46c92c5d30cbbbb15985f",
+    "jwc/llvm.jw": "58392d2cda1b3e5240cb40bb72f8834d33d3c5ff7dbc87c3458beb36c1ef1668",
+    "jwc/runtime.jw": "d0f5a8554d4d1ab4409ad9e39fd0cdab45373fca9655315965e3a4deb7cd5818",
+    "runtime/jw_rt.c": "631aeeed19a18433dd2d9499c5b3b83391da9a8c0617cf04e0d5b24f8f808d95",
+    "scripts/retest_safety_edges.py": "fb84535427b928851713b67194e38b124b21c386736cb375d78ed72418fb9081",
+    "src/interp.rs": "20c2bf057e1655db8e86dba09ada7d95a5c589c4ee81393ae76044349a9a03d5",
+    "src/ir/exec.rs": "bd1afcdfc0d261e6611b89f34474bc52c20adca939255f5b51309259c2ebbc1d",
+    "src/ir/llvm.rs": "3c0a64b274c35380657c978fa52888789517ea8f42aa8953d5942ae50b4ba6b2",
+    "tests/jwc.rs": "739d29e5cfa37f01bd2ed444149b1c56449d9bdad7bd38602a8f7a72363dff06",
+    "tests/retirement.rs": "c2ce9584825a59b7ac4af62898edf2c0806ae301820f104e03ae8f58c971990f",
+    "tests/safety/generic-array-limit-ok.jw": "6a77d9e97961706966dd0b3fb387bdba42387f7536b003f7b3630ff53b3d2497",
+    "tests/safety/generic-array-limit.jw": "00044ff4d1c752ff86c4acf11528c57745315736e9fb1b39be5ed86cd267b832",
+    "tests/safety/resource-exhaustion.jw": "8b4961114c0943725924c9cdd4efa76327fa7af78b53114e9c1babd3340f3fc1",
+    "tests/support/retirement.c": "59be7058df86b7e457ae93f35840f27adbd6334dc466beba11192671f04c7817",
+    "tests/support/retirement.rs": "62f38e6372e0e031130c0613e7c2cda96c23cf4234ace43adf3ab6cb4cd3f51f"
+  },
+  "compiler_binary_sha256": {
+    "rust": "7c0d3ed3d2a636b7ab3b7f544b85271506704c8991cd02159bbc4f9810546b1d",
+    "jwc": "c61b6dde038236d79eb20ecd67408b0bc3ce2db8ffed8130cc148c7e3762eb02"
+  },
+  "completed_local_runs": [
+    {
+      "name": "native-final",
+      "status": "pass",
+      "exit_code": 0,
+      "runner_passed": 366,
+      "runner_failed": 0,
+      "env": {
+        "JW_NATIVE": "1"
+      },
+      "command_description": "cargo test --no-fail-fast",
+      "local_log": "/tmp/retirement-native-final.log",
+      "log_sha256": "72a2b708b160c9ea3a225ac34d0dbd95962d2f431508f33716bc2dda44baaf1f"
+    },
+    {
+      "name": "o2-all",
+      "status": "pass",
+      "exit_code": 0,
+      "runner_passed": 366,
+      "runner_failed": 0,
+      "env": {
+        "JW_NATIVE": "o2"
+      },
+      "command_description": "cargo test --no-fail-fast",
+      "local_log": "/tmp/retirement-o2-all.log",
+      "log_sha256": "9f5bda302aafd50e39af9d2758fc615d8e39bdb091adfaeef316fb53e7aa7f5e"
+    },
+    {
+      "name": "asan-all",
+      "status": "pass",
+      "exit_code": 0,
+      "runner_passed": 366,
+      "runner_failed": 0,
+      "env": {
+        "JW_NATIVE": "1",
+        "JW_CFLAGS": "-fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer",
+        "ASAN_OPTIONS": "detect_leaks=0:halt_on_error=1"
+      },
+      "command_description": "cargo test --no-fail-fast",
+      "local_log": "/tmp/retirement-asan-all.log",
+      "log_sha256": "ea91d77bdfeaff2ac264403f3584177c1502f831f6c7a5ef6dbf4352c1a9ded5"
+    },
+    {
+      "name": "msan-all",
+      "status": "pass",
+      "exit_code": 0,
+      "runner_passed": 366,
+      "runner_failed": 0,
+      "env": {
+        "JW_NATIVE": "1",
+        "JW_CFLAGS": "-fsanitize=memory -fno-omit-frame-pointer",
+        "MSAN_OPTIONS": "halt_on_error=1"
+      },
+      "command_description": "cargo test --no-fail-fast",
+      "local_log": "/tmp/retirement-msan-all.log",
+      "log_sha256": "4e75053b0c2717707ac3ab893f4f62a27dbaa7af5c258131af80803d4a6f0801"
+    },
+    {
+      "name": "tsan",
+      "status": "pass",
+      "exit_code": 0,
+      "runner_passed": 135,
+      "runner_failed": 0,
+      "env": {
+        "JW_NATIVE": "1",
+        "JW_CFLAGS": "-fsanitize=thread",
+        "TSAN_OPTIONS": "halt_on_error=1"
+      },
+      "command_description": "3 repetitions: cargo test --no-fail-fast --test threads --test native --test system --test sanitizers --test retirement",
+      "local_log": "/tmp/retirement-tsan.log",
+      "log_sha256": "898c5f95c9d16e9e5b17514d3990147e36ba3058689df5da0c9a1279e9d227ca"
+    },
+    {
+      "name": "fuzz-asan",
+      "status": "pass",
+      "exit_code": 0,
+      "runner_passed": 6,
+      "runner_failed": 0,
+      "env": {
+        "JW_CFLAGS": "-fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer",
+        "ASAN_OPTIONS": "detect_leaks=0:halt_on_error=1"
+      },
+      "command_description": "cargo test --test fuzz -- --nocapture; O1: JW_FUZZ=200 JW_FUZZ_SEED=20261026000; O2: JW_NATIVE=o2 JW_FUZZ=100 JW_FUZZ_SEED=20261026500",
+      "local_log": "/tmp/retirement-fuzz-asan.log",
+      "log_sha256": "faff497904a8538193cf72ba3340735e345742d1789a678cbc2c3c5edae05997"
+    },
+    {
+      "name": "jwc-asan",
+      "status": "pass",
+      "exit_code": 0,
+      "runner_passed": 6,
+      "runner_failed": 0,
+      "env": {
+        "JW_FUZZ_JWC": "/tmp/jw-jwc-test-314047/jwc",
+        "JW_CFLAGS": "-fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer",
+        "ASAN_OPTIONS": "detect_leaks=0:halt_on_error=1"
+      },
+      "command_description": "cargo test --test fuzz -- --nocapture; same O1/O2 sizes and seeds as fuzz-asan; includes Rust generated LLVM",
+      "local_log": "/tmp/retirement-jwc-asan.log",
+      "log_sha256": "3eccf79e6b9ec0cff1f06dc68b713de640a5e8dad0bbadc3fd5e1415a56bc2e8"
+    },
+    {
+      "name": "jwc-msan",
+      "status": "pass",
+      "exit_code": 0,
+      "runner_passed": 6,
+      "runner_failed": 0,
+      "env": {
+        "JW_FUZZ_JWC": "/tmp/jw-jwc-test-314047/jwc",
+        "JW_CFLAGS": "-fsanitize=memory -fno-omit-frame-pointer",
+        "MSAN_OPTIONS": "halt_on_error=1"
+      },
+      "command_description": "cargo test --test fuzz -- --nocapture; same O1/O2 sizes and seeds as fuzz-asan; includes Rust generated LLVM",
+      "local_log": "/tmp/retirement-jwc-msan.log",
+      "log_sha256": "2fc3af912b7b2ec4cf4e71018e3dcae97b73b0b5412e36a079b3c0009c7548cc"
+    },
+    {
+      "name": "robust-asan",
+      "status": "pass",
+      "exit_code": 0,
+      "runner_passed": 8,
+      "runner_failed": 0,
+      "env": {
+        "JW_ROBUST_ASAN": "1",
+        "ASAN_OPTIONS": "detect_leaks=0:halt_on_error=1"
+      },
+      "command_description": "JW_ROBUST=150 JW_ROBUST_SEED=20261026000 cargo test --test robust -- --nocapture; JW_ROBUST_NATIVE=1 JW_ROBUST=100 JW_ROBUST_SEED=20261026500 cargo test --test robust mutated -- --nocapture",
+      "local_log": "/tmp/retirement-robust-asan.log",
+      "log_sha256": "e17a41904ca1cfddee12472d7b8a24bfd4b1fb32d4b9fbc6dcb9473cb1bb3037"
+    },
+    {
+      "name": "probe-asan",
+      "status": "pass",
+      "exit_code": 0,
+      "command_description": "JW_CFLAGS='-fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer' cargo test --test sanitizers -- --nocapture",
+      "local_log": "/tmp/retirement-probe-asan.log",
+      "log_sha256": "7d2647c4aceba4c78926f051ac335248a355d3cbc96a63b21f34b02cb036de89"
+    },
+    {
+      "name": "probe-msan",
+      "status": "pass",
+      "exit_code": 0,
+      "command_description": "JW_CFLAGS=-fsanitize=memory MSAN_OPTIONS=halt_on_error=1 cargo test --test sanitizers -- --nocapture",
+      "local_log": "/tmp/retirement-probe-msan.log",
+      "log_sha256": "7cb54addd6da76e2d93c795156ce8499656b07400431ac132503f5db14bd0626"
+    },
+    {
+      "name": "probe-tsan",
+      "status": "pass",
+      "exit_code": 0,
+      "command_description": "JW_CFLAGS=-fsanitize=thread TSAN_OPTIONS=halt_on_error=1 cargo test --test sanitizers -- --nocapture",
+      "local_log": "/tmp/retirement-probe-tsan.log",
+      "log_sha256": "c3e23a79f69e977b739b49fc2829ac12996f16267ebd39a9ba047ecf2f849d3c"
+    },
+    {
+      "name": "clippy-final",
+      "status": "pass",
+      "exit_code": 0,
+      "command_description": "cargo +1.99.1 clippy --all-targets",
+      "local_log": "/tmp/retirement-clippy-final.log",
+      "log_sha256": "5604fc8f0c276397a55db4bd7008236712075c0ad37d3b3a0f1fe362b1b85a36"
+    },
+    {
+      "name": "bench-current",
+      "status": "pass",
+      "exit_code": 0,
+      "command_description": "cd bench; JW=../target/debug/jabberwock bash checks.sh",
+      "local_log": "/tmp/retirement-bench-current.log",
+      "log_sha256": "374c34d8055cc8d3a4152340c827d2c66b3a5c965ca523d94e8fd5e08f1f4b18"
+    },
+    {
+      "name": "formal-final",
+      "status": "pass",
+      "exit_code": 0,
+      "command_description": "python3 scripts/check_formal.py (Lean 4.24.0 PATH)",
+      "local_log": "/tmp/retirement-formal-final.log",
+      "log_sha256": "2823a93f95d47002a72ba8ca06e9c9320d5f6d62720320d6c39f26f96ac725f4"
+    }
+  ],
+  "generated_input_comparisons_per_configuration": [
+    {
+      "optimization": "O1",
+      "seed": 20261026000,
+      "generated": 200,
+      "executed_compared": 182,
+      "type_rejected": 18
+    },
+    {
+      "optimization": "O2+LTO",
+      "seed": 20261026500,
+      "generated": 100,
+      "executed_compared": 88,
+      "type_rejected": 12
+    }
+  ],
+  "fixed_attacks_per_configuration": 78,
+  "arithmetic_edges_per_configuration": 76,
+  "llvm_verified_modules": 390,
+  "benchmark_checks": 21,
+  "abstract_lean_theorems": 22,
+  "edges_8_9": {
+    "status": "fail",
+    "script_exit_code": 1,
+    "infrastructure_errors": [],
+    "address_space_limit_bytes": 4294967296,
+    "raw_local_report": "/tmp/retirement-safety-8-9-final.json",
+    "raw_report_sha256": "c67c369a7d682fca32b660ce317d0f6c6b954e7db2070794ea42b20ec5e53ff0",
+    "passed": 9,
+    "failed": 10,
+    "cases": [
+      {
+        "item": 9,
+        "case": "rust--typed",
+        "status": "fail",
+        "exit_code": 0,
+        "expected": "reject expanded array above 1 MiB",
+        "stderr": "",
+        "stdout_bytes": 8620,
+        "stdout_sha256": "b3e2ea7425c954ddcc3f08ea15d8cc130b4379d8e01aa973b69c5039e89c33bc"
+      },
+      {
+        "item": 9,
+        "case": "rust--typed-within-limit",
+        "status": "pass",
+        "exit_code": 0,
+        "expected": "accept expanded array exactly at 1 MiB",
+        "stderr": "",
+        "stdout_bytes": 8620,
+        "stdout_sha256": "db5a9a20faa14ac6e6cbb6adce4cd6136ec17f92c13288994fd44429222e8172"
+      },
+      {
+        "item": 9,
+        "case": "rust--ir-raw",
+        "status": "fail",
+        "exit_code": 0,
+        "expected": "reject expanded array above 1 MiB",
+        "stderr": "",
+        "stdout_bytes": 48,
+        "stdout_sha256": "ab182d4951dc8aa9f3e9f1dd9c1cbc44c9957a1e2ada7c47503fadacbac7d70d"
+      },
+      {
+        "item": 9,
+        "case": "rust--ir-raw-within-limit",
+        "status": "pass",
+        "exit_code": 0,
+        "expected": "accept expanded array exactly at 1 MiB",
+        "stderr": "",
+        "stdout_bytes": 48,
+        "stdout_sha256": "ab182d4951dc8aa9f3e9f1dd9c1cbc44c9957a1e2ada7c47503fadacbac7d70d"
+      },
+      {
+        "item": 9,
+        "case": "rust--ir",
+        "status": "fail",
+        "exit_code": 0,
+        "expected": "reject expanded array above 1 MiB",
+        "stderr": "",
+        "stdout_bytes": 48,
+        "stdout_sha256": "ab182d4951dc8aa9f3e9f1dd9c1cbc44c9957a1e2ada7c47503fadacbac7d70d"
+      },
+      {
+        "item": 9,
+        "case": "rust--ir-within-limit",
+        "status": "pass",
+        "exit_code": 0,
+        "expected": "accept expanded array exactly at 1 MiB",
+        "stderr": "",
+        "stdout_bytes": 48,
+        "stdout_sha256": "ab182d4951dc8aa9f3e9f1dd9c1cbc44c9957a1e2ada7c47503fadacbac7d70d"
+      },
+      {
+        "item": 9,
+        "case": "rust--ll",
+        "status": "fail",
+        "exit_code": 0,
+        "expected": "reject expanded array above 1 MiB",
+        "stderr": "",
+        "stdout_bytes": 5956,
+        "stdout_sha256": "87e1ae9b22189b85c177fd7cdf09965b75d2c8c8d6b7a428f11941562591f13f"
+      },
+      {
+        "item": 9,
+        "case": "rust--ll-within-limit",
+        "status": "pass",
+        "exit_code": 0,
+        "expected": "accept expanded array exactly at 1 MiB",
+        "stderr": "",
+        "stdout_bytes": 6049,
+        "stdout_sha256": "813a12bfec5323654fd01c05a60ee91678e4efe1a680781c6580ea2d265b8998"
+      },
+      {
+        "item": 9,
+        "case": "jwc--typed",
+        "status": "fail",
+        "exit_code": 0,
+        "expected": "reject expanded array above 1 MiB",
+        "stderr": "",
+        "stdout_bytes": 8620,
+        "stdout_sha256": "b3e2ea7425c954ddcc3f08ea15d8cc130b4379d8e01aa973b69c5039e89c33bc"
+      },
+      {
+        "item": 9,
+        "case": "jwc--typed-within-limit",
+        "status": "pass",
+        "exit_code": 0,
+        "expected": "accept expanded array exactly at 1 MiB",
+        "stderr": "",
+        "stdout_bytes": 8620,
+        "stdout_sha256": "db5a9a20faa14ac6e6cbb6adce4cd6136ec17f92c13288994fd44429222e8172"
+      },
+      {
+        "item": 9,
+        "case": "jwc--ir-raw",
+        "status": "fail",
+        "exit_code": 0,
+        "expected": "reject expanded array above 1 MiB",
+        "stderr": "",
+        "stdout_bytes": 48,
+        "stdout_sha256": "ab182d4951dc8aa9f3e9f1dd9c1cbc44c9957a1e2ada7c47503fadacbac7d70d"
+      },
+      {
+        "item": 9,
+        "case": "jwc--ir-raw-within-limit",
+        "status": "pass",
+        "exit_code": 0,
+        "expected": "accept expanded array exactly at 1 MiB",
+        "stderr": "",
+        "stdout_bytes": 48,
+        "stdout_sha256": "ab182d4951dc8aa9f3e9f1dd9c1cbc44c9957a1e2ada7c47503fadacbac7d70d"
+      },
+      {
+        "item": 9,
+        "case": "jwc--ir",
+        "status": "fail",
+        "exit_code": 0,
+        "expected": "reject expanded array above 1 MiB",
+        "stderr": "",
+        "stdout_bytes": 48,
+        "stdout_sha256": "ab182d4951dc8aa9f3e9f1dd9c1cbc44c9957a1e2ada7c47503fadacbac7d70d"
+      },
+      {
+        "item": 9,
+        "case": "jwc--ir-within-limit",
+        "status": "pass",
+        "exit_code": 0,
+        "expected": "accept expanded array exactly at 1 MiB",
+        "stderr": "",
+        "stdout_bytes": 48,
+        "stdout_sha256": "ab182d4951dc8aa9f3e9f1dd9c1cbc44c9957a1e2ada7c47503fadacbac7d70d"
+      },
+      {
+        "item": 9,
+        "case": "jwc--ll",
+        "status": "fail",
+        "exit_code": 0,
+        "expected": "reject expanded array above 1 MiB",
+        "stderr": "",
+        "stdout_bytes": 5956,
+        "stdout_sha256": "87e1ae9b22189b85c177fd7cdf09965b75d2c8c8d6b7a428f11941562591f13f"
+      },
+      {
+        "item": 9,
+        "case": "jwc--ll-within-limit",
+        "status": "pass",
+        "exit_code": 0,
+        "expected": "accept expanded array exactly at 1 MiB",
+        "stderr": "",
+        "stdout_bytes": 6049,
+        "stdout_sha256": "813a12bfec5323654fd01c05a60ee91678e4efe1a680781c6580ea2d265b8998"
+      },
+      {
+        "item": 8,
+        "case": "interp-allocation-failure",
+        "status": "pass",
+        "exit_code": 1,
+        "expected": "specified memory error, not an internal error or panic",
+        "stderr": "error: メモリが足りません\n --> /workspace/jabberwock/tests/safety/resource-exhaustion.jw:2:19\n  |\n2 | fn main() { print(\"x\".repeat(281474976710656).len()); }\n  |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^ repeat(281474976710656)\n",
+        "stdout_bytes": 0,
+        "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "item": 8,
+        "case": "rust-native-allocation-failure",
+        "status": "fail",
+        "exit_code": 2,
+        "expected": "specified memory error, not an internal error or panic",
+        "stderr": "内部エラー: メモリが足りません\n",
+        "stdout_bytes": 0,
+        "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "item": 8,
+        "case": "jwc-native-allocation-failure",
+        "status": "fail",
+        "exit_code": 2,
+        "expected": "specified memory error, not an internal error or panic",
+        "stderr": "内部エラー: メモリが足りません\n",
+        "stdout_bytes": 0,
+        "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    ]
+  },
+  "limitations": [
+    "LSan failed to initialize under sandbox/ptrace restrictions. Aborted runs are excluded; ASan/UBSan used detect_leaks=0.",
+    "Current-change Windows execution and GitHub Actions execution are unverified; previous jobs did not start because GitHub reported a billing/spending-limit issue.",
+    "Runner test counts include conditional early returns. Corresponding sanitizer/robust runs were separately executed. The MSan C-only negative test is a no-op; the generated-LLVM MSan negative test is exercised.",
+    "Robust tests retain their existing three-second timeout policy; mutation count is not a count of completed execution comparisons.",
+    "Retired C blocks are retained for the process lifetime. The global retirement count is separate from live payload counts and does not impose a memory budget.",
+    "Local log paths and hashes identify workspace evidence, not uploaded CI artifacts. Source hashes and commands support repetition.",
+    "The 22 Lean theorems prove only the abstract model; the concrete Rust/C/LLVM implementation refinement is unproved."
+  ]
+}

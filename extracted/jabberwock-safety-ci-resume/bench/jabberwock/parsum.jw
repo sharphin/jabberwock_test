@@ -1,0 +1,32 @@
+// 300 万までの素数を割り算で数える。スレッドの数は引数（既定 4）。1000 個ずつの塊をスレッドに順に配るので、仕事の量がそろう
+fn i64 count(i64 w, i64 t, i64 n) {
+    let mut c = 0;
+    let mut blk = w;
+    while blk * 1000 < n {
+        for x in range(blk * 1000, (blk * 1000 + 1000).min(n)) {
+            if x < 2 { continue; }
+            let mut p = true;
+            let mut d = 2;
+            while d * d <= x {
+                if x % d == 0 { p = false; break; }
+                d += 1;
+            }
+            if p { c += 1; }
+        }
+        blk += t;
+    }
+    c
+}
+
+fn main() {
+    let a = args();
+    let t = if a.len() > 0 { a[0].to_int().unwrap_or(4) } else { 4 };
+    let n = 3000000;
+    let task<i64>[] mut ts = [];
+    for w in range(t) {
+        ts.push(spawn(() -> count(w, t, n)));
+    }
+    let mut total = 0;
+    for x in ts.drain() { total += x.join(); }
+    print(total);
+}

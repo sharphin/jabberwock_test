@@ -1,0 +1,16 @@
+{
+  "terminal.integrated.profiles.windows": {
+    "Jabberwock Dev": {
+      "path": "powershell.exe",
+      "args": [
+        "-NoLogo",
+        "-NoExit",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "${workspaceFolder}\\.vscode\\jabberwock-dev.ps1"
+      ]
+    }
+  },
+  "terminal.integrated.defaultProfile.windows": "Jabberwock Dev"
+}

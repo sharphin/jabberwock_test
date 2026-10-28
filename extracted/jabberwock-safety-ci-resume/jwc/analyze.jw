@@ -1,0 +1,670 @@
+// IR の上の静的解析（Rust 版の src/ir/analyze.rs にあたる）: 借りた先が必ず生きていると証明できた `*p` の世代チェックを消す。
+//
+// 事実は変数ごとに数 1 つで、分かっている変数だけを番号の順に並べて持つ（`Facts`。変数の数だけの表にすると、写すのと消すのが遅い）:
+//   0 何も分からない（並べない） / 1 Own（ムーブされていない own を持っている）/ 2 Pinned（関数の中ずっと先が生きている引数）/
+//   3 + 3x RefTo(x)（own の変数 x の先を借りた ref）/ 4 + 3x RefSlot(x)（変数 x そのものを借りた ref）/
+//   5 + 3x RefElem(x)（変数 x から届くリストの要素を借りた ref。要素を動かしうる操作で消える。引数としては安全と見なさない）
+// 基本ブロックの上の前向きのデータフロー解析で、合流では両方で成り立つ事実だけを残す。
+use ir;
+use ty;
+
+const OWN = 1;
+const PINNED = 2;
+
+fn i64 ref_to(i64 x) { 3 + 3 * x }
+
+fn i64 ref_slot(i64 x) { 4 + 3 * x }
+
+fn i64 ref_elem(i64 x) { 5 + 3 * x }
+
+fn bool is_ref_to(i64 f) { f >= 3 && f % 3 == 0 }
+
+fn bool is_ref_slot(i64 f) { f >= 4 && f % 3 == 1 }
+
+fn bool is_ref_elem(i64 f) { f >= 5 && f % 3 == 2 }
+
+fn i64 target(i64 f) { (f - 3) / 3 }
+
+/// 分かっている事実（変数の番号の小さい順）
+struct Facts {
+    i64[] ks;
+    i64[] vs;
+}
+
+fn Facts no_facts() { Facts { ks: [], vs: [] } }
+
+fn Facts copy_facts(ref Facts a) { Facts { ks: a.ks.map((x) -> x), vs: a.vs.map((x) -> x) } }
+
+/// x の位置（なければ、入れるべき位置を -1 - 位置で）
+fn i64 find(ref Facts a, i64 x) {
+    let mut lo = 0;
+    let mut hi = a.ks.len();
+    while lo < hi {
+        let mid = (lo + hi) / 2;
+        let k = a.ks[mid];
+        if k == x { return mid; }
+        if k < x { lo = mid + 1; } else { hi = mid; }
+    }
+    -1 - lo
+}
+
+fn i64 get(ref Facts a, i64 x) {
+    let i = find(a, x);
+    if i >= 0 { a.vs[i] } else { 0 }
+}
+
+fn put(ref mut Facts a, i64 x, i64 f) {
+    let i = find(a, x);
+    if i >= 0 {
+        a.vs[i] = f;
+    } else {
+        a.ks.insert(-1 - i, x);
+        a.vs.insert(-1 - i, f);
+    }
+}
+
+fn remove(ref mut Facts a, i64 x) {
+    let i = find(a, x);
+    if i >= 0 {
+        a.ks.remove(i);
+        a.vs.remove(i);
+    }
+}
+
+/// 値が a か c の事実を消す
+fn drop_values(ref mut Facts facts, i64 a, i64 c) {
+    let mut keep = true;
+    for v in facts.vs {
+        if v == a || v == c { keep = false; }
+    }
+    if keep { return; }
+    let i64[] mut ks = [];
+    let i64[] mut vs = [];
+    for (i, v) in facts.vs {
+        if v != a && v != c {
+            ks.push(facts.ks[i]);
+            vs.push(v);
+        }
+    }
+    facts.ks = ks;
+    facts.vs = vs;
+}
+
+fn bool same_facts(ref Facts a, ref Facts b) {
+    if a.ks.len() != b.ks.len() { return false; }
+    for (i, k) in a.ks {
+        if k != b.ks[i] || a.vs[i] != b.vs[i] { return false; }
+    }
+    true
+}
+
+/// 両方の道で成り立つ事実だけを残す（合流点）
+fn Facts meet(ref Facts a, ref Facts b) {
+    let mut out = no_facts();
+    let mut j = 0;
+    for (i, k) in a.ks {
+        while j < b.ks.len() && b.ks[j] < k { j += 1; }
+        if j < b.ks.len() && b.ks[j] == k && b.vs[j] == a.vs[i] {
+            out.ks.push(k);
+            out.vs.push(a.vs[i]);
+        }
+    }
+    out
+}
+
+/// 変数 x がなくなった（drop・ムーブ）。それを借りた ref の事実も消す
+fn kill_all(ref mut Facts facts, i64 x) {
+    remove(ref mut facts, x);
+    drop_values(ref mut facts, ref_to(x), ref_slot(x));
+    drop_values(ref mut facts, ref_elem(x), ref_elem(x));
+}
+
+/// リストの要素が動いたかもしれない。要素を借りた ref の事実をすべて消す
+fn kill_elems(ref mut Facts facts) {
+    let mut any = false;
+    for v in facts.vs {
+        if is_ref_elem(v) { any = true; }
+    }
+    if !any { return; }
+    let i64[] mut ks = [];
+    let i64[] mut vs = [];
+    for (i, v) in facts.vs {
+        if !is_ref_elem(v) {
+            ks.push(facts.ks[i]);
+            vs.push(v);
+        }
+    }
+    facts.ks = ks;
+    facts.vs = vs;
+}
+
+/// この型の値を上書き・解放すると、リストの中身が解放されうるか（数・文字列・ref は持たない）
+fn bool may_hold_list(ref ty.Ty t) {
+    let k = ty.tag(t);
+    !(k == "Int" || k == "Float" || k == "Bool" || k == "Str" || k == "Unit" || k == "Never" || k == "Ref")
+}
+
+// 呼び出し元のリストへ届く引数も取り込みもない直接呼び出し。
+// Ref は may_hold_list では false だが、ここでは必ず除く。
+fn bool scalar(ref ty.Ty t) {
+    let k = ty.tag(t);
+    k == "Int" || k == "Float" || k == "Bool" || k == "Str" || k == "Unit" || k == "Never"
+}
+
+fn bool scalar_call(ref ir.Func f) {
+    if f.captures != 0 || !scalar(f.ret) { return false; }
+    for i in range(f.params) {
+        if !scalar(f.locals[i].t) { return false; }
+    }
+    true
+}
+
+/// 変数 x に入れ直した。古い own は解放されるが、変数の場所はそのまま
+fn kill_value(ref mut Facts facts, i64 x) {
+    remove(ref mut facts, x);
+    drop_values(ref mut facts, ref_to(x), ref_elem(x));
+}
+
+/// この事実を持つ値は、今、借りた先が生きている ref か
+fn bool is_live(ref Facts facts, i64 f) {
+    if f == PINNED || is_ref_slot(f) { return true; }
+    if is_ref_to(f) { return get(facts, target(f)) == OWN; }
+    false
+}
+
+fn i64[] successors(ref ir.Term t) {
+    match ref t {
+        case Goto(b) -> [b];
+        case Branch(c, a, b) -> [a, b];
+        case Step(c, s, a, b) -> [a, b];
+        case Switch(p, vs, bbs, d) -> {
+            let i64[] mut out = bbs.map((x) -> x);
+            out.push(d);
+            out
+        }
+        default -> [];
+    }
+}
+
+/// 命令を順にたどる。`set` なら場所の検査を決めて書き込み、`rec` なら呼び出しの引数が安全かを記録する
+struct Cx {
+    bool set;
+    bool rec;
+    // 関数ごとの引数の数
+    i64[] arity;
+    // true の直接呼び出しは呼び出し元のリストに届かない
+    bool[] scalar_calls;
+    // 関数ごとの「呼ばれたか」と、引数ごとの「いつも安全な ref が渡されたか」
+    bool[] called;
+    bool[][] calls;
+    // 変数ごとの「own の型か」「own か ref の型か」
+    bool[] l_own;
+    bool[] l_ptr;
+    // 変数ごとの「リストを持ちうる型か」「リストの型か」
+    bool[] l_hold;
+    bool[] l_list;
+
+    fn mut inst(ref mut ir.Inst i, ref mut Facts facts) {
+        match ref mut i {
+            case Assign(pl, v, s, w) -> {
+                // 値を先に計算し、そのあとで場所を求める（exec と同じ順）
+                let mut f = rvalue(v, ref mut facts);
+                place(pl, ref mut facts);
+                // リストを持ちうる値を上書きすると、古い値の中のリストが解放される
+                let holds = if pl.proj.len() == 0 { l_hold[pl.local] } else { value_may_hold(v) };
+                if holds { kill_elems(ref mut facts); }
+                if pl.proj.len() == 0 {
+                    let x = pl.local;
+                    kill_value(ref mut facts, x);
+                    // own の型の変数に入れた値は、その変数が持つ own。ただし場所から取り出した値（copy_out）は読むだけの写しでありうるので
+                    // 何も仮定しない（Rust 版と同じ）
+                    let copied = match ref v {
+                        case CopyOut(q, w2, s2) -> true;
+                        default -> false;
+                    };
+                    if l_own[x] && !copied { f = OWN; }
+                    let self_ref = (is_ref_to(f) || is_ref_slot(f)) && target(f) == x;
+                    if f != 0 && !self_ref { put(ref mut facts, x, f); }
+                }
+            }
+            case Drop(l, s, w) -> {
+                if l_hold[l] { kill_elems(ref mut facts); }
+                kill_all(ref mut facts, l);
+            }
+            case Discard(v, s, w) -> {
+                let holds = match ref v {
+                    case Move(l, s2) -> l_hold[l];
+                    case Read(l, s2) -> l_hold[l];
+                    case Copy(p) -> if p.proj.len() == 0 { l_hold[p.local] } else { true };
+                    case Const(c) -> false;
+                };
+                operand(v, ref mut facts);
+                if holds { kill_elems(ref mut facts); }
+            }
+        }
+    }
+
+    fn mut term(ref mut ir.Term t, ref mut Facts facts) {
+        match ref mut t {
+            case Branch(o, a, b) -> {
+                operand(o, ref mut facts);
+            }
+            case Return(o) -> {
+                operand(o, ref mut facts);
+            }
+            case Step(c, o, a, b) -> {
+                operand(o, ref mut facts);
+            }
+            case Switch(p, vs, bbs, d) -> place(p, ref mut facts);
+            default -> {}
+        }
+    }
+
+    /// 上書きに使う値がリストを持ちうるか（数の計算なら持たない）
+    fn bool value_may_hold(ref ir.Rvalue v) {
+        match ref v {
+            case Bin(op, a, b, s) -> false;
+            case Un(op, a, s) -> false;
+            case Cast(a, t) -> false;
+            case Show(a, t, s) -> false;
+            case Ref(pl, m, follows, w, s) -> false;
+            case Use(o) -> match ref o {
+                case Const(c) -> false;
+                case Move(l, s) -> l_hold[l];
+                case Read(l, s) -> l_hold[l];
+                case Copy(p) -> if p.proj.len() == 0 { l_hold[p.local] } else { true };
+            };
+            default -> true;
+        }
+    }
+
+    /// 場所をたどる。先頭の `*` の検査を決める（ほかの `*` は実行時に検査する）
+    fn mut place(ref mut ir.Place p, ref mut Facts facts) {
+        let f = get(facts, p.local);
+        // RefElem is safe to dereference within this function while its fact survives.
+        // Operations that may move list elements remove RefElem facts via kill_elems.
+        // Keep it out of is_live: passing an element ref to a callee is not pinned.
+        let safe = f == OWN || is_live(facts, f) || is_ref_elem(f);
+        for i in range(p.proj.len()) {
+            let mut is_deref = false;
+            let mut sp = 0;
+            match ref p.proj[i] {
+                case Deref(c, s) -> {
+                    is_deref = true;
+                    sp = s;
+                }
+                default -> {}
+            }
+            if set && is_deref { p.proj[i] = ir.Proj.Deref(!(i == 0 && safe), sp); }
+        }
+        for i in range(p.proj.len()) {
+            match ref mut p.proj[i] {
+                case Index(k, s, a) -> {
+                    operand(k, ref mut facts);
+                }
+                default -> {}
+            }
+        }
+    }
+
+    /// 値を読む。ムーブなら変数の事実を消す。読んだ値について分かることを返す
+    fn mut i64 operand(ref mut ir.Operand o, ref mut Facts facts) {
+        match ref mut o {
+            case Const(c) -> 0;
+            case Copy(p) -> {
+                let f = if p.proj.len() == 0 { get(facts, p.local) } else { 0 };
+                place(p, ref mut facts);
+                f
+            }
+            case Move(l, s) -> {
+                let f = get(facts, l);
+                kill_all(ref mut facts, l);
+                f
+            }
+            case Read(l, s) -> {
+                let f = get(facts, l);
+                kill_all(ref mut facts, l);
+                f
+            }
+        }
+    }
+
+    /// 値を順に読む。呼び出しの引数として安全か（読む前の事実で決める）も返す
+    fn mut bool[] operands(ref mut ir.Operand[] os, ref mut Facts facts) {
+        let i64[] mut fs = [];
+        for o in os {
+            fs.push(match ref o {
+                case Copy(p) -> if p.proj.len() == 0 { get(facts, p.local) } else { 0 };
+                case Move(l, s) -> get(facts, l);
+                case Read(l, s) -> get(facts, l);
+                default -> 0;
+            });
+        }
+        // `f(ref a, a)` のように後の引数でムーブされるものは、前の命令で事実が消えている
+        let bool[] mut safe = [];
+        for j in range(os.len()) {
+            operand(ref mut os[j], ref mut facts);
+        }
+        // A later argument can move an owner borrowed by an earlier one.
+        // Never certify a parameter from facts that have since been killed.
+        for f in fs { safe.push(is_live(facts, f)); }
+        safe
+    }
+
+    fn mut record(i64 fi, ref bool[] safe) {
+        if !rec || arity[fi] != safe.len() { return; }
+        if !called[fi] {
+            called[fi] = true;
+            let bool[] mut all = [];
+            for s in safe { all.push(true); }
+            calls[fi] = all;
+        }
+        for (j, s) in safe {
+            calls[fi][j] = calls[fi][j] && s;
+        }
+    }
+
+    /// `ref 場所` で作った ref について分かること
+    fn i64 ref_fact(ref ir.Place pl, bool follows, ref Facts facts) {
+        let root = get(facts, pl.local);
+        // 添字は通さない（リストの要素はリストの中身の区画にあり、長さが変わると無効になる）
+        if pl.proj.len() == 0 {
+            if !follows { return ref_slot(pl.local); }
+            if root == OWN { return ref_to(pl.local); }
+            // ref の借り直しは同じ先
+            return root;
+        }
+        if follows { return 0; }
+        let e = elem_fact(pl, root);
+        let mut first = 0;
+        match ref pl.proj[0] {
+            case Deref(c, s) -> first = 1;
+            case Field(i, s) -> first = 2;
+            case Index(k, s, a) -> first = 2;
+            default -> {}
+        }
+        let from = if first == 1 { 1 } else { 0 };
+        for i in range(from, pl.proj.len()) {
+            let field = match ref pl.proj[i] {
+                case Field(x, s) -> true;
+                default -> false;
+            };
+            if !field { return e; }
+        }
+        if first == 1 {
+            if root == OWN { return ref_to(pl.local); }
+            if is_live(facts, root) { return root; }
+            return e;
+        }
+        if first == 2 {
+            if l_ptr[pl.local] { return e; }
+            return ref_slot(pl.local);
+        }
+        e
+    }
+
+    /// リストの要素（とその中）を借りた ref: `(*ps)[i]`（ps は Pinned の引数か own）・`ps[i]`（ps はリストの変数）
+    fn i64 elem_fact(ref ir.Place pl, i64 root) {
+        let mut first = 0;
+        match ref pl.proj[0] {
+            case Deref(c, s) -> first = 1;
+            case Index(k, s, a) -> first = 2;
+            default -> {}
+        }
+        if first == 0 { return 0; }
+        let from = if first == 1 { 1 } else { 0 };
+        for i in range(from, pl.proj.len()) {
+            let ok = match ref pl.proj[i] {
+                case Field(x, s) -> true;
+                case Index(k, s, a) -> true;
+                default -> false;
+            };
+            if !ok { return 0; }
+        }
+        if first == 1 && (root == PINNED || root == OWN) { return ref_elem(pl.local); }
+        if first == 2 && l_list[pl.local] { return ref_elem(pl.local); }
+        0
+    }
+
+    fn mut i64 rvalue(ref mut ir.Rvalue r, ref mut Facts facts) {
+        match ref mut r {
+            case Use(o) -> operand(o, ref mut facts);
+            case Bin(op, a, b, s) -> {
+                operand(a, ref mut facts);
+                operand(b, ref mut facts);
+                0
+            }
+            case Un(op, a, s) -> {
+                operand(a, ref mut facts);
+                0
+            }
+            case Cast(a, t) -> {
+                operand(a, ref mut facts);
+                0
+            }
+            case Repeat(a, n, l) -> {
+                operand(a, ref mut facts);
+                0
+            }
+            case Show(a, t, s) -> {
+                operand(a, ref mut facts);
+                0
+            }
+            case Own(a) -> {
+                operand(a, ref mut facts);
+                OWN
+            }
+            case Ref(pl, m, follows, w, s) -> {
+                let f = ref_fact(pl, follows, facts);
+                place(pl, ref mut facts);
+                f
+            }
+            case Struct(n, ops) -> {
+                operands(ops, ref mut facts);
+                0
+            }
+            case Enum(v, ops, c) -> {
+                operands(ops, ref mut facts);
+                0
+            }
+            case Array(ops, l) -> {
+                operands(ops, ref mut facts);
+                0
+            }
+            case Builtin(n, ops, s) -> {
+                operands(ops, ref mut facts);
+                // 数と文字列の計算・表示のほかは、何が起きるか個別に見ない（スレッド・入出力など）
+                let pure = n == "print" || n == "eprint" || n == "concat" || n == "append" || n == "assert";
+                if !(pure || n.starts_with("f64.") || n.starts_with("int.") || n.starts_with("str.")) { kill_elems(ref mut facts); }
+                0
+            }
+            case Map(ks, vs, s) -> {
+                for j in range(ks.len()) {
+                    operand(ref mut ks[j], ref mut facts);
+                    operand(ref mut vs[j], ref mut facts);
+                }
+                0
+            }
+            case Call(fi, ops, s) -> {
+                let safe = operands(ops, ref mut facts);
+                record(fi, safe);
+                if fi < 0 || fi >= scalar_calls.len() || !scalar_calls[fi] { kill_elems(ref mut facts); }
+                0
+            }
+            case Closure(fi, ops) -> {
+                if rec && ops.len() == 0 {
+                    // 名前のある関数を値にした。どこから何が渡されるか分からない
+                    let bool[] mut none = [];
+                    for i in range(arity[fi]) { none.push(false); }
+                    record(fi, none);
+                }
+                operands(ops, ref mut facts);
+                0
+            }
+            case CallValue(fv, ops, s) -> {
+                operands(ops, ref mut facts);
+                operand(fv, ref mut facts);
+                kill_elems(ref mut facts);
+                0
+            }
+            case CallDyn(sn, fns, th, m, w, ops, s) -> {
+                let safe = operands(ops, ref mut facts);
+                let this_safe = is_live(facts, ref_fact(th, false, facts));
+                place(th, ref mut facts);
+                let bool[] mut all = [this_safe];
+                for x in safe { all.push(x); }
+                for fi in fns { record(fi, all); }
+                kill_elems(ref mut facts);
+                0
+            }
+            case SeqOp(n, pl, ops, s, a) -> {
+                operands(ops, ref mut facts);
+                place(pl, ref mut facts);
+                // 読むだけの操作のほかは、要素が動きうる（push・pop・sort など。辞書の値の解放も）
+                if !(n == "len" || n == "contains" || n == "get" || n == "keys") { kill_elems(ref mut facts); }
+                0
+            }
+            case CopyOut(pl, w, s) -> {
+                place(pl, ref mut facts);
+                0
+            }
+            case Take(pl) -> {
+                place(pl, ref mut facts);
+                0
+            }
+            case Items(pl, w, s) -> {
+                place(pl, ref mut facts);
+                0
+            }
+            case Keys(pl) -> {
+                place(pl, ref mut facts);
+                0
+            }
+        }
+    }
+}
+
+fn Cx new_cx(bool set, bool rec, ref i64[] arity, ref bool[] scalar_calls, ref ir.Func f) {
+    let bool[] mut l_own = [];
+    let bool[] mut l_ptr = [];
+    let bool[] mut l_hold = [];
+    let bool[] mut l_list = [];
+    for l in f.locals {
+        let o = ty.is(l.t, "Own");
+        l_own.push(o);
+        l_ptr.push(o || ty.is(l.t, "Ref"));
+        l_hold.push(may_hold_list(l.t));
+        l_list.push(ty.is(l.t, "List"));
+    }
+    let bool[] mut called = [];
+    let bool[][] mut calls = [];
+    if rec {
+        for a in arity {
+            called.push(false);
+            calls.push([]);
+        }
+    }
+    Cx { set: set, rec: rec, arity: arity.map((x) -> x), scalar_calls: scalar_calls.map((x) -> x), called: called, calls: calls, l_own: l_own, l_ptr: l_ptr, l_hold: l_hold, l_list: l_list }
+}
+
+/// 各ブロックの入口で成り立つ事実（どこからも来ないブロックは `has` が false）
+struct Entry {
+    bool[] has;
+    Facts[] facts;
+}
+
+fn Entry fixpoint(ref mut ir.Func f, ref bool[] pinned, ref bool[] scalar_calls) {
+    let n = f.blocks.len();
+    let bool[] mut has = [];
+    let Facts[] mut entry = [];
+    for i in range(n) {
+        has.push(false);
+        entry.push(no_facts());
+    }
+    let mut start = no_facts();
+    for i in range(f.params) {
+        if i < pinned.len() && pinned[i] {
+            put(ref mut start, i, PINNED);
+        } else if ty.is(f.locals[i].t, "Own") && i < f.params - f.captures {
+            put(ref mut start, i, OWN);
+        }
+    }
+    has[0] = true;
+    entry[0] = start;
+    let i64[] noarity = [];
+    let mut cx = new_cx(false, false, noarity, scalar_calls, f);
+    let i64[] mut work = [0];
+    while work.len() > 0 {
+        let b = match work.pop() {
+            case Some(x) -> x;
+            case None -> 0;
+        };
+        let mut facts = copy_facts(entry[b]);
+        for k in range(f.blocks[b].insts.len()) {
+            cx.inst(ref mut f.blocks[b].insts[k], ref mut facts);
+        }
+        cx.term(ref mut f.blocks[b].term, ref mut facts);
+        for s in successors(f.blocks[b].term) {
+            let next = if has[s] { meet(entry[s], facts) } else { copy_facts(facts) };
+            if !(has[s] && same_facts(entry[s], next)) {
+                has[s] = true;
+                entry[s] = next;
+                work.push(s);
+            }
+        }
+    }
+    Entry { has: has, facts: entry }
+}
+
+/// 全体を解析して、各 `Proj::Deref` の検査を書き込む
+pub fn analyze(ref mut ir.Program prog) {
+    let n = prog.fns.len();
+    // 引数ごとに「Pinned か」。楽観的に全部 true から始め、反例が出たら false にする（減る一方なので止まる）
+    let i64[] mut arity = [];
+    let bool[][] mut pinned = [];
+    let bool[] mut scalar_calls = [];
+    for f in prog.fns {
+        arity.push(f.params);
+        scalar_calls.push(scalar_call(f));
+        let bool[] mut ps = [];
+        for i in range(f.params) { ps.push(true); }
+        pinned.push(ps);
+    }
+    loop {
+        let bool[] mut called = [];
+        let bool[][] mut calls = [];
+        for i in range(n) {
+            called.push(false);
+            calls.push([]);
+        }
+        for fi in range(n) {
+            let entry = fixpoint(ref mut prog.fns[fi], pinned[fi], scalar_calls);
+            let mut cx = new_cx(true, true, arity, scalar_calls, prog.fns[fi]);
+            cx.called = called.drain();
+            cx.calls = calls.drain();
+            for b in range(prog.fns[fi].blocks.len()) {
+                if !entry.has[b] { continue; }
+                let mut facts = copy_facts(entry.facts[b]);
+                for k in range(prog.fns[fi].blocks[b].insts.len()) {
+                    cx.inst(ref mut prog.fns[fi].blocks[b].insts[k], ref mut facts);
+                }
+                cx.term(ref mut prog.fns[fi].blocks[b].term, ref mut facts);
+            }
+            called = cx.called.drain();
+            calls = cx.calls.drain();
+        }
+        // 一度も呼ばれない関数の引数（main・クロージャ）は何も仮定しない
+        let bool[][] mut next = [];
+        let mut same = true;
+        for fi in range(n) {
+            let bool[] mut ps = [];
+            for i in range(arity[fi]) { ps.push(called[fi] && calls[fi][i]); }
+            for (i, x) in ps {
+                if pinned[fi][i] != x { same = false; }
+            }
+            next.push(ps);
+        }
+        if same { break; }
+        pinned = next;
+    }
+}

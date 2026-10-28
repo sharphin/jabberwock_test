@@ -1,0 +1,535 @@
+// 構文木（Rust 版の src/ast.rs にあたる）
+//
+// enum の中身は、借りて match したときに受け取れるよう、コピーできない値はすべて own で持つ。
+// 「あるかないか」（Rust の Option）は bool と、ないときの空の値の組で持つ。位置は diag の i64。
+use diag;
+
+pub struct TypeExpr {
+    TypeKind kind;
+    i64 span;
+}
+
+pub enum TypeKind {
+    Name(str name);
+    App(str name, own TypeExpr[] targs);
+    Own(own TypeExpr inner);
+    Ref(own TypeExpr inner, bool m);
+    Array(own TypeExpr inner, u64 n);
+    List(own TypeExpr inner);
+    Map(own TypeExpr val, own TypeExpr key);
+    // 戻り値がなければ has_ret が false（ret は空の名前）
+    Fn(own TypeExpr[] ps, bool has_ret, own TypeExpr ret);
+}
+
+pub struct Expr {
+    ExprKind kind;
+    i64 span;
+    // 式の番号（`number` がプログラム全体で 1 から振る。型検査の記録はこの番号で引く）
+    i64 id;
+}
+
+pub enum ExprKind {
+    Int(u64 n);
+    Float(f64 v);
+    Bool(bool b);
+    Str(str s);
+    Unit;
+    Var(str name);
+    Cast(own Expr e, own TypeExpr t);
+    Try(own Expr e);
+    Variant(str en, str vn, own Expr[] xs);
+    Own(own Expr e);
+    Ref(own Expr e, bool m);
+    Deref(own Expr e);
+    Field(own Expr e, str name);
+    StructLit(str name, own FieldInit[] inits);
+    If(own Expr cond, own Block then, bool has_els, own Block els);
+    Match(own Expr scrut, own MatchArm[] arms, bool has_default, own Block default_block);
+    // op は記号（"-" "!" "~"）
+    Unary(str op, own Expr e);
+    // op は記号（"+" "==" "<<" など）
+    Binary(str op, own Expr l, own Expr r);
+    Call(str name, own Expr[] xs);
+    Index(own Expr base, own Expr idx);
+    ArrayLit(own Expr[] xs);
+    // キーと値を交互に
+    MapLit(own Expr[] kvs);
+    ArrayRepeat(own Expr e, u64 n);
+    Interp(own InterpPart[] parts);
+    Lambda(own Lambda l);
+    MethodCall(own Expr recv, str name, own Expr[] xs);
+}
+
+pub enum InterpPart {
+    Lit(str s);
+    Code(own Expr e);
+}
+
+pub struct FieldInit {
+    str name;
+    i64 span;
+    Expr value;
+}
+
+pub enum Pat {
+    // 負の数は neg（`case -1`）
+    Int(bool neg, u64 n);
+    Bool(bool b);
+    Str(str s);
+    // 中身ごとに、受け取る名前（重ねた形なら "_"）・位置・重ねた形があるか・その形（なければ Bool(false)）
+    Variant(str name, own str[] binds, own i64[] spans, own bool[] has_sub, own Pat[] subs);
+}
+
+pub struct MatchArm {
+    Pat[] pats;
+    i64[] spans;
+    Block body;
+}
+
+pub struct Block {
+    Stmt[] stmts;
+    bool tail;
+    i64 end;
+}
+
+pub enum Stmt {
+    Let(str name, bool has_ty, own TypeExpr ty, bool m, i64 span, own Expr init);
+    Assign(own Expr target, own Expr value, i64 span);
+    Ex(own Expr e);
+    While(own Expr cond, own Block body);
+    Loop(own Block body);
+    For(str var, own Expr[] range, i64 range_span, own Block body, bool has_els, own Block els);
+    ForEach(bool has_key, str key, i64 key_span, str var, i64 var_span, own Expr iter, own Block body, bool has_els, own Block els);
+    Break(i64 span);
+    Continue(i64 span);
+    Return(bool has_value, own Expr value, i64 span);
+}
+
+pub struct Param {
+    TypeExpr ty;
+    str name;
+    bool m;
+    i64 span;
+}
+
+pub struct FnDef {
+    str name;
+    str[] tparams;
+    // 型の引数ごとの条件（`<T: Shape + ordered>`）を " + " でつないだもの（なければ空）
+    str[] bounds;
+    bool has_ret;
+    TypeExpr ret;
+    Param[] params;
+    Block body;
+    i64 span;
+}
+
+pub struct StructDef {
+    str name;
+    str[] tparams;
+    str[] fields;
+    TypeExpr[] field_types;
+    i64 span;
+}
+
+pub struct VariantDef {
+    str name;
+    TypeExpr[] types;
+    str[] names;
+    i64 span;
+}
+
+pub struct EnumDef {
+    str name;
+    str[] tparams;
+    VariantDef[] variants;
+    i64 span;
+}
+
+pub struct InterfaceDef {
+    str name;
+    FnDef[] methods;
+    bool[] muts;
+    i64 span;
+}
+
+pub struct LambdaParam {
+    bool has_ty;
+    TypeExpr ty;
+    str name;
+    i64 span;
+}
+
+pub struct Lambda {
+    LambdaParam[] params;
+    Block body;
+}
+
+pub struct Program {
+    StructDef[] structs;
+    EnumDef[] enums;
+    InterfaceDef[] interfaces;
+    FnDef[] fns;
+    str[] uses;
+    i64[] use_spans;
+    str[] public;
+    str[] modules;
+    str[] consts;
+    // 関数・メソッドの引数にその場で書いたクロージャ（ムーブする外の変数を借りて取り込む）の位置
+    i64[] borrow_lambdas;
+    // 式の数（`number` が書く。番号は 1〜nodes）
+    i64 nodes;
+}
+
+// ---------------------------------------------------------------- 作る
+
+pub fn Expr mk(ExprKind k, i64 s) { Expr { kind: k, span: s, id: 0 } }
+
+pub fn TypeExpr ty_name(str n, i64 s) { TypeExpr { kind: TypeKind.Name(n), span: s } }
+
+/// 「ない」ときに置く空の値
+pub fn TypeExpr no_type() { ty_name("", 0) }
+pub fn Expr no_expr() { mk(ExprKind.Unit, 0) }
+pub fn Block no_block() { Block { stmts: [], tail: false, end: 0 } }
+
+// ---------------------------------------------------------------- 写す（`x += e` の左辺・定数の値）
+
+pub fn TypeExpr clone_type(ref TypeExpr t) {
+    let k = match ref t.kind {
+        case Name(n) -> TypeKind.Name(n);
+        case App(n, ts) -> TypeKind.App(n, own clone_types(ts));
+        case Own(x) -> TypeKind.Own(own clone_type(x));
+        case Ref(x, m) -> TypeKind.Ref(own clone_type(x), m);
+        case Array(x, n) -> TypeKind.Array(own clone_type(x), n);
+        case List(x) -> TypeKind.List(own clone_type(x));
+        case Map(v, k2) -> TypeKind.Map(own clone_type(v), own clone_type(k2));
+        case Fn(ps, has_ret, r) -> TypeKind.Fn(own clone_types(ps), has_ret, own clone_type(r));
+    };
+    TypeExpr { kind: k, span: t.span }
+}
+
+pub fn TypeExpr[] clone_types(ref TypeExpr[] ts) {
+    let TypeExpr[] mut out = [];
+    for t in ts { out.push(clone_type(t)); }
+    out
+}
+
+pub fn Expr[] clone_exprs(ref Expr[] xs) {
+    let Expr[] mut out = [];
+    for x in xs { out.push(clone_expr(x)); }
+    out
+}
+
+pub fn Block clone_block(ref Block b) {
+    let Stmt[] mut ss = [];
+    for s in b.stmts { ss.push(clone_stmt(s)); }
+    Block { stmts: ss, tail: b.tail, end: b.end }
+}
+
+pub fn Pat clone_pat(ref Pat p) {
+    match ref p {
+        case Int(neg, n) -> Pat.Int(neg, n);
+        case Bool(b) -> Pat.Bool(b);
+        case Str(s) -> Pat.Str(s);
+        case Variant(name, binds, spans, has_sub, subs) -> {
+            let str[] mut bs = [];
+            for b in binds { bs.push(b); }
+            let i64[] mut sps = [];
+            for s in spans { sps.push(s); }
+            let bool[] mut hs = [];
+            for h in has_sub { hs.push(h); }
+            let Pat[] mut ps = [];
+            for q in subs { ps.push(clone_pat(q)); }
+            Pat.Variant(name, own bs, own sps, own hs, own ps)
+        }
+    }
+}
+
+pub fn Stmt clone_stmt(ref Stmt s) {
+    match ref s {
+        case Let(name, has_ty, t, m, sp, init) -> Stmt.Let(name, has_ty, own clone_type(t), m, sp, own clone_expr(init));
+        case Assign(t, v, sp) -> Stmt.Assign(own clone_expr(t), own clone_expr(v), sp);
+        case Ex(e) -> Stmt.Ex(own clone_expr(e));
+        case While(c, b) -> Stmt.While(own clone_expr(c), own clone_block(b));
+        case Loop(b) -> Stmt.Loop(own clone_block(b));
+        case For(var, range, rs, b, has_els, els) ->
+            Stmt.For(var, own clone_exprs(range), rs, own clone_block(b), has_els, own clone_block(els));
+        case ForEach(has_key, key, ks, var, vs, iter, b, has_els, els) ->
+            Stmt.ForEach(has_key, key, ks, var, vs, own clone_expr(iter), own clone_block(b), has_els, own clone_block(els));
+        case Break(sp) -> Stmt.Break(sp);
+        case Continue(sp) -> Stmt.Continue(sp);
+        case Return(has_value, v, sp) -> Stmt.Return(has_value, own clone_expr(v), sp);
+    }
+}
+
+pub fn Expr clone_expr(ref Expr e) {
+    let k = match ref e.kind {
+        case Int(n) -> ExprKind.Int(n);
+        case Float(v) -> ExprKind.Float(v);
+        case Bool(b) -> ExprKind.Bool(b);
+        case Str(s) -> ExprKind.Str(s);
+        case Unit -> ExprKind.Unit;
+        case Var(n) -> ExprKind.Var(n);
+        case Cast(x, t) -> ExprKind.Cast(own clone_expr(x), own clone_type(t));
+        case Try(x) -> ExprKind.Try(own clone_expr(x));
+        case Variant(en, vn, xs) -> ExprKind.Variant(en, vn, own clone_exprs(xs));
+        case Own(x) -> ExprKind.Own(own clone_expr(x));
+        case Ref(x, m) -> ExprKind.Ref(own clone_expr(x), m);
+        case Deref(x) -> ExprKind.Deref(own clone_expr(x));
+        case Field(x, n) -> ExprKind.Field(own clone_expr(x), n);
+        case StructLit(n, inits) -> {
+            let FieldInit[] mut out = [];
+            for i in inits { out.push(FieldInit { name: i.name, span: i.span, value: clone_expr(i.value) }); }
+            ExprKind.StructLit(n, own out)
+        }
+        case If(c, t, has_els, els) -> ExprKind.If(own clone_expr(c), own clone_block(t), has_els, own clone_block(els));
+        case Match(sc, arms, has_default, d) -> {
+            let MatchArm[] mut out = [];
+            for a in arms {
+                let Pat[] mut ps = [];
+                for p in a.pats { ps.push(clone_pat(p)); }
+                let i64[] mut sps = [];
+                for s in a.spans { sps.push(s); }
+                out.push(MatchArm { pats: ps, spans: sps, body: clone_block(a.body) });
+            }
+            ExprKind.Match(own clone_expr(sc), own out, has_default, own clone_block(d))
+        }
+        case Unary(op, x) -> ExprKind.Unary(op, own clone_expr(x));
+        case Binary(op, l, r) -> ExprKind.Binary(op, own clone_expr(l), own clone_expr(r));
+        case Call(n, xs) -> ExprKind.Call(n, own clone_exprs(xs));
+        case Index(b, i) -> ExprKind.Index(own clone_expr(b), own clone_expr(i));
+        case ArrayLit(xs) -> ExprKind.ArrayLit(own clone_exprs(xs));
+        case MapLit(kvs) -> ExprKind.MapLit(own clone_exprs(kvs));
+        case ArrayRepeat(x, n) -> ExprKind.ArrayRepeat(own clone_expr(x), n);
+        case Interp(parts) -> {
+            let InterpPart[] mut out = [];
+            for p in parts {
+                match ref p {
+                    case Lit(s) -> out.push(InterpPart.Lit(s));
+                    case Code(x) -> out.push(InterpPart.Code(own clone_expr(x)));
+                }
+            }
+            ExprKind.Interp(own out)
+        }
+        case Lambda(l) -> {
+            let LambdaParam[] mut ps = [];
+            for p in l.params { ps.push(LambdaParam { has_ty: p.has_ty, ty: clone_type(p.ty), name: p.name, span: p.span }); }
+            ExprKind.Lambda(own Lambda { params: ps, body: clone_block(l.body) })
+        }
+        case MethodCall(r, n, xs) -> ExprKind.MethodCall(own clone_expr(r), n, own clone_exprs(xs));
+    };
+    Expr { kind: k, span: e.span, id: 0 }
+}
+
+// ---------------------------------------------------------------- 番号を振る
+
+/// 式に番号を振ったプログラムを作る（前から順に 1, 2, ...）
+pub fn Program number(Program p) {
+    let mut n = Numberer { next: 0 };
+    let mut q = p;
+    let FnDef[] mut fns = [];
+    for f in q.fns.drain() {
+        let mut g = f;
+        g.body = n.block(g.body);
+        fns.push(g);
+    }
+    let InterfaceDef[] mut ifs = [];
+    for i in q.interfaces.drain() {
+        let mut j = i;
+        let FnDef[] mut ms = [];
+        for m in j.methods.drain() {
+            let mut g = m;
+            g.body = n.block(g.body);
+            ms.push(g);
+        }
+        j.methods = ms;
+        ifs.push(j);
+    }
+    q.fns = fns;
+    q.interfaces = ifs;
+    q.nodes = n.next;
+    q
+}
+
+struct Numberer {
+    i64 next;
+
+    fn mut Expr[] exprs(ref Expr[] xs) {
+        let Expr[] mut out = [];
+        for x in xs { out.push(expr(x)); }
+        out
+    }
+
+    fn mut Block block(ref Block b) {
+        let Stmt[] mut ss = [];
+        for s in b.stmts { ss.push(stmt(s)); }
+        Block { stmts: ss, tail: b.tail, end: b.end }
+    }
+
+    fn mut Stmt stmt(ref Stmt s) {
+        match ref s {
+            case Let(name, has_ty, t, m, sp, init) -> Stmt.Let(name, has_ty, own clone_type(t), m, sp, own expr(init));
+            case Assign(t, v, sp) -> Stmt.Assign(own expr(t), own expr(v), sp);
+            case Ex(e) -> Stmt.Ex(own expr(e));
+            case While(c, b) -> Stmt.While(own expr(c), own block(b));
+            case Loop(b) -> Stmt.Loop(own block(b));
+            case For(var, range, rs, b, has_els, els) ->
+                Stmt.For(var, own exprs(range), rs, own block(b), has_els, own block(els));
+            case ForEach(has_key, key, ks, var, vs, iter, b, has_els, els) ->
+                Stmt.ForEach(has_key, key, ks, var, vs, own expr(iter), own block(b), has_els, own block(els));
+            case Break(sp) -> Stmt.Break(sp);
+            case Continue(sp) -> Stmt.Continue(sp);
+            case Return(has_value, v, sp) -> Stmt.Return(has_value, own expr(v), sp);
+        }
+    }
+
+    fn mut Expr expr(ref Expr e) {
+        next += 1;
+        let me = next;
+        let k = match ref e.kind {
+            case Int(n) -> ExprKind.Int(n);
+            case Float(v) -> ExprKind.Float(v);
+            case Bool(b) -> ExprKind.Bool(b);
+            case Str(s) -> ExprKind.Str(s);
+            case Unit -> ExprKind.Unit;
+            case Var(n) -> ExprKind.Var(n);
+            case Cast(x, t) -> ExprKind.Cast(own expr(x), own clone_type(t));
+            case Try(x) -> ExprKind.Try(own expr(x));
+            case Variant(en, vn, xs) -> ExprKind.Variant(en, vn, own exprs(xs));
+            case Own(x) -> ExprKind.Own(own expr(x));
+            case Ref(x, m) -> ExprKind.Ref(own expr(x), m);
+            case Deref(x) -> ExprKind.Deref(own expr(x));
+            case Field(x, n) -> ExprKind.Field(own expr(x), n);
+            case StructLit(n, inits) -> {
+                let FieldInit[] mut out = [];
+                for i in inits { out.push(FieldInit { name: i.name, span: i.span, value: expr(i.value) }); }
+                ExprKind.StructLit(n, own out)
+            }
+            case If(c, t, has_els, els) -> ExprKind.If(own expr(c), own block(t), has_els, own block(els));
+            case Match(sc, arms, has_default, d) -> {
+                let MatchArm[] mut out = [];
+                for a in arms {
+                    let Pat[] mut ps = [];
+                    for p in a.pats { ps.push(clone_pat(p)); }
+                    let i64[] mut sps = [];
+                    for s in a.spans { sps.push(s); }
+                    out.push(MatchArm { pats: ps, spans: sps, body: block(a.body) });
+                }
+                ExprKind.Match(own expr(sc), own out, has_default, own block(d))
+            }
+            case Unary(op, x) -> ExprKind.Unary(op, own expr(x));
+            case Binary(op, l, r) -> ExprKind.Binary(op, own expr(l), own expr(r));
+            case Call(n, xs) -> ExprKind.Call(n, own exprs(xs));
+            case Index(b, i) -> ExprKind.Index(own expr(b), own expr(i));
+            case ArrayLit(xs) -> ExprKind.ArrayLit(own exprs(xs));
+            case MapLit(kvs) -> ExprKind.MapLit(own exprs(kvs));
+            case ArrayRepeat(x, n) -> ExprKind.ArrayRepeat(own expr(x), n);
+            case Interp(parts) -> {
+                let InterpPart[] mut out = [];
+                for p in parts {
+                    match ref p {
+                        case Lit(s) -> out.push(InterpPart.Lit(s));
+                        case Code(x) -> out.push(InterpPart.Code(own expr(x)));
+                    }
+                }
+                ExprKind.Interp(own out)
+            }
+            case Lambda(l) -> {
+                let LambdaParam[] mut ps = [];
+                for p in l.params { ps.push(LambdaParam { has_ty: p.has_ty, ty: clone_type(p.ty), name: p.name, span: p.span }); }
+                ExprKind.Lambda(own Lambda { params: ps, body: block(l.body) })
+            }
+            case MethodCall(r, n, xs) -> ExprKind.MethodCall(own expr(r), n, own exprs(xs));
+        };
+        Expr { kind: k, span: e.span, id: me }
+    }
+}
+
+// ---------------------------------------------------------------- 式の中の変数（Rust 版の walk_expr と同じ順）
+
+pub fn vars_in_block(ref Block b, ref mut str[] names, ref mut i64[] spans) {
+    for s in b.stmts {
+        match ref s {
+            case Let(n, has_ty, t, m, sp, init) -> vars_in(init, names, spans);
+            case Assign(t, v, sp) -> {
+                vars_in(t, names, spans);
+                vars_in(v, names, spans);
+            }
+            case Ex(e) -> vars_in(e, names, spans);
+            case While(c, body) -> {
+                vars_in(c, names, spans);
+                vars_in_block(body, names, spans);
+            }
+            case Loop(body) -> vars_in_block(body, names, spans);
+            case For(var, range, rs, body, has_els, els) -> {
+                for a in range { vars_in(a, names, spans); }
+                vars_in_block(body, names, spans);
+                if has_els { vars_in_block(els, names, spans); }
+            }
+            case ForEach(has_key, key, ks, var, vs, iter, body, has_els, els) -> {
+                vars_in(iter, names, spans);
+                vars_in_block(body, names, spans);
+                if has_els { vars_in_block(els, names, spans); }
+            }
+            case Break(sp) -> {}
+            case Continue(sp) -> {}
+            case Return(has_value, v, sp) -> {
+                if has_value { vars_in(v, names, spans); }
+            }
+        }
+    }
+}
+
+pub fn vars_in(ref Expr e, ref mut str[] names, ref mut i64[] spans) {
+    match ref e.kind {
+        case Var(n) -> {
+            names.push(n);
+            spans.push(e.span);
+        }
+        case Cast(x, t) -> vars_in(x, names, spans);
+        case Try(x) -> vars_in(x, names, spans);
+        case Own(x) -> vars_in(x, names, spans);
+        case Ref(x, m) -> vars_in(x, names, spans);
+        case Deref(x) -> vars_in(x, names, spans);
+        case Field(x, n) -> vars_in(x, names, spans);
+        case Unary(op, x) -> vars_in(x, names, spans);
+        case ArrayRepeat(x, n) -> vars_in(x, names, spans);
+        case Variant(en, vn, xs) -> { for x in xs { vars_in(x, names, spans); } }
+        case Call(n, xs) -> { for x in xs { vars_in(x, names, spans); } }
+        case ArrayLit(xs) -> { for x in xs { vars_in(x, names, spans); } }
+        case MapLit(xs) -> { for x in xs { vars_in(x, names, spans); } }
+        case StructLit(n, inits) -> { for i in inits { vars_in(i.value, names, spans); } }
+        case If(c, t, has_els, els) -> {
+            vars_in(c, names, spans);
+            vars_in_block(t, names, spans);
+            if has_els { vars_in_block(els, names, spans); }
+        }
+        case Match(sc, arms, has_default, d) -> {
+            vars_in(sc, names, spans);
+            for a in arms { vars_in_block(a.body, names, spans); }
+            if has_default { vars_in_block(d, names, spans); }
+        }
+        case Binary(op, l, r) -> {
+            vars_in(l, names, spans);
+            vars_in(r, names, spans);
+        }
+        case Index(b, i) -> {
+            vars_in(b, names, spans);
+            vars_in(i, names, spans);
+        }
+        case Interp(parts) -> {
+            for p in parts {
+                match ref p {
+                    case Lit(s) -> {}
+                    case Code(x) -> vars_in(x, names, spans);
+                }
+            }
+        }
+        case Lambda(l) -> vars_in_block(l.body, names, spans);
+        case MethodCall(r, n, xs) -> {
+            vars_in(r, names, spans);
+            for x in xs { vars_in(x, names, spans); }
+        }
+        default -> {}
+    }
+}

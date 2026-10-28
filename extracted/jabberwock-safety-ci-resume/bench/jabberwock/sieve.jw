@@ -1,0 +1,17 @@
+fn main() {
+    let n = 20000000;
+    let bool[] mut comp = [];
+    for i in range(n + 1) { comp.push(false); }
+    let mut count = 0;
+    for i in range(2, n + 1) {
+        if !comp[i] {
+            count += 1;
+            let mut j = i * i;
+            while j <= n {
+                comp[j] = true;
+                j += i;
+            }
+        }
+    }
+    print(count);
+}

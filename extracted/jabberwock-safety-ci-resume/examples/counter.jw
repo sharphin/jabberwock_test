@@ -1,0 +1,12 @@
+// ref mut を渡して、相手の中身を書き換える
+fn inc(ref mut i64 r) {
+    *r += 1;
+}
+
+fn main() {
+    let mut count = own 0;
+    inc(ref mut count);
+    inc(ref mut count);
+    inc(ref mut count);
+    print("count =", *count)
+}

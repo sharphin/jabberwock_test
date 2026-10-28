@@ -1,0 +1,6 @@
+name = "jabberwock-formal"
+version = "0.1.0"
+defaultTargets = ["JabberwockFormal"]
+
+[[lean_lib]]
+name = "JabberwockFormal"

@@ -1,0 +1,93 @@
+{
+  "compiler": "jwc",
+  "goals": {
+    "semantics": {
+      "statement": "定義されたソースプログラムの観測可能な振る舞いを、対象コンパイラの各変換と生成コードが保存する。",
+      "module": "JabberwockFormal.Jwc.ReferenceAccess",
+      "theorems": [
+        "JabberwockFormal.Jwc.ReferenceAccess.gate_semantics"
+      ],
+      "implementation_sha256": "f887c811157a42fc4bf615e67d53664a4e4fd0b27d42606b3828e6fb1831f31b",
+      "proof_scope": "64-bit世代照合のBoolean決定と局所仕様の一致",
+      "implementation_correspondence": "MANUAL_MODEL_NOT_PROVEN",
+      "excluded": [
+        "全言語の型保存・進行",
+        "LLVM全体の意味論",
+        "実ポインタの生存・配置",
+        "並行実行・FFI",
+        "コンパイラ実装との対応証明"
+      ]
+    },
+    "memory": {
+      "statement": "対象コンパイラが受理したプログラムの実行で、runtime/FFIに明示した仮定の下、無効なメモリアクセスが起きない。",
+      "module": "JabberwockFormal.Jwc.ReferenceAccess",
+      "theorems": [
+        "JabberwockFormal.Jwc.ReferenceAccess.read_requires_valid"
+      ],
+      "implementation_sha256": "f887c811157a42fc4bf615e67d53664a4e4fd0b27d42606b3828e6fb1831f31b",
+      "proof_scope": "モデル化したpayload読出しが世代検査成功を必要とする条件付き性質",
+      "implementation_correspondence": "MANUAL_MODEL_NOT_PROVEN",
+      "excluded": [
+        "全言語の型保存・進行",
+        "LLVM全体の意味論",
+        "実ポインタの生存・配置",
+        "並行実行・FFI",
+        "コンパイラ実装との対応証明"
+      ]
+    },
+    "types": {
+      "statement": "対象コンパイラの型付け規則と実装が対応し、型保存と進行（規定の安全な停止を含む）が成立する。",
+      "module": "JabberwockFormal.Jwc.ReferenceAccess",
+      "theorems": [
+        "JabberwockFormal.Jwc.ReferenceAccess.readonly_write_rejected",
+        "JabberwockFormal.Jwc.ReferenceAccess.successful_write_is_writable"
+      ],
+      "implementation_sha256": "f887c811157a42fc4bf615e67d53664a4e4fd0b27d42606b3828e6fb1831f31b",
+      "proof_scope": "モデル化した書込みにおけるread-only権限拒否",
+      "implementation_correspondence": "MANUAL_MODEL_NOT_PROVEN",
+      "excluded": [
+        "全言語の型保存・進行",
+        "LLVM全体の意味論",
+        "実ポインタの生存・配置",
+        "並行実行・FFI",
+        "コンパイラ実装との対応証明"
+      ]
+    },
+    "ownership": {
+      "statement": "対象コンパイラとruntimeのmove/borrow/drop/退役/並行送信が所有者と参照の不変条件を保存する。",
+      "module": "JabberwockFormal.Jwc.ReferenceAccess",
+      "theorems": [
+        "JabberwockFormal.Jwc.ReferenceAccess.move_preserves_unique"
+      ],
+      "implementation_sha256": "f887c811157a42fc4bf615e67d53664a4e4fd0b27d42606b3828e6fb1831f31b",
+      "proof_scope": "モデル化したcheckedMoveによる所有者の一意性保存",
+      "implementation_correspondence": "MANUAL_MODEL_NOT_PROVEN",
+      "excluded": [
+        "全言語の型保存・進行",
+        "LLVM全体の意味論",
+        "実ポインタの生存・配置",
+        "並行実行・FFI",
+        "コンパイラ実装との対応証明"
+      ]
+    },
+    "checks": {
+      "statement": "対象コンパイラが挿入・省略する世代/境界/算術検査が仕様の成功または安全な停止に対応する。",
+      "module": "JabberwockFormal.Jwc.ReferenceAccess",
+      "theorems": [
+        "JabberwockFormal.Jwc.ReferenceAccess.gate_success_iff",
+        "JabberwockFormal.Jwc.ReferenceAccess.matching_retired_rejected",
+        "JabberwockFormal.Jwc.ReferenceAccess.retired_read_rejected"
+      ],
+      "implementation_sha256": "f887c811157a42fc4bf615e67d53664a4e4fd0b27d42606b3828e6fb1831f31b",
+      "proof_scope": "世代照合と退役マーカー拒否",
+      "implementation_correspondence": "MANUAL_MODEL_NOT_PROVEN",
+      "excluded": [
+        "全言語の型保存・進行",
+        "LLVM全体の意味論",
+        "実ポインタの生存・配置",
+        "並行実行・FFI",
+        "コンパイラ実装との対応証明"
+      ]
+    }
+  }
+}

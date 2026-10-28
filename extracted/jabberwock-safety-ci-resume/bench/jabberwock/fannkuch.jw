@@ -1,0 +1,46 @@
+// fannkuch-redux（n = 10。benchmarks game と同じ順に順列を作る）
+fn main() {
+    let n = 10;
+    let i64[] mut perm = [];
+    let i64[] mut perm1 = [];
+    let i64[] mut count = [];
+    for i in range(n) { perm.push(0); perm1.push(i); count.push(0); }
+    let mut r = n;
+    let mut checksum = 0;
+    let mut maxflips = 0;
+    let mut permcount = 0;
+    loop {
+        while r != 1 { count[r - 1] = r; r -= 1; }
+        for i in range(n) { perm[i] = perm1[i]; }
+        let mut flips = 0;
+        let mut k = perm[0];
+        while k != 0 {
+            let mut i = 0;
+            let mut j = k;
+            while i < j {
+                let t = perm[i];
+                perm[i] = perm[j];
+                perm[j] = t;
+                i += 1;
+                j -= 1;
+            }
+            flips += 1;
+            k = perm[0];
+        }
+        if flips > maxflips { maxflips = flips; }
+        if permcount % 2 == 0 { checksum += flips; } else { checksum -= flips; }
+        loop {
+            if r == n {
+                print(checksum, maxflips);
+                return;
+            }
+            let p0 = perm1[0];
+            for i in range(r) { perm1[i] = perm1[i + 1]; }
+            perm1[r] = p0;
+            count[r] -= 1;
+            if count[r] > 0 { break; }
+            r += 1;
+        }
+        permcount += 1;
+    }
+}

@@ -1,0 +1,28 @@
+// 構造体: フィールドごとに所有する。own / ref の先のフィールドは自動でたどる。
+struct Point { i64 x; i64 y; }
+
+struct Player {
+    str name;
+    own Point pos;
+    i64 score;
+}
+
+fn move_by(ref mut Player p, i64 dx, i64 dy) {
+    p.pos.x += dx; // p は ref mut。p.pos は own。どちらも自動でたどる
+    p.pos.y += dy;
+}
+
+fn main() {
+    let mut hero = own Player {
+        name: "勇者",
+        pos: own Point { x: 0, y: 0 },
+        score: 0,
+    };
+    let h = ref mut hero;
+    move_by(h, 3, 4);
+    h.score += 10;
+    print(hero.name, "は", *hero.pos, "にいる。スコア", hero.score);
+
+    hero.pos = own Point { x: 9, y: 9 }; // 古い Point はここで解放される
+    print(*hero.pos)
+}

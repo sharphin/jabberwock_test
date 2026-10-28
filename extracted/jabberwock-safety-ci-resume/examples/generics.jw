@@ -1,0 +1,26 @@
+struct Node<T> {
+    T value;
+    Option<own Node<T>> next;
+}
+
+fn peek<T>(ref T x) {
+    print(*x);
+}
+
+fn T twice_first<T>(T a) {
+    let o = Some(a);
+    match o {
+        case Some(v) -> v;
+        case None -> a;
+    }
+}
+
+fn main() {
+    let n = Node { value: 1, next: Some(own Node { value: 2, next: None }) };
+    print(n.value);
+    let i = own 5;
+    peek(ref i);
+    print(twice_first(3));
+    let p = twice_first(own 9);
+    print(*p);
+}

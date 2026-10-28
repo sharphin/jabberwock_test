@@ -1,0 +1,34 @@
+// ループと if 式
+fn main() {
+    // for は range(始め, 終わり, 刻み)。終わりは含まない
+    for i in range(1, 10, 2) {
+        let kind = if i % 3 == 0 { "3の倍数" } else { "ふつう" };
+        print(i, kind)
+    }
+
+    // for-else: 1 回も回らなかったときだけ else
+    for i in range(0) {
+        print("ここは通らない")
+    } else {
+        print("空っぽでした")
+    }
+
+    // loop と break / continue
+    let mut n = 0;
+    loop {
+        n++;
+        if n % 2 == 0 { continue; }
+        if n > 7 { break; }
+        print("奇数", n)
+    }
+
+    // match（Java の switch の矢印形式）。値にも文にもなる
+    for i in range(4) {
+        let name = match i {
+            case 0 -> "zero";
+            case 1, 2 -> "small";
+            default -> "many";
+        };
+        print(i, name)
+    }
+}

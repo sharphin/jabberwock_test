@@ -1,0 +1,49 @@
+struct Node {
+    i64 key;
+    Option<own Node> left;
+    Option<own Node> right;
+}
+
+fn insert(ref mut Option<own Node> slot, i64 key) {
+    let mut cur = slot;
+    loop {
+        match cur {
+            case None -> {
+                *cur = Some(own Node { key: key, left: None, right: None });
+                return;
+            }
+            case Some(n) -> {
+                if key < n.key { cur = ref mut n.left; } else { cur = ref mut n.right; }
+            }
+        }
+    }
+}
+
+fn bool contains(ref Option<own Node> slot, i64 key) {
+    let mut cur = slot;
+    loop {
+        match cur {
+            case None -> return false;
+            case Some(n) -> {
+                if n.key == key { return true; }
+                if key < n.key { cur = ref n.left; } else { cur = ref n.right; }
+            }
+        }
+    }
+}
+
+fn main() {
+    let Option<own Node> mut root = None;
+    let mut x = 42;
+    for i in range(1000000) {
+        x = (x * 1103515245 + 12345) % 2147483648;
+        insert(ref mut root, x);
+    }
+    let mut found = 0;
+    x = 42;
+    for i in range(2000000) {
+        x = (x * 1103515245 + 12345) % 2147483648;
+        if contains(ref root, x) { found += 1; }
+    }
+    print(found);
+}

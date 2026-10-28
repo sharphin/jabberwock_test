@@ -1,0 +1,15 @@
+// own は唯一の所有者。渡すと所有権が移る。
+fn own i64 make(i64 n) {
+    let cell = own n * 2;
+    return cell; // 所有権を呼び出し元へ移す（ここでは解放されない）
+}
+
+fn consume(own i64 c) {
+    print("consume:", *c)
+} // ここで c が解放される
+
+fn main() {
+    let a = make(21);
+    print("a =", *a);
+    consume(a)
+}

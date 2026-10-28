@@ -1,0 +1,225 @@
+{
+  "format_version": 1,
+  "run_kind": "local",
+  "checked_at_utc": "2026-10-26T02:53:19.060573+00:00",
+  "source_revision": "d11e1ac0def2f7cf4ca6db1d9c6845aef1d30216",
+  "scope": "abstract_generation_retirement_and_owner_moves",
+  "model_check": "pass",
+  "implementation_connection": "not_proved",
+  "command": "python3 scripts/check_formal.py",
+  "exit_code": 0,
+  "lean_version": "Lean (version 4.24.0, x86_64-unknown-linux-gnu, commit 797c613eb9b6d4ec95db23e3e00af9ac6657f24b, Release)",
+  "source_sha256": {
+    "formal/JabberwockFormal.lean": "a24948726e7805a2181da291649f2d63b52d21a3d9a9b69e88e35654d22a73d6",
+    "formal/JabberwockFormal/Generation.lean": "e1d347719b69d4c87bac95b81aa4ac16fd0d17cdd0cc756bd9d22baf49bb12c8",
+    "formal/JabberwockFormal/Ownership.lean": "39e75bdef93d50a3130a8a4c79077c91a236be2d968c7b7ae380a4048b25792b",
+    "formal/lean-toolchain": "42779d67b81608af8a12aa4328d2ab47ca201925b3b2bd68369587b5340bb434",
+    "formal/lakefile.toml": "f4c42eb1071a32bed4668fc71454aa0f0a122b2bf9c3c6b60c392ce2c5017e44",
+    "formal/lake-manifest.json": "06f2b1e3dec672c3336230db5a2bc08aedce82054b3ec039b1b57efd3bfb3028",
+    "scripts/check_formal.py": "b69e2a2234b93161024d4793e56cfbc3e6f9d29e5de3c0a765dad27679a00a2f"
+  },
+  "theorem_count": 22,
+  "theorems": [
+    {
+      "name": "JabberwockFormal.Generation.step_preserves_bound",
+      "source": "formal/JabberwockFormal/Generation.lean",
+      "kernel_check": "pass",
+      "axioms": [
+        "Quot.sound",
+        "propext"
+      ],
+      "role": "model_theorem"
+    },
+    {
+      "name": "JabberwockFormal.Generation.step_epoch_monotone",
+      "source": "formal/JabberwockFormal/Generation.lean",
+      "kernel_check": "pass",
+      "axioms": [
+        "propext"
+      ],
+      "role": "model_theorem"
+    },
+    {
+      "name": "JabberwockFormal.Generation.retired_is_absorbing",
+      "source": "formal/JabberwockFormal/Generation.lean",
+      "kernel_check": "pass",
+      "axioms": [
+        "propext"
+      ],
+      "role": "model_theorem"
+    },
+    {
+      "name": "JabberwockFormal.Generation.steps_preserve_bound",
+      "source": "formal/JabberwockFormal/Generation.lean",
+      "kernel_check": "pass",
+      "axioms": [
+        "Quot.sound",
+        "propext"
+      ],
+      "role": "model_theorem"
+    },
+    {
+      "name": "JabberwockFormal.Generation.steps_epoch_monotone",
+      "source": "formal/JabberwockFormal/Generation.lean",
+      "kernel_check": "pass",
+      "axioms": [
+        "propext"
+      ],
+      "role": "model_theorem"
+    },
+    {
+      "name": "JabberwockFormal.Generation.retired_stays_retired",
+      "source": "formal/JabberwockFormal/Generation.lean",
+      "kernel_check": "pass",
+      "axioms": [
+        "propext"
+      ],
+      "role": "model_theorem"
+    },
+    {
+      "name": "JabberwockFormal.Generation.invalidation_postcondition",
+      "source": "formal/JabberwockFormal/Generation.lean",
+      "kernel_check": "pass",
+      "axioms": [],
+      "role": "model_theorem"
+    },
+    {
+      "name": "JabberwockFormal.Generation.release_postcondition",
+      "source": "formal/JabberwockFormal/Generation.lean",
+      "kernel_check": "pass",
+      "axioms": [],
+      "role": "model_theorem"
+    },
+    {
+      "name": "JabberwockFormal.Generation.retirement_postcondition",
+      "source": "formal/JabberwockFormal/Generation.lean",
+      "kernel_check": "pass",
+      "axioms": [],
+      "role": "model_theorem"
+    },
+    {
+      "name": "JabberwockFormal.Generation.invalidation_available",
+      "source": "formal/JabberwockFormal/Generation.lean",
+      "kernel_check": "pass",
+      "axioms": [],
+      "role": "model_theorem"
+    },
+    {
+      "name": "JabberwockFormal.Generation.no_resurrection",
+      "source": "formal/JabberwockFormal/Generation.lean",
+      "kernel_check": "pass",
+      "axioms": [
+        "Quot.sound",
+        "propext"
+      ],
+      "role": "model_theorem"
+    },
+    {
+      "name": "JabberwockFormal.Generation.checked_read_iff",
+      "source": "formal/JabberwockFormal/Generation.lean",
+      "kernel_check": "pass",
+      "axioms": [
+        "Classical.choice",
+        "Quot.sound",
+        "propext"
+      ],
+      "role": "model_theorem"
+    },
+    {
+      "name": "JabberwockFormal.Generation.retired_read_rejected",
+      "source": "formal/JabberwockFormal/Generation.lean",
+      "kernel_check": "pass",
+      "axioms": [
+        "propext"
+      ],
+      "role": "model_theorem"
+    },
+    {
+      "name": "JabberwockFormal.Generation.read_only_write_rejected",
+      "source": "formal/JabberwockFormal/Generation.lean",
+      "kernel_check": "pass",
+      "axioms": [],
+      "role": "model_theorem"
+    },
+    {
+      "name": "JabberwockFormal.Generation.writable_access_iff",
+      "source": "formal/JabberwockFormal/Generation.lean",
+      "kernel_check": "pass",
+      "axioms": [
+        "Classical.choice",
+        "Quot.sound",
+        "propext"
+      ],
+      "role": "model_theorem"
+    },
+    {
+      "name": "JabberwockFormal.Generation.wrapping_revives_at_two",
+      "source": "formal/JabberwockFormal/Generation.lean",
+      "kernel_check": "pass",
+      "axioms": [],
+      "role": "counterexample_to_old_wrapping_rule"
+    },
+    {
+      "name": "JabberwockFormal.Ownership.move_empties_source",
+      "source": "formal/JabberwockFormal/Ownership.lean",
+      "kernel_check": "pass",
+      "axioms": [
+        "propext"
+      ],
+      "role": "model_theorem"
+    },
+    {
+      "name": "JabberwockFormal.Ownership.move_preserves_identity",
+      "source": "formal/JabberwockFormal/Ownership.lean",
+      "kernel_check": "pass",
+      "axioms": [
+        "propext"
+      ],
+      "role": "model_theorem"
+    },
+    {
+      "name": "JabberwockFormal.Ownership.move_preserves_other",
+      "source": "formal/JabberwockFormal/Ownership.lean",
+      "kernel_check": "pass",
+      "axioms": [
+        "propext"
+      ],
+      "role": "model_theorem"
+    },
+    {
+      "name": "JabberwockFormal.Ownership.move_preserves_unique",
+      "source": "formal/JabberwockFormal/Ownership.lean",
+      "kernel_check": "pass",
+      "axioms": [
+        "propext"
+      ],
+      "role": "model_theorem"
+    },
+    {
+      "name": "JabberwockFormal.Ownership.checked_move_preserves_unique",
+      "source": "formal/JabberwockFormal/Ownership.lean",
+      "kernel_check": "pass",
+      "axioms": [
+        "propext"
+      ],
+      "role": "model_theorem"
+    },
+    {
+      "name": "JabberwockFormal.Ownership.empty_source_rejected",
+      "source": "formal/JabberwockFormal/Ownership.lean",
+      "kernel_check": "pass",
+      "axioms": [
+        "propext"
+      ],
+      "role": "model_theorem"
+    }
+  ],
+  "checker_output": "Build completed successfully (5 jobs).\nLean (version 4.24.0, x86_64-unknown-linux-gnu, commit 797c613eb9b6d4ec95db23e3e00af9ac6657f24b, Release)\n22 theorems checked; only approved standard Lean axioms; no skipped proofs\nScope: abstract generation/retirement and owner moves, not the full language or implementation\n",
+  "axiom_audit_output": "'JabberwockFormal.Generation.step_preserves_bound' depends on axioms: [propext, Quot.sound]\n'JabberwockFormal.Generation.step_epoch_monotone' depends on axioms: [propext]\n'JabberwockFormal.Generation.retired_is_absorbing' depends on axioms: [propext]\n'JabberwockFormal.Generation.steps_preserve_bound' depends on axioms: [propext, Quot.sound]\n'JabberwockFormal.Generation.steps_epoch_monotone' depends on axioms: [propext]\n'JabberwockFormal.Generation.retired_stays_retired' depends on axioms: [propext]\n'JabberwockFormal.Generation.invalidation_postcondition' does not depend on any axioms\n'JabberwockFormal.Generation.release_postcondition' does not depend on any axioms\n'JabberwockFormal.Generation.retirement_postcondition' does not depend on any axioms\n'JabberwockFormal.Generation.invalidation_available' does not depend on any axioms\n'JabberwockFormal.Generation.no_resurrection' depends on axioms: [propext, Quot.sound]\n'JabberwockFormal.Generation.checked_read_iff' depends on axioms: [propext, Classical.choice, Quot.sound]\n'JabberwockFormal.Generation.retired_read_rejected' depends on axioms: [propext]\n'JabberwockFormal.Generation.read_only_write_rejected' does not depend on any axioms\n'JabberwockFormal.Generation.writable_access_iff' depends on axioms: [propext, Classical.choice, Quot.sound]\n'JabberwockFormal.Generation.wrapping_revives_at_two' does not depend on any axioms\n'JabberwockFormal.Ownership.move_empties_source' depends on axioms: [propext]\n'JabberwockFormal.Ownership.move_preserves_identity' depends on axioms: [propext]\n'JabberwockFormal.Ownership.move_preserves_other' depends on axioms: [propext]\n'JabberwockFormal.Ownership.move_preserves_unique' depends on axioms: [propext]\n'JabberwockFormal.Ownership.checked_move_preserves_unique' depends on axioms: [propext]\n'JabberwockFormal.Ownership.empty_source_rejected' depends on axioms: [propext]\n",
+  "limitations": [
+    "No proof of complete language or compiler safety.",
+    "No proof connecting the abstract state to Rust/C/LLVM execution.",
+    "This local record is not a GitHub Actions result.",
+    "Markdown records and this JSON are snapshots; check_formal.py audits Lean, not record-field completeness."
+  ]
+}

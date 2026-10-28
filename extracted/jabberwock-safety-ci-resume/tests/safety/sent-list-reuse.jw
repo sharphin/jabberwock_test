@@ -1,0 +1,12 @@
+fn main() {
+    let i64[] mut a = [1, 2];
+    let r = ref a[0];
+    let chan<i64> ready = chan();
+    let t = spawn(() -> {
+        let mut xs = a;
+        ready.send(0);
+        for i in range(100000) { let q = ref xs[0]; xs.reverse(); }
+    });
+    ready.recv();
+    print(*r);
+}

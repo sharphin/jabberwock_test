@@ -1,0 +1,50 @@
+struct Point {
+    i64 x;
+    i64 y;
+
+    fn i64 len2() {
+        x * x + y * y
+    }
+
+    fn mut move_by(i64 dx, i64 dy) {
+        x += dx;
+        this.y = y + dy;
+    }
+
+    fn i64 far(i64 d) {
+        d + x + len2()
+    }
+}
+
+struct Counter<T> {
+    T last;
+    i64 n;
+
+    fn mut push(T v) {
+        last = v;
+        n++;
+    }
+
+    fn T get() {
+        last
+    }
+}
+
+fn main() {
+    let mut p = Point { x: 3, y: 4 };
+    print(p.len2());
+    p.move_by(1, 1);
+    print(p.x, p.y, p.len2());
+    print(p.far(100));
+    let mut o = own Point { x: 1, y: 2 };
+    o.move_by(10, 10);
+    print(o.len2());
+    let r = ref mut o;
+    r.move_by(1, 1);
+    print(o.x);
+    print(Point { x: 2, y: 0 }.len2());
+    let mut c = Counter { last: 0, n: 0 };
+    c.push(5);
+    c.push(7);
+    print(c.get(), c.n);
+}

@@ -1,0 +1,10 @@
+// 関数のローカルな own への ref を返してしまう、古典的なダングリング
+fn ref i64 leak() {
+    let a = own 42;
+    return ref a;
+}
+
+fn main() {
+    let r = leak();
+    print(*r)
+}

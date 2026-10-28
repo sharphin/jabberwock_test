@@ -1,0 +1,9 @@
+fn consume(own i64 c) {
+    print(*c)
+}
+
+fn main() {
+    let a = own 1;
+    consume(a);
+    print(*a)
+}

@@ -1,0 +1,2038 @@
+// 構文木から IR への書き出し（Rust 版の src/ir/lower.rs にあたる。同じ順に同じ IR を書く）
+//
+// 型検査の結論は `typeck.Info`（式の番号で引く）から読む。書き出せない書き方は `Err(理由)`。
+use ast;
+use diag;
+use ir;
+use ty;
+use typeck;
+
+fn bool is_builtin(str n) {
+    n == "print" || n == "eprint" || n == "drop" || n == "assert" || n == "read_line" || n == "args" || n == "spawn"
+        || n == "chan" || n == "exit" || n == "read_file" || n == "write_file" || n == "run_command" || n == "chr"
+}
+
+/// エラー表示に使う場所の名前（interp の `describe`）
+pub fn str describe(ref ast.Expr e) {
+    match ref e.kind {
+        case Var(n) -> n;
+        case Deref(x) -> "*" + describe(x);
+        case Field(x, n) -> describe(x) + "." + n;
+        case Index(b, i) -> describe(b) + "[..]";
+        default -> "式";
+    }
+}
+
+fn bool is_place(ref ast.Expr e) {
+    match ref e.kind {
+        case Var(n) -> true;
+        case Deref(x) -> true;
+        case Field(x, n) -> true;
+        case Index(b, i) -> true;
+        default -> false;
+    }
+}
+
+/// 記号の演算子 → Rust 版の BinOp の名前
+fn str bin_name(str op) {
+    if op == "+" { return "Add"; }
+    if op == "-" { return "Sub"; }
+    if op == "*" { return "Mul"; }
+    if op == "/" { return "Div"; }
+    if op == "%" { return "Rem"; }
+    if op == "==" { return "Eq"; }
+    if op == "!=" { return "Ne"; }
+    if op == "<" { return "Lt"; }
+    if op == "<=" { return "Le"; }
+    if op == ">" { return "Gt"; }
+    if op == ">=" { return "Ge"; }
+    if op == "&&" { return "And"; }
+    if op == "||" { return "Or"; }
+    if op == "&" { return "BitAnd"; }
+    if op == "|" { return "BitOr"; }
+    if op == "^" { return "BitXor"; }
+    if op == "<<" { return "Shl"; }
+    "Shr"
+}
+
+fn str un_name(str op) {
+    if op == "-" { "Neg" } else if op == "!" { "Not" } else { "BitNot" }
+}
+
+fn bool contains_param(ref ty.Ty t) { ty.contains_kind(t, "Param") }
+
+fn ir.Operand unit_op() { ir.Operand.Const(ir.Const.Unit) }
+
+fn ir.Operand bool_op(bool b) { ir.Operand.Const(ir.Const.Bool(b)) }
+
+fn ir.Operand str_op(str s) { ir.Operand.Const(ir.Const.Str(s)) }
+
+fn ir.Const pat_const(ref ast.Pat p) {
+    match ref p {
+        case Int(neg, n) -> ir.Const.Int(neg && n != 0, n, "i64");
+        case Bool(b) -> ir.Const.Bool(b);
+        case Str(s) -> ir.Const.Str(s);
+        default -> ir.Const.Unit;
+    }
+}
+
+fn bool is_variant_pat(ref ast.Pat p) {
+    match ref p {
+        case Variant(n, b, s, h, x) -> true;
+        default -> false;
+    }
+}
+
+/// 書き出す関数（呼ばれた順に番号をつけて並べる）
+struct QItem {
+    str inst;
+    bool lambda;
+    // 関数なら prog.fns の位置、クロージャなら `lams` の位置
+    i64 def;
+    ty.TMap map;
+    i64 idx;
+    str[] cap_names;
+    ty.Ty[] cap_tys;
+    ty.Ty ret;
+    i64 span;
+    bool once;
+}
+
+struct Scope {
+    str[] names;
+    i64[] ls;
+}
+
+struct Loop {
+    i64 brk;
+    i64 brk_depth;
+    i64 cont;
+    i64 cont_depth;
+}
+
+/// 場所と、一時的な値の中を読むときはその値を入れた変数（なければ -1）
+struct ReadPlace {
+    ir.Place p;
+    i64 t;
+}
+
+pub struct Lower {
+    ref ast.Program prog;
+    ref typeck.Checker ck;
+    // ---- 呼ばれた関数（Rust 版の Calls）
+    i64[str] defs;
+    i64[str] by_name;
+    str[] fn_names;
+    QItem[] queue;
+    i64 qhead;
+    // クロージャの本体（for の要素の写しの中も指せるよう、own の先を借りる）と、その式の番号
+    (ref ast.Lambda)[] lams;
+    i64[] lam_ids;
+    // ---- 書き出している関数（Rust 版の FnLower）
+    ty.TMap subst;
+    str fname;
+    i64[] caps_l;
+    bool spawning;
+    i64 in_value;
+    i64[] lent;
+    ir.LocalDecl[] locals;
+    ir.Block[] blocks;
+    i64 cur;
+    Scope[] scopes;
+    Loop[] loops;
+    ty.Ty fret;
+
+    // ------------------------------------------------ 呼ばれた関数
+
+    /// `name` を型の引数 `targs`（具体的な型）で呼ぶときの関数の番号
+    fn mut Result<i64, str> index(str name, ref ty.TMap targs) {
+        if !defs.contains(name) { return Err("関数 `{name}` がない"); }
+        let di = defs[name];
+        let ty.Ty[] mut tas = [];
+        for p in prog.fns[di].tparams {
+            if !targs.has(p) { return Err("`{name}` の型の引数 `{p}` が分からない"); }
+            let t = targs.get(p);
+            if contains_param(t) { return Err("`{name}` の型の引数が決まらない"); }
+            tas.push(t);
+        }
+        let mut inst = name;
+        if tas.len() > 0 {
+            let str[] mut shown = [];
+            for t in tas { shown.push(ty.show(t)); }
+            inst = name + "<" + shown.join(", ") + ">";
+        }
+        let m = ty.targs(prog.fns[di].tparams, tas);
+        Ok(push_fn(inst, false, di, m, [], [], ty.Ty.Unit, 0, false))
+    }
+
+    fn mut i64 push_fn(str inst, bool lambda, i64 def, ty.TMap m, str[] cap_names, ty.Ty[] cap_tys, ty.Ty r, i64 span, bool once) {
+        if by_name.contains(inst) { return by_name[inst]; }
+        let i = fn_names.len();
+        by_name[inst] = i;
+        fn_names.push(inst);
+        queue.push(QItem {
+            inst: inst, lambda: lambda, def: def, map: m, idx: i, cap_names: cap_names, cap_tys: cap_tys, ret: r, span: span, once: once,
+        });
+        i
+    }
+
+    /// 次の関数を書き出す前に、書き出しの状態を空にする
+    fn mut reset(ref ty.TMap m, str name) {
+        subst = ty.clone_map(m);
+        fname = name;
+        caps_l = [];
+        spawning = false;
+        in_value = 0;
+        lent = [];
+        locals = [];
+        blocks = [ir.Block { insts: [], term: ir.Term.Unreachable }];
+        cur = 0;
+        scopes = [];
+        loops = [];
+        fret = ty.Ty.Unit;
+    }
+
+    // ------------------------------------------------ 関数
+
+    fn mut Result<ir.Func, str> lower_fn(ref ast.FnDef f) {
+        scopes.push(Scope { names: [], ls: [] });
+        for p in f.params {
+            let pt = var_ty(p.span)?;
+            declare(p.name, pt, p.m, p.span);
+        }
+        let info = ref ck.info;
+        let raw = if info.ret_at.contains(f.name) { ty.cl(info.ret_tys[info.ret_at[f.name]]) } else { ty.Ty.Unit };
+        let ret_ty = ty.subst(raw, subst);
+        fret = ty.cl(ret_ty);
+        let mut r_op = unit_op();
+        if f.has_ret {
+            let r = temp(ty.cl(ret_ty), f.body.end);
+            block(f.body, r)?;
+            r_op = ir.Operand.Move(r, f.body.end);
+        } else {
+            block(f.body, -1)?;
+        }
+        leave(0, f.body.end, "スコープを抜けた");
+        terminate(ir.Term.Return(own r_op));
+        Ok(ir.Func {
+            name: fname, params: f.params.len(), captures: 0, cap_tys: [], ret: ret_ty, locals: locals.drain(),
+            blocks: reachable(blocks.drain()), span: f.span,
+        })
+    }
+
+    /// クロージャの本体。引数のあとに、取り込んだ値（読むだけの写し）を受け取る
+    fn mut Result<ir.Func, str> lower_lambda(ref ast.Lambda l, i64 id, ref str[] cap_names, ref ty.Ty[] cap_tys, ref ty.Ty ret_ty, i64 span,
+            bool once) {
+        scopes.push(Scope { names: [], ls: [] });
+        for p in l.params {
+            let pt = var_ty(p.span)?;
+            declare(p.name, pt, false, p.span);
+        }
+        fret = ty.cl(ret_ty);
+        let ncaps = cap_names.len();
+        for (i, n) in cap_names {
+            if once {
+                declare(n, ty.cl(cap_tys[i]), false, span);
+                continue;
+            }
+            let ct = if ty.is(cap_tys[i], "Own") { ty.Ty.Ref(own ty.inner(cap_tys[i]), false) } else { ty.cl(cap_tys[i]) };
+            let v = declare(n, ct, false, span);
+            caps_l.push(v);
+        }
+        let info = ref ck.info;
+        let at = info.lam_at[id];
+        let returns = at >= 0 && info.lams[at].returns;
+        let mut r_op = unit_op();
+        if returns {
+            let r = temp(ty.cl(ret_ty), l.body.end);
+            block(l.body, r)?;
+            r_op = ir.Operand.Move(r, l.body.end);
+        } else {
+            block(l.body, -1)?;
+        }
+        leave(0, l.body.end, "スコープを抜けた");
+        terminate(ir.Term.Return(own r_op));
+        Ok(ir.Func {
+            name: fname, params: l.params.len() + ncaps, captures: ncaps, cap_tys: ty.cls(cap_tys), ret: ty.cl(ret_ty),
+            locals: locals.drain(), blocks: reachable(blocks.drain()), span: span,
+        })
+    }
+
+    /// 変数を値として読む（interp の `read_var`）。関数の値と取り込んだ変数は、値しだいで決める
+    fn Result<ir.Operand, str> read_var(i64 l, i64 span) {
+        let t = ref locals[l].t;
+        if has_i(caps_l, l) || ty.is(t, "Fn") { return Ok(ir.Operand.Read(l, span)); }
+        if moves(t)? { return Ok(ir.Operand.Move(l, span)); }
+        Ok(ir.copy_of(ir.local(l, span)))
+    }
+
+    // ------------------------------------------------ 道具
+
+    fn Result<ty.Ty, str> var_ty(i64 decl) {
+        let info = ref ck.info;
+        if !info.var_at.contains(decl) { return Err("変数の型が記録されていない"); }
+        Ok(ty.subst(info.var_tys[info.var_at[decl]], subst))
+    }
+
+    /// 式の型（作り分けている型の引数は具体的な型に置き換える）
+    fn ty.Ty ty_of(ref ast.Expr e) {
+        let info = ref ck.info;
+        if info.has_ty[e.id] { return ty.subst(info.tys[e.id], subst); }
+        // 定数の式の中は型を記録しない。印の型
+        if info.floats[e.id] { return ty.Ty.Float; }
+        if info.ints[e.id] != "" { return ty.Ty.Int(info.ints[e.id]); }
+        ty.Ty.Unit
+    }
+
+    /// 呼び出しの式で型検査が決めた型の引数（具体的な型に置き換えたもの）
+    fn ty.TMap targs_of(ref ast.Expr e) {
+        let info = ref ck.info;
+        let mut m = ty.tmap();
+        let at = info.targ_at[e.id];
+        if at < 0 { return m; }
+        for (i, k) in info.targ_maps[at].ks { m.put(k, ty.subst(info.targ_maps[at].vs[i], subst)); }
+        m
+    }
+
+    fn mut i64 new_local(str name, ty.Ty t, bool m, i64 span) {
+        locals.push(ir.LocalDecl { name: name, t: t, m: m, span: span });
+        locals.len() - 1
+    }
+
+    fn mut i64 temp(ty.Ty t, i64 span) { new_local("", t, true, span) }
+
+    /// 今のスコープに変数を置く（値は `Assign` で入れる）
+    fn mut i64 declare(str name, ty.Ty t, bool m, i64 span) {
+        let l = new_local(name, t, m, span);
+        let last = scopes.len() - 1;
+        scopes[last].names.push(name);
+        scopes[last].ls.push(l);
+        l
+    }
+
+    /// 名前の変数（なければ -1）
+    fn i64 lookup(str name) {
+        let mut i = scopes.len() - 1;
+        while i >= 0 {
+            let mut j = scopes[i].names.len() - 1;
+            while j >= 0 {
+                if scopes[i].names[j] == name { return scopes[i].ls[j]; }
+                j -= 1;
+            }
+            i -= 1;
+        }
+        -1
+    }
+
+    fn mut emit(ir.Inst i) { blocks[cur].insts.push(i); }
+
+    fn mut assign(i64 l, ir.Rvalue value, i64 span) {
+        emit(ir.Inst.Assign(own ir.local(l, span), own value, span, ""));
+    }
+
+    /// 値を新しい一時的な変数に入れ、それを読む operand を返す
+    fn mut ir.Operand temp_of(ty.Ty t, ir.Rvalue value, i64 span) {
+        match ref value {
+            case Use(o) -> {
+                if ir.is_const(o) { return ir.clone_op(o); }
+            }
+            default -> {}
+        }
+        let tl = temp(t, span);
+        assign(tl, value, span);
+        ir.Operand.Move(tl, span)
+    }
+
+    fn mut i64 new_block() {
+        blocks.push(ir.Block { insts: [], term: ir.Term.Unreachable });
+        blocks.len() - 1
+    }
+
+    fn mut set_term(i64 b, ir.Term t) { blocks[b].term = t; }
+
+    /// 今のブロックを終わらせる。続きは、どこからも飛んでこない新しいブロックに書く
+    fn mut terminate(ir.Term t) {
+        blocks[cur].term = t;
+        cur = new_block();
+    }
+
+    fn mut goto_and_switch(i64 to) {
+        blocks[cur].term = ir.Term.Goto(to);
+        cur = to;
+    }
+
+    /// スコープ `depth` 個を残して、それより内側の変数を内側から drop する（スコープは閉じない）
+    fn mut leave(i64 depth, i64 span, str how) {
+        let mut i = scopes.len() - 1;
+        while i >= depth {
+            let mut j = scopes[i].ls.len() - 1;
+            while j >= 0 {
+                let n = scopes[i].names[j];
+                emit(ir.Inst.Drop(scopes[i].ls[j], span, "`{n}` は{how}ので解放された"));
+                j -= 1;
+            }
+            i -= 1;
+        }
+    }
+
+    /// 一番内側のスコープを、普通に抜けたとして閉じる
+    fn mut pop_scope(i64 span, str how) {
+        leave(scopes.len() - 1, span, how);
+        scopes.pop();
+    }
+
+    fn mut push_scope() { scopes.push(Scope { names: [], ls: [] }); }
+
+    /// 隠れた変数（名前が空）を一番内側のスコープに置く
+    fn mut hide(i64 l) {
+        let last = scopes.len() - 1;
+        scopes[last].names.push("");
+        scopes[last].ls.push(l);
+    }
+
+    // ------------------------------------------------ 文
+
+    /// ブロックを書き出す。`dest` が 0 以上なら、最後の `;` のない式の値をそこに入れる（なければ ()）
+    fn mut Result<(), str> block(ref ast.Block b, i64 dest) {
+        push_scope();
+        let mut wrote = false;
+        let n = b.stmts.len();
+        for (i, s) in b.stmts {
+            let mut done = false;
+            if dest >= 0 && b.tail && i + 1 == n {
+                match ref s {
+                    case Ex(e) -> {
+                        let v = expr(e)?;
+                        assign(dest, ir.Rvalue.Use(own v), e.span);
+                        wrote = true;
+                        done = true;
+                    }
+                    default -> {}
+                }
+            }
+            if !done { stmt(s)?; }
+        }
+        if dest >= 0 && !wrote {
+            assign(dest, ir.Rvalue.Use(own unit_op()), b.end);
+        }
+        pop_scope(b.end, "スコープを抜けた");
+        Ok(())
+    }
+
+    fn mut Result<(), str> stmt(ref ast.Stmt s) {
+        match ref s {
+            case Let(name, has_ty, te, m, span, init) -> {
+                let v = expr(init)?;
+                let vt = var_ty(span)?;
+                let l = declare(name, vt, m, span);
+                assign(l, ir.Rvalue.Use(own v), span);
+            }
+            case Assign(target, value, span) -> {
+                // `s = s + e`（`s += e`）: 文字列の変数なら、その場で後ろに足す（`append`）
+                let mut appended = false;
+                match ref target.kind {
+                    case Var(x) -> {
+                        match ref value.kind {
+                            case Binary(op, l, r) -> {
+                                let lx = lookup(x);
+                                let local_ok = lx >= 0 && !has_i(caps_l, lx);
+                                let same = match ref l.kind {
+                                    case Var(y) -> y == x;
+                                    default -> false;
+                                };
+                                if op == "+" && same && ty.is(ty_of(value), "Str") && local_ok {
+                                    let rv = expr(r)?;
+                                    let pl = place(target)?;
+                                    let bv = ir.Rvalue.Builtin("append", own [ir.copy_of(ir.clone_place(pl)), rv], span);
+                                    emit(ir.Inst.Assign(own pl, own bv, span, describe(target)));
+                                    appended = true;
+                                }
+                            }
+                            default -> {}
+                        }
+                    }
+                    default -> {}
+                }
+                if appended { return Ok(()); }
+                // 値を先に計算し、そのあとで場所を求める（interp の assign と同じ順）
+                let v = expr(value)?;
+                let pl2 = place(target)?;
+                emit(ir.Inst.Assign(own pl2, own ir.Rvalue.Use(own v), span, describe(target)));
+            }
+            case Ex(e) -> {
+                match ref e.kind {
+                    case If(c, t, has_els, els) -> if_expr(c, t, has_els, els, -1)?;
+                    case Match(sc, arms, has_default, d) -> match_expr(sc, arms, has_default, d, -1)?;
+                    default -> {
+                        let v = expr(e)?;
+                        if !ir.is_const(v) {
+                            emit(ir.Inst.Discard(own v, e.span, "どこにも束縛されず、そのまま捨てられた"));
+                        }
+                    }
+                }
+            }
+            case While(cond, body) -> {
+                let head = new_block();
+                let body_bb = new_block();
+                let exit_bb = new_block();
+                goto_and_switch(head);
+                let c = expr(cond)?;
+                set_term(cur, ir.Term.Branch(own c, body_bb, exit_bb));
+                cur = body_bb;
+                let depth = scopes.len();
+                loops.push(Loop { brk: exit_bb, brk_depth: depth, cont: head, cont_depth: depth });
+                block(body, -1)?;
+                loops.pop();
+                set_term(cur, ir.Term.Goto(head));
+                cur = exit_bb;
+            }
+            case Loop(body) -> {
+                let head = new_block();
+                let exit_bb = new_block();
+                goto_and_switch(head);
+                let depth = scopes.len();
+                loops.push(Loop { brk: exit_bb, brk_depth: depth, cont: head, cont_depth: depth });
+                block(body, -1)?;
+                loops.pop();
+                set_term(cur, ir.Term.Goto(head));
+                cur = exit_bb;
+            }
+            case For(var, rng, range_span, body, has_els, els) -> for_range(var, rng, range_span, body, has_els, els)?;
+            case ForEach(has_key, key, key_span, var, var_span, iter, body, has_els, els) -> {
+                if ck.info.consumes[iter.id] {
+                    for_take(has_key, key, key_span, var, var_span, iter, body, has_els, els)?;
+                } else {
+                    for_each(has_key, key, key_span, var, var_span, iter, body, has_els, els)?;
+                }
+            }
+            case Break(sp) -> {
+                let lp = loops.len() - 1;
+                let to = loops[lp].brk;
+                leave(loops[lp].brk_depth, sp, "break でループを抜けた");
+                terminate(ir.Term.Goto(to));
+            }
+            case Continue(sp) -> {
+                let lp = loops.len() - 1;
+                let to = loops[lp].cont;
+                leave(loops[lp].cont_depth, sp, "continue で次の周回へ進んだ");
+                terminate(ir.Term.Goto(to));
+            }
+            case Return(has_value, value, span) -> {
+                let v = if has_value { expr(value)? } else { unit_op() };
+                if in_value > 0 {
+                    drop_pending(ir.moved_local(v), span, "return で関数を抜けたので、使われずに捨てられた");
+                }
+                leave(0, span, "関数から return した");
+                terminate(ir.Term.Return(own v));
+            }
+        }
+        Ok(())
+    }
+
+    /// `for i in range(..)`。範囲の値を先にすべて計算し、刻みが 0 ならエラー、型の範囲を超えたら終わる
+    fn mut Result<(), str> for_range(str var, ref ast.Expr[] rng, i64 range_span, ref ast.Block body, bool has_els, ref ast.Block els) {
+        // ループ変数の型は、終わりの値（1 つだけなら、その値）の型
+        let k = if rng.len() < 2 { rng.len() } else { 2 };
+        let it = int_ty(rng[k - 1]);
+        if it == "" { return Err("range の型が分からない"); }
+        let ir.Operand[] mut vals = [];
+        for a in rng { vals.push(expr(a)?); }
+        let mut start = ir.Operand.Const(ir.Const.Int(false, 0, it));
+        let mut end_v = unit_op();
+        let mut step_v = ir.int_const(1, "i64");
+        if vals.len() == 1 {
+            end_v = ir.clone_op(vals[0]);
+        } else if vals.len() == 2 {
+            start = ir.clone_op(vals[0]);
+            end_v = ir.clone_op(vals[1]);
+        } else {
+            start = ir.clone_op(vals[0]);
+            end_v = ir.clone_op(vals[1]);
+            step_v = ir.clone_op(vals[2]);
+        }
+        // 隠れた変数（ループの外へ出るとき、ほかの変数と同じく drop する）
+        push_scope();
+        let hidden = scopes.len();
+        let counter = declare("", ty.Ty.Int(it), true, range_span);
+        assign(counter, ir.Rvalue.Cast(own start, own ty.Ty.Int(it)), range_span);
+        let end_l = declare("", ty.Ty.Int(it), false, range_span);
+        assign(end_l, ir.Rvalue.Use(own end_v), range_span);
+        // 刻みが書いたままの数なら、向きはここで決まる（sign: 2 は分からない）
+        let mut sign = 2;
+        let mut step = unit_op();
+        match ref step_v {
+            case Const(c) -> {
+                match c {
+                    case Int(neg, mag, t) -> {
+                        sign = if mag == 0 { 0 } else if neg { -1 } else { 1 };
+                        step = ir.Operand.Const(ir.Const.Int(neg, mag, "i64"));
+                    }
+                    default -> {}
+                }
+            }
+            default -> {}
+        }
+        if sign == 2 {
+            let sl = declare("", ty.i64t(), false, range_span);
+            assign(sl, ir.Rvalue.Use(own ir.clone_op(step_v)), range_span);
+            step = ir.copy_of(ir.local(sl, range_span));
+        }
+        // 1 回でも回ったか（else があるときだけ）
+        let mut ran = -1;
+        if has_els {
+            ran = declare("", ty.Ty.Bool, true, range_span);
+            assign(ran, ir.Rvalue.Use(own bool_op(false)), range_span);
+        }
+        let zero = ir.int_const(0, "i64");
+        let head = new_block();
+        let up = new_block();
+        let down = new_block();
+        let body_bb = new_block();
+        let next = new_block();
+        let done = new_block();
+        let exit_bb = new_block();
+        if sign == 0 {
+            set_term(cur, ir.Term.Fail("range の刻みが 0 です", range_span, "これだと永遠に終わりません"));
+            cur = head;
+        } else if sign != 2 {
+            goto_and_switch(head);
+        } else {
+            // 刻みが 0 なら終わらない
+            let fail = new_block();
+            let z = temp_of(ty.Ty.Bool, ir.Rvalue.Bin("Eq", own ir.clone_op(step), own ir.clone_op(zero), range_span), range_span);
+            set_term(cur, ir.Term.Branch(own z, fail, head));
+            set_term(fail, ir.Term.Fail("range の刻みが 0 です", range_span, "これだと永遠に終わりません"));
+            cur = head;
+        }
+        if sign == 2 {
+            let pos = temp_of(ty.Ty.Bool, ir.Rvalue.Bin("Gt", own ir.clone_op(step), own ir.clone_op(zero), range_span), range_span);
+            set_term(cur, ir.Term.Branch(own pos, up, down));
+            cur = up;
+        } else if sign > 0 {
+            goto_and_switch(up);
+        } else {
+            goto_and_switch(down);
+        }
+        let rd_c = ir.copy_of(ir.local(counter, range_span));
+        let rd_e = ir.copy_of(ir.local(end_l, range_span));
+        if sign >= 0 {
+            cur = up;
+            let c = temp_of(ty.Ty.Bool, ir.Rvalue.Bin("Lt", own ir.clone_op(rd_c), own ir.clone_op(rd_e), range_span), range_span);
+            set_term(cur, ir.Term.Branch(own c, body_bb, done));
+        }
+        if sign <= 0 || sign == 2 {
+            cur = down;
+            let c2 = temp_of(ty.Ty.Bool, ir.Rvalue.Bin("Gt", own ir.clone_op(rd_c), own ir.clone_op(rd_e), range_span), range_span);
+            set_term(cur, ir.Term.Branch(own c2, body_bb, done));
+        }
+        cur = body_bb;
+        if ran >= 0 {
+            assign(ran, ir.Rvalue.Use(own bool_op(true)), range_span);
+        }
+        push_scope();
+        let vt = var_ty(range_span)?;
+        let v = declare(var, vt, false, range_span);
+        assign(v, ir.Rvalue.Use(own ir.clone_op(rd_c)), range_span);
+        loops.push(Loop { brk: exit_bb, brk_depth: hidden, cont: next, cont_depth: hidden + 1 });
+        block(body, -1)?;
+        loops.pop();
+        goto_and_switch(next);
+        pop_scope(range_span, "次の周回へ進んだ");
+        set_term(cur, ir.Term.Step(counter, own step, head, done));
+        // 普通に終わった: 1 回も回らなければ else
+        cur = done;
+        if has_els && ran >= 0 {
+            let run_else = new_block();
+            let r = temp_of(ty.Ty.Bool, ir.Rvalue.Use(own ir.copy_of(ir.local(ran, range_span))), range_span);
+            set_term(cur, ir.Term.Branch(own r, exit_bb, run_else));
+            cur = run_else;
+            block(els, -1)?;
+        }
+        goto_and_switch(exit_bb);
+        pop_scope(range_span, "ループを抜けた");
+        Ok(())
+    }
+
+    /// `for x in a` / `for (k, v) in m`。a は借りて読み、始めた時点の要素の写しを回す
+    fn mut Result<(), str> for_each(bool has_key, str key, i64 key_span, str var, i64 var_span, ref ast.Expr iter, ref ast.Block body,
+            bool has_els, ref ast.Block els) {
+        let it = ty_of(iter);
+        let ptr = ty.has_pointee(it);
+        let cty = if ptr { ty.inner(it) } else { ty.cl(it) };
+        let mut elem = ty.Ty.Unit;
+        if ty.is(cty, "Array") || ty.is(cty, "List") || ty.is(cty, "Map") {
+            elem = ty.inner(cty);
+        } else {
+            return Err("配列でないものの for");
+        }
+        let is_map = ty.is(cty, "Map");
+        let map_key = if is_map { ty.map_key(cty) } else { ty.Ty.Unit };
+        // 隠れた変数（ループの外へ出るとき drop する）
+        push_scope();
+        let mut is_known_var = true;
+        match ref iter.kind {
+            case Var(n) -> is_known_var = lookup(n) >= 0;
+            default -> {}
+        }
+        let mut src = ir.local(0, 0);
+        if is_place(iter) && is_known_var {
+            src = place(iter)?;
+        } else {
+            // 一時的な値は回し終わったら捨てる
+            let v = expr(iter)?;
+            let t = ir.moved_local(v);
+            if t < 0 { return Err("定数の for"); }
+            hide(t);
+            src = ir.local(t, iter.span);
+        }
+        if ptr { src.proj.push(ir.Proj.Deref(true, iter.span)); }
+        if has_key && is_map {
+            for pr in src.proj {
+                match ref pr {
+                    case Index(k, a, b) -> return Err("要素の中の辞書の for (k, v)");
+                    default -> {}
+                }
+            }
+        }
+        let what = describe(iter) + " の要素";
+        let nb = ast.no_block();
+        each_in(has_key, key, key_span, var, var_span, iter.span, elem, is_map, map_key, src, what, false, body, has_els, els, -1, -1, false,
+            ty.Ty.Unit)
+    }
+
+    /// for の本体（`for_each`）と `a.map(f)` / `a.filter(f)` で共通: 始めた時点の要素を、読むだけの形で 1 つずつ渡す。
+    /// `is_fn_map` なら関数の値 `f` を呼び、結果（filter なら残す要素）を `out` に push する
+    fn mut Result<(), str> each_in(bool has_key, str key, i64 key_span, str var, i64 var_span, i64 iter_span, ty.Ty elem0, bool is_map,
+            ty.Ty map_key, ir.Place src, str what, bool is_fn_map, ref ast.Block body, bool has_els, ref ast.Block els, i64 f, i64 out,
+            bool filter, ty.Ty rty) {
+        let hidden = scopes.len();
+        let items = declare("", ty.Ty.List(own ty.cl(elem0)), false, var_span);
+        assign(items, ir.Rvalue.Items(own ir.clone_place(src), what, var_span), var_span);
+        let mut keys = -1;
+        if has_key {
+            // リストの添字は写しから数える（src の中の添字を 2 回読まないため）
+            let key_ty = if is_map { ty.cl(map_key) } else { ty.i64t() };
+            let from = if is_map { ir.clone_place(src) } else { ir.local(items, var_span) };
+            keys = declare("", ty.Ty.List(own key_ty), false, var_span);
+            assign(keys, ir.Rvalue.Keys(own from), var_span);
+        }
+        let n = declare("", ty.i64t(), false, var_span);
+        assign(n, ir.Rvalue.SeqOp("len", own ir.local(items, var_span), own [], var_span, var_span), var_span);
+        let i = declare("", ty.i64t(), true, var_span);
+        assign(i, ir.Rvalue.Use(own ir.int_const(0, "i64")), var_span);
+        let head = new_block();
+        let body_bb = new_block();
+        let next = new_block();
+        let done = new_block();
+        let exit_bb = new_block();
+        goto_and_switch(head);
+        let rd_i = ir.copy_of(ir.local(i, var_span));
+        let c = temp_of(ty.Ty.Bool, ir.Rvalue.Bin("Lt", own ir.clone_op(rd_i), own ir.copy_of(ir.local(n, var_span)), var_span), var_span);
+        set_term(cur, ir.Term.Branch(own c, body_bb, done));
+        cur = body_bb;
+        push_scope();
+        // own の要素は読むだけの ref になっている。ムーブする要素（構造体など）は写しを置いて、読むだけの ref で渡す
+        let elem = if ty.is(elem0, "Own") { ty.Ty.Ref(own ty.inner(elem0), false) } else { ty.cl(elem0) };
+        let mut view = -1;
+        if moves(elem)? {
+            view = declare("", ty.cl(elem), false, var_span);
+            assign(view, ir.Rvalue.Use(own ir.copy_of(at(items, i, var_span, iter_span))), var_span);
+        }
+        if has_key && keys >= 0 {
+            let kt = var_ty(key_span)?;
+            let kl = declare(key, kt, false, key_span);
+            assign(kl, ir.Rvalue.Use(own ir.copy_of(at(keys, i, var_span, iter_span))), key_span);
+        }
+        // own の要素は、読むだけの ref として受け取る
+        let mut vt = ty.Ty.Unit;
+        if !is_fn_map {
+            let t0 = var_ty(var_span)?;
+            vt = if ty.is(t0, "Own") { ty.Ty.Ref(own ty.inner(t0), false) } else { t0 };
+        } else {
+            vt = if view >= 0 { ty.Ty.Ref(own ty.cl(elem), false) } else { ty.cl(elem) };
+        }
+        let v = declare(var, vt, false, var_span);
+        let value = if view >= 0 {
+            ir.Rvalue.Ref(own ir.local(view, var_span), false, false, what, var_span)
+        } else {
+            ir.Rvalue.Use(own ir.copy_of(at(items, i, var_span, iter_span)))
+        };
+        assign(v, value, var_span);
+        let mut run_els = false;
+        if !is_fn_map {
+            loops.push(Loop { brk: exit_bb, brk_depth: hidden, cont: next, cont_depth: hidden + 1 });
+            block(body, -1)?;
+            loops.pop();
+            run_els = has_els;
+        } else {
+            let r = temp_of(rty, ir.Rvalue.CallValue(own ir.copy_of(ir.local(f, var_span)), own [ir.copy_of(ir.local(v, var_span))], var_span),
+                var_span);
+            if filter {
+                let keep = new_block();
+                let skip = new_block();
+                set_term(cur, ir.Term.Branch(own r, keep, skip));
+                cur = keep;
+                push_out(out, ir.copy_of(ir.local(v, var_span)), var_span);
+                goto_and_switch(skip);
+            } else {
+                push_out(out, r, var_span);
+            }
+        }
+        goto_and_switch(next);
+        pop_scope(var_span, "次の周回へ進んだ");
+        let inc = ir.Rvalue.Bin("Add", own ir.clone_op(rd_i), own ir.int_const(1, "i64"), var_span);
+        assign(i, inc, var_span);
+        set_term(cur, ir.Term.Goto(head));
+        cur = done;
+        if run_els {
+            let run_else = new_block();
+            let zr = ir.Rvalue.Bin("Eq", own ir.copy_of(ir.local(n, var_span)), own ir.int_const(0, "i64"), var_span);
+            let z = temp_of(ty.Ty.Bool, zr, var_span);
+            set_term(cur, ir.Term.Branch(own z, run_else, exit_bb));
+            cur = run_else;
+            block(els, -1)?;
+        }
+        goto_and_switch(exit_bb);
+        pop_scope(var_span, "for で回し終わった");
+        Ok(())
+    }
+
+    /// 変数 l の i 番目
+    fn ir.Place at(i64 l, i64 i, i64 var_span, i64 iter_span) {
+        let mut p = ir.local(l, var_span);
+        p.proj.push(ir.Proj.Index(own ir.copy_of(ir.local(i, var_span)), var_span, iter_span));
+        p
+    }
+
+    fn mut push_out(i64 out, ir.Operand x, i64 var_span) {
+        let op = ir.Rvalue.SeqOp("push", own ir.local(out, var_span), own [x], var_span, var_span);
+        let u = temp_of(ty.Ty.Unit, op, var_span);
+        emit(ir.Inst.Discard(own u, var_span, ""));
+    }
+
+    /// その場で作ったリストを回す（`for x in a.drain()`）。はじめに逆順にして、周回ごとに後ろから pop する
+    fn mut Result<(), str> for_take(bool has_key, str key, i64 key_span, str var, i64 var_span, ref ast.Expr iter, ref ast.Block body,
+            bool has_els, ref ast.Block els) {
+        let lt = ty_of(iter);
+        if !ty.is(lt, "List") { return Err("リストでないものの for"); }
+        let elem = ty.inner(lt);
+        push_scope();
+        let hidden = scopes.len();
+        let v0 = expr(iter)?;
+        let t = ir.moved_local(v0);
+        if t < 0 { return Err("定数の for"); }
+        hide(t);
+        let u = temp_of(ty.Ty.Unit, ir.Rvalue.SeqOp("reverse", own ir.local(t, var_span), own [], var_span, var_span), var_span);
+        emit(ir.Inst.Discard(own u, var_span, ""));
+        let i = declare("", ty.i64t(), true, var_span);
+        assign(i, ir.Rvalue.Use(own ir.int_const(0, "i64")), var_span);
+        let head = new_block();
+        let body_bb = new_block();
+        let none_bb = new_block();
+        let next = new_block();
+        let done = new_block();
+        let exit_bb = new_block();
+        goto_and_switch(head);
+        let opt = ty.Ty.Enum("Option", own [ty.cl(elem)]);
+        let po = temp_of(opt, ir.Rvalue.SeqOp("pop", own ir.local(t, var_span), own [], var_span, var_span), var_span);
+        let p = ir.moved_local(po);
+        if p < 0 { return Err("pop"); }
+        set_term(cur, ir.Term.Switch(own ir.local(p, var_span), own ["Some"], own [body_bb], none_bb));
+        cur = none_bb;
+        emit(ir.Inst.Drop(p, var_span, "for で回し終わった"));
+        set_term(cur, ir.Term.Goto(done));
+        cur = body_bb;
+        push_scope();
+        if has_key {
+            let kl = declare(key, ty.i64t(), false, key_span);
+            assign(kl, ir.Rvalue.Use(own ir.copy_of(ir.local(i, var_span))), key_span);
+        }
+        let vt = var_ty(var_span)?;
+        let v = declare(var, vt, false, var_span);
+        let mut fp = ir.local(p, var_span);
+        fp.proj.push(ir.Proj.Variant("Some", 0));
+        assign(v, ir.Rvalue.Take(own fp), var_span);
+        emit(ir.Inst.Drop(p, var_span, "for で要素を取り出した"));
+        loops.push(Loop { brk: exit_bb, brk_depth: hidden, cont: next, cont_depth: hidden + 1 });
+        block(body, -1)?;
+        loops.pop();
+        goto_and_switch(next);
+        pop_scope(var_span, "次の周回へ進んだ");
+        let inc = ir.Rvalue.Bin("Add", own ir.copy_of(ir.local(i, var_span)), own ir.int_const(1, "i64"), var_span);
+        assign(i, inc, var_span);
+        set_term(cur, ir.Term.Goto(head));
+        cur = done;
+        if has_els {
+            let run_else = new_block();
+            let zr = ir.Rvalue.Bin("Eq", own ir.copy_of(ir.local(i, var_span)), own ir.int_const(0, "i64"), var_span);
+            let z = temp_of(ty.Ty.Bool, zr, var_span);
+            set_term(cur, ir.Term.Branch(own z, run_else, exit_bb));
+            cur = run_else;
+            block(els, -1)?;
+        }
+        goto_and_switch(exit_bb);
+        pop_scope(var_span, "for で回し終わった");
+        Ok(())
+    }
+
+    /// `if`。`dest` が 0 以上なら値をそこに入れる
+    fn mut Result<(), str> if_expr(ref ast.Expr cond, ref ast.Block then, bool has_els, ref ast.Block els, i64 dest) {
+        let value = if dest >= 0 { 1 } else { 0 };
+        in_value += value;
+        let r = if_inner(cond, then, has_els, els, dest);
+        in_value -= value;
+        r
+    }
+
+    fn mut Result<(), str> if_inner(ref ast.Expr cond, ref ast.Block then, bool has_els, ref ast.Block els, i64 dest) {
+        let c = expr(cond)?;
+        let t = new_block();
+        let e = new_block();
+        let join = new_block();
+        set_term(cur, ir.Term.Branch(own c, t, e));
+        cur = t;
+        block(then, dest)?;
+        set_term(cur, ir.Term.Goto(join));
+        cur = e;
+        if has_els {
+            block(els, dest)?;
+        } else if dest >= 0 {
+            assign(dest, ir.Rvalue.Use(own unit_op()), cond.span);
+        }
+        goto_and_switch(join);
+        Ok(())
+    }
+
+    /// `match`。`dest` が 0 以上なら値をそこに入れる
+    fn mut Result<(), str> match_expr(ref ast.Expr scrut, ref ast.MatchArm[] arms, bool has_default, ref ast.Block dflt, i64 dest) {
+        let value = if dest >= 0 { 1 } else { 0 };
+        in_value += value;
+        let r = match_inner(scrut, arms, has_default, dflt, dest);
+        in_value -= value;
+        r
+    }
+
+    fn mut set_unit(i64 dest, i64 span) {
+        if dest >= 0 { assign(dest, ir.Rvalue.Use(own unit_op()), span); }
+    }
+
+    fn mut Result<(), str> match_inner(ref ast.Expr scrut, ref ast.MatchArm[] arms, bool has_default, ref ast.Block dflt, i64 dest) {
+        let st = ty_of(scrut);
+        let v0 = expr(scrut)?;
+        let mut s = ir.moved_local(v0);
+        if s < 0 {
+            s = temp(ty.cl(st), scrut.span);
+            assign(s, ir.Rvalue.Use(own v0), scrut.span);
+        }
+        let join = new_block();
+        // enum（own / ref の先の enum も）。by_ref: -1 は値の match、0 は ref、1 は ref mut
+        let mut is_enum = false;
+        let mut ety = ty.Ty.Unit;
+        let mut by_ref = -1;
+        let mut pl = ir.local(s, scrut.span);
+        if ty.is(st, "Enum") {
+            is_enum = true;
+            ety = ty.cl(st);
+        } else if ty.has_pointee(st) && ty.is(ty.inner(st), "Enum") {
+            is_enum = true;
+            ety = ty.inner(st);
+            if ty.is(st, "Ref") { by_ref = if ty.ref_mut(st) { 1 } else { 0 }; }
+            pl.proj.push(ir.Proj.Deref(true, scrut.span));
+        }
+        // own の先の enum の値の match は、by_ref がないが場所は先をたどる
+        let own_enum = ty.is(st, "Own") && is_enum;
+        if is_enum {
+            // 上から順に形を調べ、当たった case へ（重ねた形は中まで調べる。値は動かさない）
+            let base = match ref scrut.kind {
+                case Ref(x, m) -> describe(x);
+                default -> describe(scrut);
+            };
+            for arm in arms {
+                let body_bb = new_block();
+                push_scope();
+                for p in arm.pats {
+                    let fail = new_block();
+                    test_pat(pl, ety, p, fail)?;
+                    bind_pat(pl, ety, p, by_ref, own_enum, base)?;
+                    // llvm.rs は、同じブロックで take した入れ物の drop では中身を解放しない
+                    emit(ir.Inst.Drop(s, scrut.span, "match で中身を取り出したので、入れ物が解放された"));
+                    set_term(cur, ir.Term.Goto(body_bb));
+                    cur = fail;
+                }
+                let next = cur;
+                cur = body_bb;
+                block(arm.body, dest)?;
+                pop_scope(arm.body.end, "スコープを抜けた");
+                set_term(cur, ir.Term.Goto(join));
+                cur = next;
+            }
+            // どの case にも当たらなかった（default へ）
+            if by_ref < 0 {
+                emit(ir.Inst.Discard(own ir.Operand.Move(s, scrut.span), scrut.span, "match の default で使われずに捨てられた"));
+            } else {
+                emit(ir.Inst.Drop(s, scrut.span, "match を終えた"));
+            }
+            if has_default { block(dflt, dest)?; } else { set_unit(dest, scrut.span); }
+            goto_and_switch(join);
+            return Ok(());
+        }
+        // 整数・真偽値・文字列: 上から順に比べる
+        for arm in arms {
+            let hit = new_block();
+            for p in arm.pats {
+                if is_variant_pat(p) { return Err("値の match に enum の case"); }
+                let eq = ir.Rvalue.Bin("Eq", own ir.copy_of(ir.clone_place(pl)), own ir.Operand.Const(pat_const(p)), scrut.span);
+                let c = temp_of(ty.Ty.Bool, eq, scrut.span);
+                let next = new_block();
+                set_term(cur, ir.Term.Branch(own c, hit, next));
+                cur = next;
+            }
+            let miss = cur;
+            cur = hit;
+            emit(ir.Inst.Drop(s, scrut.span, "match を終えた"));
+            block(arm.body, dest)?;
+            set_term(cur, ir.Term.Goto(join));
+            cur = miss;
+        }
+        emit(ir.Inst.Drop(s, scrut.span, "match を終えた"));
+        if has_default { block(dflt, dest)?; } else { set_unit(dest, scrut.span); }
+        goto_and_switch(join);
+        Ok(())
+    }
+
+    /// 形 `pat` に当たらなければ `fail` へ飛ぶ。当たれば、今のブロックがその続き
+    fn mut Result<(), str> test_pat(ref ir.Place pl, ref ty.Ty ety, ref ast.Pat pat, i64 fail) {
+        match ref pat {
+            case Variant(v, binds, spans, has_sub, subs) -> {
+                let hit = new_block();
+                set_term(cur, ir.Term.Switch(own ir.clone_place(pl), own [v], own [hit], fail));
+                cur = hit;
+                let ftys = variant_fields(ety, v)?;
+                for (i, sub) in subs {
+                    if !has_sub[i] { continue; }
+                    let ft = if i < ftys.len() { ty.cl(ftys[i]) } else { ty.Ty.Unit };
+                    let fp = field_place(pl, v, i, ft, pl.span);
+                    let finner = if ty.is(ft, "Own") { ty.inner(ft) } else { ty.cl(ft) };
+                    if is_variant_pat(sub) {
+                        test_pat(fp, finner, sub, fail)?;
+                    } else {
+                        let sp = pl.span;
+                        let eq = ir.Rvalue.Bin("Eq", own ir.copy_of(fp), own ir.Operand.Const(pat_const(sub)), sp);
+                        let c = temp_of(ty.Ty.Bool, eq, sp);
+                        let next = new_block();
+                        set_term(cur, ir.Term.Branch(own c, next, fail));
+                        cur = next;
+                    }
+                }
+                Ok(())
+            }
+            default -> Err("enum の match に値の case");
+        }
+    }
+
+    /// 種類 `v` の i 番目の中身の場所。中身が own なら先へたどる（借りた match で重ねた形を調べるとき）
+    fn ir.Place field_place(ref ir.Place pl, str v, i64 i, ref ty.Ty ft, i64 sp) {
+        let mut fp = ir.clone_place(pl);
+        fp.proj.push(ir.Proj.Variant(v, i));
+        if ty.is(ft, "Own") { fp.proj.push(ir.Proj.Deref(true, sp)); }
+        fp
+    }
+
+    /// 当たった形の中身を、受け取る名前へ置く（interp の `bind_fields`）
+    fn mut Result<(), str> bind_pat(ref ir.Place pl, ref ty.Ty ety, ref ast.Pat pat, i64 by_ref, bool own_enum, str base) {
+        match ref pat {
+            case Variant(v, binds, bspans, has_sub, subs) -> {
+                let ftys = variant_fields(ety, v)?;
+                for (i, b) in binds {
+                    let ft = if i < ftys.len() { ty.cl(ftys[i]) } else { ty.Ty.Unit };
+                    if has_sub[i] && is_variant_pat(subs[i]) {
+                        let fp = field_place(pl, v, i, ft, bspans[i]);
+                        let finner = if ty.is(ft, "Own") { ty.inner(ft) } else { ty.cl(ft) };
+                        bind_pat(fp, finner, subs[i], by_ref, own_enum, base)?;
+                        continue;
+                    }
+                    let mut fp2 = ir.clone_place(pl);
+                    fp2.proj.push(ir.Proj.Variant(v, i));
+                    if by_ref >= 0 && b == "_" { continue; }
+                    let value = if by_ref < 0 {
+                        // 値の match: 中身を受け取る名前へ移す
+                        ir.Rvalue.Take(own fp2)
+                    } else if ty.is(ft, "Own") {
+                        // 借りた match: 中身の own は借りた ref として受け取る
+                        ir.Rvalue.Ref(own fp2, by_ref == 1, true, base + " の中身 " + b, bspans[i])
+                    } else {
+                        ir.Rvalue.Use(own ir.copy_of(fp2))
+                    };
+                    if b == "_" {
+                        let t = temp_of(ft, value, bspans[i]);
+                        emit(ir.Inst.Discard(own t, bspans[i], "match で受け取られずに捨てられた"));
+                        continue;
+                    }
+                    let vt = var_ty(bspans[i])?;
+                    let l = declare(b, vt, false, bspans[i]);
+                    assign(l, value, bspans[i]);
+                }
+                Ok(())
+            }
+            default -> Err("enum の match に値の case");
+        }
+    }
+
+    /// 関数を途中で抜けるとき（`?`・値として使う if / match の中の return）に、まだ使われていない一時的な値を drop する
+    fn mut drop_pending(i64 keep, i64 sp, str why) {
+        let i64[] mut in_scope = [];
+        for sc in scopes {
+            for l in sc.ls { in_scope.push(l); }
+        }
+        let mut l = locals.len() - 1;
+        while l >= 0 {
+            if l != keep && locals[l].name == "" && !has_i(in_scope, l) {
+                emit(ir.Inst.Drop(l, sp, why));
+            }
+            l -= 1;
+        }
+    }
+
+    fn mut Result<ir.Operand, str> try_expr(ref ast.Expr inner, i64 sp) {
+        let it = ty_of(inner);
+        let n = if ty.is(it, "Enum") { ty.name_of(it) } else { "" };
+        let ok = if n == "Result" { "Ok" } else if n == "Option" { "Some" } else { return Err("? の型"); };
+        let v = expr(inner)?;
+        let t = ir.moved_local(v);
+        if t < 0 { return Err("? に定数"); }
+        let ok_bb = new_block();
+        let err_bb = new_block();
+        set_term(cur, ir.Term.Switch(own ir.local(t, sp), own [ok], own [ok_bb], err_bb));
+        cur = err_bb;
+        drop_pending(t, sp, "`?` で関数を抜けたので、使われずに捨てられた");
+        // 戻り値の型が違えば（`Result<i64[], str>` → `Result<i64, str>`）、Err / None を作り直す
+        let mut back = t;
+        if !ty.eq(it, fret) {
+            let rt = ty.cl(fret);
+            let bad = if ok == "Ok" { "Err" } else { "None" };
+            let ir.Operand[] mut opv = [];
+            if ok == "Ok" {
+                let mut efs = variant_fields(it, bad)?;
+                let ety = match efs.pop() {
+                    case Some(x) -> x;
+                    case None -> ty.Ty.Unit;
+                };
+                let mut ep = ir.local(t, sp);
+                ep.proj.push(ir.Proj.Variant(bad, 0));
+                opv.push(temp_of(ety, ir.Rvalue.Take(own ep), sp));
+            }
+            emit(ir.Inst.Drop(t, sp, "`?` で中身を取り出した"));
+            let copy = !moves(rt)?;
+            let ro = temp_of(rt, ir.Rvalue.Enum(bad, own opv, copy), sp);
+            back = ir.moved_local(ro);
+            if back < 0 { return Err("? の作り直し"); }
+        }
+        leave(0, sp, "`?` で関数を抜けた");
+        terminate(ir.Term.Return(own ir.Operand.Move(back, sp)));
+        cur = ok_bb;
+        let mut ofs = variant_fields(it, ok)?;
+        let fty = match ofs.pop() {
+            case Some(x) -> x;
+            case None -> ty.Ty.Unit;
+        };
+        let mut fp = ir.local(t, sp);
+        fp.proj.push(ir.Proj.Variant(ok, 0));
+        let r = temp_of(fty, ir.Rvalue.Take(own fp), sp);
+        emit(ir.Inst.Drop(t, sp, "`?` で中身を取り出した"));
+        Ok(r)
+    }
+
+    /// enum の種類の中身の型（型の引数は置き換え済み）
+    fn Result<ty.Ty[], str> variant_fields(ref ty.Ty t, str variant) {
+        if !ty.is(t, "Enum") { return Err("enum でない"); }
+        let n = ty.name_of(t);
+        if !ck.e_at.contains(n) { return Err("enum の記録がない"); }
+        let d = ref ck.edefs[ck.e_at[n]];
+        let m = ty.targs(d.tparams, ty.args_of(t));
+        for v in d.vs {
+            if v.name == variant { return Ok(ty.substs(v.tys, m)); }
+        }
+        Err("ない種類")
+    }
+
+    /// 値として読むとムーブになる型か（interp の `Value::moves` を型で決めたもの）
+    fn Result<bool, str> moves(ref ty.Ty t) {
+        let k = ty.tag(t);
+        if k == "Int" || k == "Float" || k == "Bool" || k == "Str" || k == "Unit" || k == "Never" || k == "Ref" || k == "Chan" {
+            return Ok(false);
+        }
+        if k == "Own" || k == "Struct" || k == "List" || k == "Map" || k == "Fn" || k == "Task" { return Ok(true); }
+        if k == "Array" { return moves(ty.inner(t)); }
+        if k == "Enum" {
+            let n = ty.name_of(t);
+            if !ck.e_at.contains(n) { return Err("enum の記録がない"); }
+            let d = ref ck.edefs[ck.e_at[n]];
+            let m = ty.targs(d.tparams, ty.args_of(t));
+            for v in d.vs {
+                for f in v.tys {
+                    if moves(ty.subst(f, m))? { return Ok(true); }
+                }
+            }
+            return Ok(false);
+        }
+        Err("型 " + ty.show(t))
+    }
+
+    // ------------------------------------------------ 式
+
+    /// 型検査が決めた「この整数の式を使う型」（なければ ""）
+    fn str int_ty(ref ast.Expr e) {
+        let info = ref ck.info;
+        if info.ints[e.id] != "" { return info.ints[e.id]; }
+        if info.has_ty[e.id] && ty.is(info.tys[e.id], "Int") { return ty.int_of(info.tys[e.id]); }
+        ""
+    }
+
+    /// 値として評価する（interp の `eval`）。ムーブする値の変数はムーブする
+    fn mut Result<ir.Operand, str> expr(ref ast.Expr e) {
+        let borrowed = ck.info.borrows[e.id];
+        if borrowed && !is_place(e) {
+            // 一時的な値は変数に置いて借りる（interp の `auto_ref`）。呼び出しが終わったら drop する
+            let v = converted(e)?;
+            let mut t = ir.moved_local(v);
+            if t < 0 || locals[t].name != "" {
+                let vt = match ref v {
+                    case Const(c) -> {
+                        match c {
+                            case Int(neg, mag, it) -> ty.Ty.Int(it);
+                            case Float(x) -> ty.Ty.Float;
+                            default -> ty_of(e);
+                        }
+                    }
+                    default -> ty_of(e);
+                };
+                t = temp(vt, e.span);
+                assign(t, ir.Rvalue.Use(own v), e.span);
+            }
+            lent.push(t);
+            let lt = ty.cl(locals[t].t);
+            let follows = ty.is(lt, "Own");
+            let rt = if follows { ty.Ty.Ref(own ty.inner(lt), false) } else { ty.Ty.Ref(own lt, false) };
+            let r = ir.Rvalue.Ref(own ir.local(t, e.span), false, follows, "一時的な値", e.span);
+            return Ok(temp_of(rt, r, e.span));
+        }
+        if borrowed {
+            // `ref T` の引数に `ref` なしで渡した場所は自動で借りる（変換はしない）
+            let pl = place(e)?;
+            let et = ty_of(e);
+            let follows2 = ty.has_pointee(et);
+            let rt2 = if follows2 { ty.Ty.Ref(own ty.inner(et), false) } else { ty.Ty.Ref(own et, false) };
+            let r2 = ir.Rvalue.Ref(own pl, false, follows2, describe(e), e.span);
+            return Ok(temp_of(rt2, r2, e.span));
+        }
+        converted(e)
+    }
+
+    /// 式の値に、型検査がつけた変換の印（interp の `convert`）を当てる
+    fn mut Result<ir.Operand, str> converted(ref ast.Expr e) {
+        let v = expr_kind(e)?;
+        let info = ref ck.info;
+        let is_float = info.floats[e.id];
+        let it = info.ints[e.id];
+        if !is_float && it == "" { return Ok(v); }
+        let target = if is_float { ty.Ty.Float } else { ty.Ty.Int(it) };
+        match ref v {
+            case Const(c) -> {
+                match c {
+                    case Int(neg, mag, t0) -> {
+                        if is_float {
+                            let f = if neg { 0.0 - (mag as f64) } else { mag as f64 };
+                            return Ok(ir.Operand.Const(ir.Const.Float(f)));
+                        }
+                        return Ok(ir.Operand.Const(ir.wrap(neg, mag, it)));
+                    }
+                    default -> return Ok(ir.clone_op(v));
+                }
+            }
+            default -> {}
+        }
+        Ok(temp_of(ty.cl(target), ir.Rvalue.Cast(own v, own target), e.span))
+    }
+
+    fn mut Result<ir.Operand, str> expr_kind(ref ast.Expr e) {
+        let et = ty_of(e);
+        let sp = e.span;
+        match ref e.kind {
+            case Int(n) -> Ok(ir.Operand.Const(ir.Const.Int(false, n, "i64")));
+            case Float(x) -> Ok(ir.Operand.Const(ir.Const.Float(x)));
+            case Bool(b) -> Ok(bool_op(b));
+            case Unit -> Ok(unit_op());
+            case Str(s) -> Ok(str_op(s));
+            case Var(name) -> {
+                let l = lookup(name);
+                if l >= 0 {
+                    let rd = read_var(l, sp)?;
+                    return Ok(temp_of(et, ir.Rvalue.Use(own rd), sp));
+                }
+                // 名前のある関数を値にする
+                let em = ty.tmap();
+                let f = index(name, em)?;
+                Ok(temp_of(et, ir.Rvalue.Closure(f, own []), sp))
+            }
+            case Cast(inner, te) -> {
+                let target = match ref te.kind {
+                    case Name(n) -> if ty.is_int_name(n) { ty.Ty.Int(n) } else { ty.Ty.Float };
+                    default -> return Err("数でない型への as");
+                };
+                let v = expr(inner)?;
+                Ok(temp_of(et, ir.Rvalue.Cast(own v, own target), sp))
+            }
+            case Own(inner) -> {
+                let v = expr(inner)?;
+                Ok(temp_of(et, ir.Rvalue.Own(own v), sp))
+            }
+            case Ref(inner, m) -> {
+                let pl = place(inner)?;
+                let follows = ty.has_pointee(ty_of(inner));
+                Ok(temp_of(et, ir.Rvalue.Ref(own pl, m, follows, describe(inner), sp), sp))
+            }
+            case Deref(x) -> read_out(e, "ポインタの先", et);
+            case Field(x, n) -> read_out(e, "フィールド", et);
+            case Index(b, i) -> read_out(e, "配列の中", et);
+            case ArrayLit(items) -> {
+                let seq = ck.info.seqs[e.id];
+                if seq == "map" { return Ok(temp_of(et, ir.Rvalue.Map(own [], own [], sp), sp)); }
+                let ir.Operand[] mut opv = [];
+                for x in items { opv.push(expr(x)?); }
+                Ok(temp_of(et, ir.Rvalue.Array(own opv, seq == "list"), sp))
+            }
+            case ArrayRepeat(x, n) -> {
+                if moves(ty_of(x))? { return Err("ムーブする値を並べる"); }
+                let v = expr(x)?;
+                Ok(temp_of(et, ir.Rvalue.Repeat(own v, n, ck.info.lists[e.id]), sp))
+            }
+            case MapLit(kvs) -> {
+                let ir.Operand[] mut ks = [];
+                let ir.Operand[] mut vs = [];
+                let mut i = 0;
+                while i + 1 < kvs.len() {
+                    ks.push(expr(kvs[i])?);
+                    vs.push(expr(kvs[i + 1])?);
+                    i += 2;
+                }
+                Ok(temp_of(et, ir.Rvalue.Map(own ks, own vs, sp), sp))
+            }
+            case StructLit(name, inits) -> {
+                if !ck.s_at.contains(name) { return Err("構造体 `{name}` がない"); }
+                let def = ref prog.structs[ck.s_at[name]];
+                // 書いた順に評価し、定義の順に並べる
+                let bool[] mut have = [];
+                let ir.Operand[] mut fields = [];
+                for f in def.fields {
+                    have.push(false);
+                    fields.push(unit_op());
+                }
+                for init in inits {
+                    let fi = field_index(def, init.name);
+                    if fi < 0 { return Err("ないフィールド"); }
+                    if have[fi] { return Err("フィールドが二回ある"); }
+                    fields[fi] = expr(init.value)?;
+                    have[fi] = true;
+                }
+                for h in have {
+                    if !h { return Err("フィールドが足りない"); }
+                }
+                Ok(temp_of(et, ir.Rvalue.Struct(name, own fields), sp))
+            }
+            case If(cond, then, has_els, els) -> {
+                let d = temp(et, sp);
+                if_expr(cond, then, has_els, els, d)?;
+                Ok(ir.Operand.Move(d, sp))
+            }
+            case Unary(op, inner) -> {
+                let v = expr(inner)?;
+                Ok(temp_of(et, ir.Rvalue.Un(un_name(op), own v, sp), sp))
+            }
+            case Binary(op, l, r) -> {
+                if op == "&&" || op == "||" {
+                    // 左だけで決まれば右は評価しない
+                    let d = temp(ty.Ty.Bool, sp);
+                    let lv = expr(l)?;
+                    assign(d, ir.Rvalue.Use(own lv), l.span);
+                    let right = new_block();
+                    let join = new_block();
+                    let c = ir.copy_of(ir.local(d, sp));
+                    if op == "&&" { set_term(cur, ir.Term.Branch(own c, right, join)); } else { set_term(cur, ir.Term.Branch(own c, join, right)); }
+                    cur = right;
+                    let rv = expr(r)?;
+                    assign(d, ir.Rvalue.Use(own rv), r.span);
+                    goto_and_switch(join);
+                    return Ok(ir.Operand.Move(d, sp));
+                }
+                let lv2 = expr(l)?;
+                let rv2 = expr(r)?;
+                Ok(temp_of(et, ir.Rvalue.Bin(bin_name(op), own lv2, own rv2, sp), sp))
+            }
+            case Call(name, argv) -> {
+                let mark = lent.len();
+                let r = call(e, name, argv, et)?;
+                drop_lent(mark, sp);
+                Ok(r)
+            }
+            case MethodCall(recv, name, argv) -> {
+                let mark = lent.len();
+                let r = method(e, recv, name, argv, et)?;
+                drop_lent(mark, sp);
+                Ok(r)
+            }
+            case Interp(parts) -> {
+                let ir.Operand[] mut strs = [];
+                for p in parts {
+                    match ref p {
+                        case Lit(s) -> strs.push(str_op(s));
+                        case Code(x) -> strs.push(show(x)?);
+                    }
+                }
+                Ok(temp_of(ty.Ty.Str, ir.Rvalue.Builtin("concat", own strs, sp), sp))
+            }
+            case Try(inner) -> try_expr(inner, sp);
+            case Variant(en, vn, argv) -> {
+                let ir.Operand[] mut opv = [];
+                let mut moving = false;
+                for a in argv {
+                    if moves(ty_of(a))? { moving = true; }
+                    opv.push(expr(a)?);
+                }
+                // 型の引数を含む enum（ジェネリックな関数の中）は、interp と同じく中身で決める
+                let c = ck.info.copies[e.id];
+                let copy = if c < 0 { !moving } else { c == 1 };
+                Ok(temp_of(et, ir.Rvalue.Enum(vn, own opv, copy), sp))
+            }
+            case Match(scrut, arms, has_default, d) -> {
+                let dl = temp(et, sp);
+                match_expr(scrut, arms, has_default, d, dl)?;
+                Ok(ir.Operand.Move(dl, sp))
+            }
+            case Lambda(l) -> lambda(e, et);
+        }
+    }
+
+    /// ポインタの先・フィールド・要素から値を取り出す（ムーブする値なら実行時エラー）
+    fn mut Result<ir.Operand, str> read_out(ref ast.Expr e, str what, ty.Ty et) {
+        let rp = read_place(e)?;
+        let r = temp_of(et, ir.Rvalue.CopyOut(own ir.clone_place(rp.p), what, e.span), e.span);
+        drop_temp_l(rp.t, e.span);
+        Ok(r)
+    }
+
+    /// 外の変数を、名前で読むのと同じように取り込む（own はムーブ、コピーできる値はコピー）。
+    /// 引数に書いたクロージャは、ムーブする値を `ref 名前` で借りて取り込む
+    fn mut Result<ir.Operand, str> lambda(ref ast.Expr e, ty.Ty et) {
+        let sp = e.span;
+        let info = ref ck.info;
+        let at = info.lam_at[e.id];
+        let str[] mut names = [];
+        let bool[] mut borrowed = [];
+        if at >= 0 {
+            names = info.lams[at].caps.map((x) -> x);
+            borrowed = info.lams[at].borrowed.map((x) -> x);
+        }
+        let ir.Operand[] mut opv = [];
+        let str[] mut cnames = [];
+        let ty.Ty[] mut ctys = [];
+        for (k, n) in names {
+            let lc = lookup(n);
+            if lc < 0 { return Err("取り込む変数がない"); }
+            let vty = ty.cl(locals[lc].t);
+            if k < borrowed.len() && borrowed[k] {
+                let follows = ty.is(vty, "Own");
+                let rty = if follows { ty.Ty.Ref(own ty.inner(vty), false) } else { ty.Ty.Ref(own ty.cl(vty), false) };
+                let r = ir.Rvalue.Ref(own ir.local(lc, sp), false, follows, n, sp);
+                cnames.push(n);
+                ctys.push(ty.cl(rty));
+                opv.push(temp_of(rty, r, sp));
+            } else {
+                cnames.push(n);
+                ctys.push(vty);
+                opv.push(read_var(lc, sp)?);
+            }
+        }
+        let rt = if ty.is(et, "Fn") { ty.inner(et) } else { ty.Ty.Unit };
+        let inst = fname + "::λ{diag.line_of(sp)}:{diag.col_of(sp)}";
+        let once = spawning;
+        spawning = false;
+        let li = lams.len();
+        match ref e.kind {
+            case Lambda(l) -> lams.push(l);
+            default -> return Err("クロージャでない");
+        }
+        lam_ids.push(e.id);
+        let f = push_fn(inst, true, li, ty.clone_map(subst), cnames, ctys, rt, sp, once);
+        Ok(temp_of(et, ir.Rvalue.Closure(f, own opv), sp))
+    }
+
+    /// print と埋め込みの 1 つ分: 借りて読み、文字にする。一時的な値は見たあと捨てる
+    fn mut Result<ir.Operand, str> show(ref ast.Expr e) {
+        let mut is_place_read = false;
+        if !ck.info.borrows[e.id] {
+            is_place_read = match ref e.kind {
+                case Var(n) -> lookup(n) >= 0;
+                case Deref(x) -> true;
+                case Field(x, n) -> true;
+                case Index(b, i) -> true;
+                default -> false;
+            };
+        }
+        if is_place_read {
+            let rp = read_place(e)?;
+            let r = temp_of(ty.Ty.Str, ir.Rvalue.Show(own ir.copy_of(ir.clone_place(rp.p)), false, e.span), e.span);
+            drop_temp_l(rp.t, e.span);
+            return Ok(r);
+        }
+        let v = expr(e)?;
+        match ref v {
+            case Const(c) -> {
+                match c {
+                    // 書いたままの文字列はそのまま
+                    case Str(s) -> return Ok(str_op(s));
+                    default -> {}
+                }
+            }
+            default -> {}
+        }
+        Ok(temp_of(ty.Ty.Str, ir.Rvalue.Show(own v, true, e.span), e.span))
+    }
+
+    fn mut Result<ir.Operand[], str> exprs(ref ast.Expr[] xs) {
+        let ir.Operand[] mut out = [];
+        for a in xs { out.push(expr(a)?); }
+        Ok(out)
+    }
+
+    fn mut Result<ir.Operand, str> call(ref ast.Expr e, str name, ref ast.Expr[] argv, ty.Ty et) {
+        let sp = e.span;
+        if name == "print" || name == "eprint" {
+            let ir.Operand[] mut strs = [];
+            for a in argv { strs.push(show(a)?); }
+            return Ok(temp_of(ty.Ty.Unit, ir.Rvalue.Builtin(name, own strs, sp), sp));
+        }
+        if name == "exit" || name == "read_file" || name == "write_file" || name == "run_command" || name == "chr" {
+            let opv = exprs(argv)?;
+            if name != "exit" { return Ok(temp_of(et, ir.Rvalue.Builtin(name, own opv, sp), sp)); }
+            // exit からは戻らない
+            let u = temp_of(ty.Ty.Unit, ir.Rvalue.Builtin(name, own opv, sp), sp);
+            terminate(ir.Term.Unreachable);
+            return Ok(u);
+        }
+        if name == "assert" {
+            let v = expr(argv[0])?;
+            return Ok(temp_of(ty.Ty.Unit, ir.Rvalue.Builtin("assert", own [v], argv[0].span), sp));
+        }
+        if name == "drop" {
+            let v = expr(argv[0])?;
+            let why = match ref argv[0].kind {
+                case Var(n) -> "`{n}` が drop で明示的に解放された";
+                default -> "drop で明示的に解放された";
+            };
+            emit(ir.Inst.Discard(own v, sp, why));
+            return Ok(unit_op());
+        }
+        if name == "read_line" || name == "args" { return Ok(temp_of(et, ir.Rvalue.Builtin(name, own [], sp), sp)); }
+        if name == "spawn" {
+            // 関数の値は作らず、関数の番号と取り込む値を直接渡す
+            spawning = match ref argv[0].kind {
+                case Lambda(l) -> true;
+                default -> false;
+            };
+            let f = expr(argv[0])?;
+            let t = ir.moved_local(f);
+            let mut fi = -1;
+            let own ir.Operand[] mut caps = own [];
+            match blocks[cur].insts.pop() {
+                case Some(last) -> {
+                    match last {
+                        case Assign(pl, value, s, w) -> {
+                            if pl.local == t && pl.proj.len() == 0 {
+                                match value {
+                                    case Closure(i, cs) -> {
+                                        fi = i;
+                                        caps = cs;
+                                    }
+                                    default -> {}
+                                }
+                            }
+                        }
+                        default -> {}
+                    }
+                }
+                case None -> {}
+            }
+            if fi < 0 { return Err("spawn に渡す関数"); }
+            let ir.Operand[] mut opv = [ir.int_const(fi, "i64")];
+            for c in caps.drain() { opv.push(c); }
+            return Ok(temp_of(et, ir.Rvalue.Builtin("spawn", own opv, sp), sp));
+        }
+        if name == "chan" { return Ok(temp_of(et, ir.Rvalue.Builtin("chan", own [], sp), sp)); }
+        if lookup(name) >= 0 {
+            // 引数を先に評価してから、変数を借りて読む（interp の `call_var`）
+            let vals = exprs(argv)?;
+            let l = lookup(name);
+            let mut fp = ir.local(l, sp);
+            if ty.has_pointee(locals[l].t) { fp.proj.push(ir.Proj.Deref(true, sp)); }
+            return Ok(temp_of(et, ir.Rvalue.CallValue(own ir.copy_of(fp), own vals, sp), sp));
+        }
+        let vals2 = exprs(argv)?;
+        let fi2 = index(name, targs_of(e))?;
+        Ok(temp_of(et, ir.Rvalue.Call(fi2, own vals2, sp), sp))
+    }
+
+    /// receiver の場所。own / ref なら先をたどる（interp は種類を調べるため、いつも世代チェックをする）。
+    /// `temp_l` は一時的な receiver を入れた変数（-1: 場所の receiver、-2: 定数）。定数なら ok が false
+    fn mut Result<ReadPlace, str> recv_place(ref ast.Expr recv, i64 temp_l, bool ptr) {
+        if temp_l == -2 { return Ok(ReadPlace { p: ir.local(0, 0), t: -2 }); }
+        let mut pl = if temp_l == -1 { place(recv)? } else { ir.local(temp_l, recv.span) };
+        if ptr { pl.proj.push(ir.Proj.Deref(true, recv.span)); }
+        Ok(ReadPlace { p: pl, t: 0 })
+    }
+
+    /// `recv.name(args)`（interp の `eval_method`）。一時的な receiver は先に評価し、場所の receiver は引数のあとで借りる
+    fn mut Result<ir.Operand, str> method(ref ast.Expr e, ref ast.Expr recv, str name, ref ast.Expr[] argv, ty.Ty et) {
+        let sp = e.span;
+        let rt = ty_of(recv);
+        let ptr = ty.has_pointee(rt);
+        let inner = if ptr { ty.inner(rt) } else { ty.cl(rt) };
+        // `fn take` のメソッドは receiver を値として先に読む（ムーブ）
+        let take = ck.info.mtakes[e.id];
+        let has_temp = !is_place(recv) || take;
+        let mut temp_op = unit_op();
+        // -1: 場所の receiver、-2: 定数、それ以外: 一時的な receiver の変数
+        let mut temp_l = -1;
+        if has_temp {
+            temp_op = expr(recv)?;
+            temp_l = ir.moved_local(temp_op);
+            if temp_l < 0 { temp_l = -2; }
+        }
+        let mut vals = exprs(argv)?;
+        let k = ty.tag(inner);
+        let is_enum = k == "Enum";
+        if k == "Float" || k == "Int" || k == "Str" {
+            let rp = recv_place(recv, temp_l, ptr)?;
+            let x = if rp.t == -2 { ir.clone_op(temp_op) } else { ir.copy_of(ir.clone_place(rp.p)) };
+            let ir.Operand[] mut opv = [x];
+            for v in vals.drain() { opv.push(v); }
+            let bn = if k == "Float" { "f64." + name } else if k == "Int" { "int." + name } else { "str." + name };
+            let r = temp_of(et, ir.Rvalue.Builtin(bn, own opv, sp), sp);
+            drop_temp_l(temp_l, sp);
+            return Ok(r);
+        }
+        if k == "Struct" || k == "Enum" {
+            let sname = ty.name_of(inner);
+            let sargs = ty.args_of(inner);
+            let full = sname + "." + name;
+            if !defs.contains(full) { return Err("ないメソッド"); }
+            let def = ref prog.fns[defs[full]];
+            let mutable = match ref def.params[0].ty.kind {
+                case Ref(x, m) -> m;
+                default -> false;
+            };
+            // 型の引数: 型検査が決めたもの。interface の条件で呼んだ（`T` の）ときは、構造体の型の引数から
+            let mut tas = targs_of(e);
+            let str[] mut tparams = [];
+            if is_enum {
+                if ck.e_at.contains(sname) { tparams = ck.edefs[ck.e_at[sname]].tparams.map((x) -> x); }
+            } else if ck.s_at.contains(sname) {
+                tparams = prog.structs[ck.s_at[sname]].tparams.map((x) -> x);
+            }
+            for (i, p) in tparams {
+                if i < sargs.len() && !tas.has(p) { tas.put(p, ty.cl(sargs[i])); }
+            }
+            if take {
+                let fi = index(full, tas)?;
+                let ir.Operand[] mut opv2 = [temp_op];
+                for v in vals.drain() { opv2.push(v); }
+                return Ok(temp_of(et, ir.Rvalue.Call(fi, own opv2, sp), sp));
+            }
+            if temp_l == -1 && through_map(recv) { return Err("辞書の中の値のメソッド"); }
+            let rp = recv_place(recv, temp_l, ptr)?;
+            if rp.t == -2 { return Err("定数の receiver"); }
+            let owner = if is_enum { ty.Ty.Enum(sname, own ty.cls(sargs)) } else { ty.Ty.Struct(sname, own ty.cls(sargs)) };
+            let this_ty = ty.Ty.Ref(own owner, mutable);
+            let rr = ir.Rvalue.Ref(own ir.clone_place(rp.p), mutable, false, describe(recv), recv.span);
+            let this_op = temp_of(this_ty, rr, sp);
+            let fi2 = index(full, tas)?;
+            let ir.Operand[] mut opv3 = [this_op];
+            for v in vals.drain() { opv3.push(v); }
+            let r = temp_of(et, ir.Rvalue.Call(fi2, own opv3, sp), sp);
+            // 一時的な receiver は、呼び出しが終わったら捨てる
+            drop_temp_l(temp_l, sp);
+            return Ok(r);
+        }
+        if k == "Iface" {
+            // 値の構造体で選ぶ。その名前のメソッドを持つ構造体すべての表
+            let str[] mut snames = [];
+            for s in prog.structs { snames.push(s.name); }
+            snames.sort();
+            let str[] mut tab_names = [];
+            let str[] mut tab_full = [];
+            let mut mutable2 = false;
+            for sn in snames {
+                let full2 = sn + "." + name;
+                if !defs.contains(full2) { continue; }
+                let d = ref prog.fns[defs[full2]];
+                // `fn take` のメソッドは interface に当てはまらない
+                if d.params.len() == 0 || d.params[0].name != "this" { continue; }
+                let mut is_ref = false;
+                let mut m2 = false;
+                match ref d.params[0].ty.kind {
+                    case Ref(x, m) -> {
+                        is_ref = true;
+                        m2 = m;
+                    }
+                    default -> {}
+                }
+                if !is_ref { continue; }
+                if d.tparams.len() > 0 { return Err("ジェネリックな構造体を interface として使う"); }
+                mutable2 = m2;
+                tab_names.push(sn);
+                tab_full.push(full2);
+            }
+            let i64[] mut tab = [];
+            for f in tab_full {
+                let em = ty.tmap();
+                tab.push(index(f, em)?);
+            }
+            let rp = recv_place(recv, temp_l, ptr)?;
+            if rp.t == -2 { return Err("定数の receiver"); }
+            let op = ir.Rvalue.CallDyn(own tab_names, own tab, own ir.clone_place(rp.p), mutable2, describe(recv), own vals, sp);
+            let r = temp_of(et, op, sp);
+            drop_temp_l(temp_l, sp);
+            return Ok(r);
+        }
+        if k == "Task" || k == "Chan" {
+            // 場所の task / chan は読むだけ
+            let rp = recv_place(recv, temp_l, ptr)?;
+            let h = if rp.t == -2 { ir.clone_op(temp_op) } else { ir.copy_of(ir.clone_place(rp.p)) };
+            let kind = if k == "Task" { "task" } else { "chan" };
+            let ir.Operand[] mut opv4 = [h];
+            for v in vals.drain() { opv4.push(v); }
+            let r = temp_of(et, ir.Rvalue.Builtin(kind + "." + name, own opv4, sp), sp);
+            drop_temp_l(temp_l, sp);
+            return Ok(r);
+        }
+        if (k == "List" || k == "Array") && (name == "map" || name == "filter") {
+            // for x in a と同じ形で要素を回し、関数の値を呼ぶ
+            let f = match vals.pop() {
+                case Some(x) -> ir.moved_local(x);
+                case None -> -1;
+            };
+            if f < 0 { return Err("map の関数"); }
+            let rp = recv_place(recv, temp_l, ptr)?;
+            if rp.t == -2 { return Err("定数の receiver"); }
+            let out = temp(ty.cl(et), sp);
+            assign(out, ir.Rvalue.Array(own [], true), sp);
+            let at0 = ty_of(argv[0]);
+            let mut rty = ty.Ty.Bool;
+            if name != "filter" {
+                if !ty.is(at0, "Fn") { return Err("map の関数の型"); }
+                rty = ty.inner(at0);
+            }
+            scopes.push(Scope { names: [""], ls: [f] });
+            let what = describe(recv) + " の要素";
+            let nb = ast.no_block();
+            each_in(false, "", 0, "", sp, recv.span, ty.inner(inner), false, ty.Ty.Unit, ir.clone_place(rp.p), what, true, nb, false, nb, f,
+                out, name == "filter", rty)?;
+            drop_temp_l(temp_l, sp);
+            return Ok(ir.Operand.Move(out, sp));
+        }
+        if k == "Array" || k == "List" || k == "Map" {
+            let rp = recv_place(recv, temp_l, ptr)?;
+            if rp.t == -2 { return Err("定数の receiver"); }
+            let arg_span = if argv.len() > 0 { argv[0].span } else { sp };
+            let op = ir.Rvalue.SeqOp(name, own ir.clone_place(rp.p), own vals, sp, arg_span);
+            let r = temp_of(et, op, sp);
+            drop_temp_l(temp_l, sp);
+            return Ok(r);
+        }
+        Err(ty.show(inner) + " のメソッド")
+    }
+
+    /// 呼び出しのために借りた一時的な値を drop する（interp の `with_lent`）
+    fn mut drop_lent(i64 mark, i64 span) {
+        while lent.len() > mark {
+            let t = match lent.pop() {
+                case Some(x) -> x;
+                case None -> 0;
+            };
+            emit(ir.Inst.Drop(t, span, "呼び出しに使い終わった一時的な値"));
+        }
+    }
+
+    /// 一時的な receiver（変数 t。0 未満ならない）を捨てる
+    fn mut drop_temp_l(i64 t, i64 span) {
+        if t >= 0 { emit(ir.Inst.Drop(t, span, "メソッドの呼び出しに使い終わった一時的な値")); }
+    }
+
+    /// 場所（代入の左辺・`ref` の中身）。own / ref の先のフィールドは自動でたどる
+    fn mut Result<ir.Place, str> place(ref ast.Expr e) {
+        match ref e.kind {
+            case Var(name) -> {
+                let l = lookup(name);
+                if l < 0 { return Err("場所でない名前 `{name}`"); }
+                Ok(ir.local(l, e.span))
+            }
+            case Deref(x) -> {
+                if is_place(x) {
+                    let mut p = place(x)?;
+                    project(ref mut p, e, x, unit_op(), false)?;
+                    return Ok(p);
+                }
+                // 一時的な own の中は場所にできない（interp は値を計算してからエラーにする）
+                if ty.is(ty_of(x), "Own") {
+                    let v = expr(x)?;
+                    terminate(ir.Term.Fail("一時的な own の中は場所として使えません", x.span, "先に変数に入れてください"));
+                    let t = ir.moved_local(v);
+                    if t < 0 { return Err("定数の中の場所"); }
+                    return Ok(ir.local(t, x.span));
+                }
+                Err("一時的な値の中の場所")
+            }
+            case Field(base, n) -> {
+                if !is_place(base) { return Err("一時的な値の中の場所"); }
+                let mut p = place(base)?;
+                project(ref mut p, e, base, unit_op(), false)?;
+                Ok(p)
+            }
+            case Index(base, idx) -> {
+                if !is_place(base) { return Err("一時的な値の中の場所"); }
+                // 添字を先に評価してから、配列の場所を求める（interp の `place` と同じ順）
+                let key = expr(idx)?;
+                let mut p = place(base)?;
+                project(ref mut p, e, base, key, true)?;
+                Ok(p)
+            }
+            default -> Err("一時的な値の中の場所");
+        }
+    }
+
+    /// 読むための場所（interp の `eval_borrow`）。一時的な値の中なら、その値を入れた一時的な変数も返す（読み終わったら drop する）
+    fn mut Result<ReadPlace, str> read_place(ref ast.Expr e) {
+        let mut base_temp = false;
+        match ref e.kind {
+            case Deref(b) -> base_temp = !is_place(b);
+            case Field(b, n) -> base_temp = !is_place(b);
+            case Index(b, i) -> base_temp = !is_place(b);
+            default -> {}
+        }
+        if !base_temp { return Ok(ReadPlace { p: place(e)?, t: -1 }); }
+        let mut key = unit_op();
+        let mut has_key = false;
+        match ref e.kind {
+            case Index(b, idx) -> {
+                key = expr(idx)?;
+                has_key = true;
+            }
+            default -> {}
+        }
+        let base = match ref e.kind {
+            case Deref(b) -> b;
+            case Field(b, n) -> b;
+            case Index(b, i) -> b;
+            default -> return Err("場所でない");
+        };
+        let v = expr(base)?;
+        let t = ir.moved_local(v);
+        if t < 0 { return Err("定数の中の場所"); }
+        // 一時的な own・構造体の中から own は取り出せない（interp のエラー）
+        if !ty.is(ty_of(base), "Ref") && moves(ty_of(e))? { return Err("一時的な値の中の own"); }
+        let mut p = ir.local(t, base.span);
+        project(ref mut p, e, base, key, has_key)?;
+        Ok(ReadPlace { p: p, t: t })
+    }
+
+    /// `base` の場所 `p` から、`e`（`*base`・`base.f`・`base[k]`）の場所へ進む。own / ref の先は自動でたどる
+    fn mut Result<(), str> project(ref mut ir.Place p, ref ast.Expr e, ref ast.Expr base, ir.Operand key, bool has_key) {
+        let bt = ty_of(base);
+        let mut inner = ty.cl(bt);
+        match ref e.kind {
+            case Deref(x) -> {
+                p.proj.push(ir.Proj.Deref(true, e.span));
+                return Ok(());
+            }
+            default -> {}
+        }
+        if ty.has_pointee(bt) {
+            p.proj.push(ir.Proj.Deref(true, e.span));
+            inner = ty.inner(bt);
+        }
+        match ref e.kind {
+            case Field(x, name) -> {
+                if ty.is(inner, "Struct") {
+                    let sname = ty.name_of(inner);
+                    if !ck.s_at.contains(sname) { return Err("構造体がない"); }
+                    let fi = field_index(prog.structs[ck.s_at[sname]], name);
+                    if fi < 0 { return Err("ないフィールド"); }
+                    p.proj.push(ir.Proj.Field(fi, e.span));
+                    return Ok(());
+                }
+            }
+            case Index(x, idx) -> {
+                if (ty.is(inner, "Array") || ty.is(inner, "List") || ty.is(inner, "Map")) && has_key {
+                    p.proj.push(ir.Proj.Index(own key, idx.span, base.span));
+                    return Ok(());
+                }
+            }
+            default -> {}
+        }
+        Err(ty.show(inner) + " の中の場所")
+    }
+
+    /// 場所が辞書の中を通るか（中の値は借りられない）。リストの添字まで来たらそこで切れる
+    fn bool through_map(ref ast.Expr e) {
+        let mut is_index = false;
+        let b = match ref e.kind {
+            case Field(x, n) -> x;
+            case Index(x, i) -> {
+                is_index = true;
+                x
+            }
+            default -> return false;
+        };
+        let bt = ty_of(b);
+        let ptr = ty.has_pointee(bt);
+        let inner = if ptr { ty.inner(bt) } else { ty.cl(bt) };
+        if is_index {
+            if ty.is(inner, "Map") { return true; }
+            if ty.is(inner, "List") { return false; }
+        }
+        !ptr && through_map(b)
+    }
+}
+
+fn i64 field_index(ref ast.StructDef d, str n) {
+    for (i, f) in d.fields {
+        if f == n { return i; }
+    }
+    -1
+}
+
+fn bool has_i(ref i64[] xs, i64 x) {
+    for y in xs {
+        if y == x { return true; }
+    }
+    false
+}
+
+fn i64[] succ(ref ir.Term t) {
+    match ref t {
+        case Goto(b) -> [b];
+        case Branch(c, a, b) -> [a, b];
+        case Step(c, s, a, b) -> [a, b];
+        case Switch(p, vs, bbs, d) -> {
+            let i64[] mut out = bbs.map((x) -> x);
+            out.push(d);
+            out
+        }
+        default -> [];
+    }
+}
+
+fn i64 renum(ref i64[] new_index, i64 b) { new_index[b] }
+
+/// どこからも飛んでこないブロック（return や break のあと）を取り除き、番号を詰める
+fn ir.Block[] reachable(ir.Block[] blocks) {
+    let bool[] mut seen = [];
+    for b in blocks { seen.push(false); }
+    let i64[] mut work = [0];
+    while work.len() > 0 {
+        let b = match work.pop() {
+            case Some(x) -> x;
+            case None -> 0;
+        };
+        if !seen[b] {
+            seen[b] = true;
+            for s in succ(blocks[b].term) { work.push(s); }
+        }
+    }
+    let i64[] mut new_index = [];
+    let mut n = 0;
+    for s in seen {
+        if s {
+            new_index.push(n);
+            n += 1;
+        } else {
+            new_index.push(-1);
+        }
+    }
+    let ir.Block[] mut out = [];
+    let mut src = blocks;
+    let mut k = 0;
+    for b in src.drain() {
+        if seen[k] {
+            let t = match ref b.term {
+                case Goto(x) -> ir.Term.Goto(new_index[x]);
+                case Branch(c, x, y) -> ir.Term.Branch(own ir.clone_op(c), new_index[x], new_index[y]);
+                case Switch(p, vs, bbs, d) -> {
+                    let i64[] mut nbs = [];
+                    for x in bbs { nbs.push(new_index[x]); }
+                    ir.Term.Switch(own ir.clone_place(p), own vs.map((v) -> v), own nbs, new_index[d])
+                }
+                case Step(c, st, x, y) -> ir.Term.Step(c, own ir.clone_op(st), new_index[x], new_index[y]);
+                case Return(o) -> ir.Term.Return(own ir.clone_op(o));
+                case Fail(t, sp, l) -> ir.Term.Fail(t, sp, l);
+                case Unreachable -> ir.Term.Unreachable;
+            };
+            let mut nb = b;
+            nb.term = t;
+            out.push(nb);
+        }
+        k += 1;
+    }
+    out
+}
+
+// ---------------------------------------------------------------- 入り口
+
+/// main から呼ばれる関数だけを書き出す
+pub fn Result<ir.Program, str> lower(ref ast.Program prog, ref typeck.Checker ck) {
+    let i64[str] mut seen_structs = [];
+    for s in prog.structs {
+        if seen_structs.contains(s.name) { return Err("構造体 `{s.name}` が二重に定義されている"); }
+        seen_structs[s.name] = 0;
+    }
+    let mut lw = Lower {
+        prog: prog, ck: ck, defs: [], by_name: [], fn_names: [], queue: [], qhead: 0, lams: [], lam_ids: [],
+        subst: ty.tmap(), fname: "", caps_l: [], spawning: false, in_value: 0, lent: [], locals: [], blocks: [], cur: 0, scopes: [],
+        loops: [], fret: ty.Ty.Unit,
+    };
+    for (i, f) in prog.fns {
+        if is_builtin(f.name) || lw.defs.contains(f.name) { return Err("関数 `{f.name}` の名前が使えない"); }
+        lw.defs[f.name] = i;
+    }
+    if !lw.defs.contains("main") { return Err("main がない"); }
+    let em = ty.tmap();
+    lw.index("main", em)?;
+    let ir.Func[] mut fns = [];
+    let bool[] mut have = [];
+    while lw.qhead < lw.queue.len() {
+        let q = lw.qhead;
+        lw.qhead += 1;
+        let m = ty.clone_map(lw.queue[q].map);
+        let inst = lw.queue[q].inst;
+        lw.reset(m, inst);
+        let i = lw.queue[q].idx;
+        let f = if lw.queue[q].lambda {
+            let le = lw.lams[lw.queue[q].def];
+            let id = lw.lam_ids[lw.queue[q].def];
+            let cn = lw.queue[q].cap_names.map((x) -> x);
+            let ct = ty.cls(lw.queue[q].cap_tys);
+            let rt = ty.cl(lw.queue[q].ret);
+            lw.lower_lambda(le, id, cn, ct, rt, lw.queue[q].span, lw.queue[q].once)?
+        } else {
+            lw.lower_fn(prog.fns[lw.queue[q].def])?
+        };
+        while fns.len() <= i {
+            fns.push(ir.Func { name: "", params: 0, captures: 0, cap_tys: [], ret: ty.Ty.Unit, locals: [], blocks: [], span: 0 });
+            have.push(false);
+        }
+        fns[i] = f;
+        have[i] = true;
+    }
+    let i64[str] mut by_name = [];
+    for (k, v) in lw.by_name { by_name[k] = v; }
+    Ok(ir.Program { fns: fns, by_name: by_name })
+}

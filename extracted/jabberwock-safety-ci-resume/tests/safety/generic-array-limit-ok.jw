@@ -1,0 +1,4 @@
+// 項目9の正常側。具体化した配列は上限の1 MiBちょうどで、受け付ける必要がある。
+struct Buffer<T> { T[131072] cells; }
+fn accept(Buffer<i64[1]> b) {}
+fn main() {}

@@ -1,0 +1,2317 @@
+// IR → LLVM のテキスト: 関数の本体（Rust 版の src/ir/llvm.rs の FnGen にあたる）と、全体の入り口 `emit`。
+//
+// - 変数はスタック（`alloca`）に置く。`ref x` で変数そのものを借りられる変数だけ、区画（ヒープ）に置く。
+// - 変数ごとに「状態」を持つ: null なら値がある、`@jw.unset` ならまだない、それ以外はムーブした位置。
+use diag;
+use ir;
+use llvm;
+use ty;
+use typeck;
+
+const MAX_DEPTH = 5000;
+
+/// 場所をたどった結果
+struct PlaceRes {
+    str ptr;
+    ty.Ty t;
+    // 場所を含む区画（ref で借りるときの世代の元）。スタックの変数なら ""
+    str block;
+    // 最後の区画のあとでリスト・辞書の要素の中を通ったか（要素の印 TBAA をつけてよい）
+    bool list;
+    // 最後の区画のあとで辞書の中を通ったか（借りられない）
+    bool map;
+    // `block` がリストの中身の区画か
+    bool list_block;
+    // interface の先なら、構造体の番号（なければ ""）
+    str tid;
+    // 辞書に新しく入れたキーの場所か（代入で古い値を解放しない。なければ ""）
+    str fresh;
+}
+
+fn mark(ref ir.Operand o, ref mut bool[] may_move) {
+    match ref o {
+        case Move(l, s) -> may_move[l] = true;
+        case Read(l, s) -> may_move[l] = true;
+        default -> {}
+    }
+}
+
+fn mark_place(ref ir.Place p, ref mut bool[] may_move) {
+    for pr in p.proj {
+        match ref pr {
+            case Index(k, s, a) -> mark(k, may_move);
+            default -> {}
+        }
+    }
+}
+
+fn mark_all(ref ir.Operand[] os, ref mut bool[] may_move) {
+    for o in os { mark(o, may_move); }
+}
+
+/// 命令の中の値（Operand）をすべて見て、ムーブされうる変数に印をつける（Rust 版の `visit_operands`）
+fn visit_operands(ref ir.Inst i, ref mut bool[] may_move) {
+    match ref i {
+        case Assign(p, value, s, w) -> {
+            mark_place(p, may_move);
+            match ref value {
+                case Use(o) -> mark(o, may_move);
+                case Un(op, o, sp) -> mark(o, may_move);
+                case Cast(o, t) -> mark(o, may_move);
+                case Own(o) -> mark(o, may_move);
+                case Show(o, t, sp) -> mark(o, may_move);
+                case Repeat(o, n, l) -> mark(o, may_move);
+                case Bin(op, a, c, sp) -> {
+                    mark(a, may_move);
+                    mark(c, may_move);
+                }
+                case Ref(q, m, f, w2, sp) -> mark_place(q, may_move);
+                case Take(q) -> mark_place(q, may_move);
+                case Items(q, w2, sp) -> mark_place(q, may_move);
+                case Keys(q) -> mark_place(q, may_move);
+                case CopyOut(q, w2, sp) -> mark_place(q, may_move);
+                case Struct(n, os) -> mark_all(os, may_move);
+                case Enum(v, os, c) -> mark_all(os, may_move);
+                case Array(os, l) -> mark_all(os, may_move);
+                case Call(f, os, sp) -> mark_all(os, may_move);
+                case Closure(f, os) -> mark_all(os, may_move);
+                case Builtin(n, os, sp) -> mark_all(os, may_move);
+                case Map(ks, vs, sp) -> {
+                    for (j, k) in ks {
+                        mark(k, may_move);
+                        mark(vs[j], may_move);
+                    }
+                }
+                case SeqOp(n, q, os, sp, a) -> {
+                    mark_place(q, may_move);
+                    mark_all(os, may_move);
+                }
+                case CallDyn(sn, fs, q, m, w2, os, sp) -> {
+                    mark_place(q, may_move);
+                    mark_all(os, may_move);
+                }
+                case CallValue(o, os, sp) -> {
+                    mark(o, may_move);
+                    mark_all(os, may_move);
+                }
+            }
+        }
+        case Discard(v, s, w) -> mark(v, may_move);
+        case Drop(l, s, w) -> {}
+    }
+}
+
+fn bool no_deref(ref ir.Place p) {
+    for pr in p.proj {
+        match ref pr {
+            case Deref(c, s) -> return false;
+            default -> {}
+        }
+    }
+    true
+}
+
+fn str join_args(ref str[] xs) { xs.join(", ") }
+
+struct FnGen {
+    ref ir.Func fun;
+    i64 idx;
+    llvm.B b;
+    // 区画に置く変数（`ref x` で変数そのものを借りる）
+    bool[] boxed;
+    // ムーブされうる変数（読むときにムーブ済みか確かめる）
+    bool[] may_move;
+    // 呼び出しの深さ（関数の最初の引数）
+    str depth;
+
+    fn mut Result<(), str> run(ref mut llvm.Module m) {
+        let str[] mut params = ["i64 %depth"];
+        for i in range(fun.params) {
+            params.push(m.lt(fun.locals[i].t)? + " %a{i}");
+        }
+        let ret = m.lt(fun.ret)?;
+        // 変数と状態
+        let str[] mut init = [];
+        for (i, lc) in fun.locals {
+            let x = m.lt(lc.t)?;
+            if boxed[i] {
+                b.allocas.push("  %l{i} = alloca ptr\n");
+            } else {
+                b.allocas.push("  %l{i} = alloca " + x + "\n");
+            }
+            b.allocas.push("  %s{i} = alloca ptr\n");
+            if i < fun.params {
+                init.push("  store ptr null, ptr %s{i}\n");
+                if boxed[i] {
+                    let size = m.sizeof(lc.t)?;
+                    init.push("  %box{i} = call ptr @jw_alloc(i64 " + size + ")\n");
+                    init.push("  store " + x + " %a{i}, ptr %box{i}\n");
+                    init.push("  store ptr %box{i}, ptr %l{i}\n");
+                } else {
+                    init.push("  store " + x + " %a{i}, ptr %l{i}\n");
+                }
+            } else {
+                init.push("  store ptr @jw.unset, ptr %s{i}\n");
+            }
+        }
+        for bi in range(fun.blocks.len()) {
+            b.label("bb{bi}");
+            // match で中身を取り出した入れ物（このブロックの drop は中身を解放しない）
+            let i64[] mut taken = [];
+            for ins in fun.blocks[bi].insts {
+                match ref ins {
+                    case Assign(p, value, s, w) -> {
+                        match ref value {
+                            case Take(q) -> taken.push(q.local);
+                            default -> {}
+                        }
+                    }
+                    default -> {}
+                }
+                inst(m, ins, taken)?;
+            }
+            term(m, fun.blocks[bi].term)?;
+        }
+        m.code.push("; " + fun.name + "\ndefine internal " + ret + " @f{idx}(" + params.join(", ") + ") {{\nentry:\n" + b.allocas.join("") +
+            init.join("") + "  br label %bb0\n" + b.body() + "}}\n\n");
+        Ok(())
+    }
+
+    fn str name_of(i64 l) { fun.locals[l].name }
+
+    // ------------------------------------------------------------ 変数
+
+    /// 変数に値があるか確かめる（ムーブ済みならエラー）
+    fn mut check_live(ref mut llvm.Module m, i64 l, i64 span) {
+        if !may_move[l] { return; }
+        let st = b.val("load ptr, ptr %s{l}");
+        let live = b.val("icmp eq ptr " + st + ", null");
+        let bad = b.l();
+        let ok = b.l();
+        b.op("br i1 " + live + ", label %" + ok + ", label %" + bad);
+        b.label(bad);
+        let name = m.cstr(fun.locals[l].name);
+        let use_site = m.site(span, "");
+        b.op("call void @jw_fail_moved(ptr " + name + ", ptr " + st + ", ptr " + use_site + ")");
+        b.op("unreachable");
+        b.label(ok);
+    }
+
+    /// 変数の値の場所（区画に置く変数なら区画の中）
+    fn mut str local_ptr(i64 l) {
+        if boxed[l] { return b.val("load ptr, ptr %l{l}"); }
+        "%l{l}"
+    }
+
+    /// 変数の値を解放して、空にする（`drop`）。`shallow` なら中身は解放しない（match で取り出した入れ物）
+    fn mut Result<(), str> drop_local(ref mut llvm.Module m, i64 l, i64 span, str why, bool shallow) {
+        let lty = ty.cl(fun.locals[l].t);
+        let st = b.val("load ptr, ptr %s{l}");
+        let live = b.val("icmp eq ptr " + st + ", null");
+        let done = b.if_true(live);
+        let site = m.site(span, why);
+        let p = local_ptr(l);
+        if shallow {
+            // own の入れ物だけを解放する（中の enum の中身は取り出し済み）
+            if ty.is(lty, "Own") {
+                let v = b.val("load ptr, ptr " + p);
+                let size = m.sizeof(ty.inner(lty))?;
+                b.op("call void @jw_free(ptr " + v + ", i64 " + size + ", ptr " + site + ")");
+            }
+        } else if m.needs_drop(lty)? {
+            let d = m.helper("Drop", lty);
+            b.op("call void " + d + "(ptr " + p + ", ptr " + site + ")");
+        }
+        if boxed[l] {
+            let size = m.sizeof(lty)?;
+            b.op("call void @jw_free(ptr " + p + ", i64 " + size + ", ptr " + site + ")");
+        }
+        b.op("store ptr @jw.unset, ptr %s{l}");
+        b.br(done);
+        b.label(done);
+        Ok(())
+    }
+
+    /// 変数に値を置く（古い値があれば解放する）
+    fn mut Result<(), str> assign_local(ref mut llvm.Module m, i64 l, str v, i64 span) {
+        let lty = ty.cl(fun.locals[l].t);
+        let x = m.lt(lty)?;
+        let st = b.val("load ptr, ptr %s{l}");
+        let live = b.val("icmp eq ptr " + st + ", null");
+        let yes = b.l();
+        let no = b.l();
+        let done = b.l();
+        b.op("br i1 " + live + ", label %" + yes + ", label %" + no);
+        b.label(yes);
+        let p = local_ptr(l);
+        if m.needs_drop(lty)? {
+            // 新しい値を置いてから古い値を解放する（interp と同じ順）
+            let old = b.val("load " + x + ", ptr " + p);
+            b.op("store " + x + " " + v + ", ptr " + p);
+            let tmp = b.alloca(x);
+            b.op("store " + x + " " + old + ", ptr " + tmp);
+            let why = "`" + name_of(l) + "` に再代入されて、古い値が解放された";
+            let site = m.site(span, why);
+            let d = m.helper("Drop", lty);
+            b.op("call void " + d + "(ptr " + tmp + ", ptr " + site + ")");
+        } else {
+            b.op("store " + x + " " + v + ", ptr " + p);
+        }
+        b.br(done);
+        b.label(no);
+        if boxed[l] {
+            let size = m.sizeof(lty)?;
+            let blk = b.val("call ptr @jw_alloc(i64 " + size + ")");
+            b.op("store " + x + " " + v + ", ptr " + blk);
+            b.op("store ptr " + blk + ", ptr %l{l}");
+        } else {
+            b.op("store " + x + " " + v + ", ptr %l{l}");
+        }
+        b.op("store ptr null, ptr %s{l}");
+        b.br(done);
+        b.label(done);
+        Ok(())
+    }
+
+    // ------------------------------------------------------------ 命令
+
+    fn mut Result<(), str> inst(ref mut llvm.Module m, ref ir.Inst ins, ref i64[] taken) {
+        match ref ins {
+            case Assign(pl, value, span, what) -> {
+                let want = place_ty(m, pl)?;
+                let v0 = rvalue(m, value, want)?;
+                if pl.proj.len() == 0 { return assign_local(m, pl.local, v0, span); }
+                let pr = place(m, pl, true)?;
+                let x = m.lt(pr.t)?;
+                let v = coerce(m, v0, want, pr.t)?;
+                if m.needs_drop(pr.t)? {
+                    let old = b.alloca(x);
+                    let ov = b.val("load " + x + ", ptr " + pr.ptr);
+                    b.op("store " + x + " " + v + ", ptr " + pr.ptr);
+                    let mut skip = "";
+                    if pr.fresh != "" {
+                        let c = b.val("xor i1 " + pr.fresh + ", true");
+                        skip = b.if_true(c);
+                    }
+                    b.op("store " + x + " " + ov + ", ptr " + old);
+                    let site = m.site(span, ir.overwritten(what));
+                    let d = m.helper("Drop", pr.t);
+                    b.op("call void " + d + "(ptr " + old + ", ptr " + site + ")");
+                    if skip != "" {
+                        b.br(skip);
+                        b.label(skip);
+                    }
+                } else {
+                    let tg = if pr.list && llvm.scalar_lt(x) { llvm.tbaa_element() } else { "" };
+                    b.op("store " + x + " " + v + ", ptr " + pr.ptr + tg);
+                }
+            }
+            case Drop(local, span, why) -> {
+                let mut shallow = false;
+                for t in taken {
+                    if t == local { shallow = true; }
+                }
+                drop_local(m, local, span, why, shallow)?;
+            }
+            case Discard(value, span, why) -> {
+                let r = operand(m, value)?;
+                discard(m, r.v, r.t, span, why)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// 値を捨てる（中の own を解放する）
+    fn mut Result<(), str> discard(ref mut llvm.Module m, str v, ref ty.Ty t, i64 span, str why) {
+        if m.needs_drop(t)? {
+            let x = m.lt(t)?;
+            let tmp = b.alloca(x);
+            b.op("store " + x + " " + v + ", ptr " + tmp);
+            let site = m.site(span, why);
+            let d = m.helper("Drop", t);
+            b.op("call void " + d + "(ptr " + tmp + ", ptr " + site + ")");
+        }
+        Ok(())
+    }
+
+    fn mut Result<(), str> term(ref mut llvm.Module m, ref ir.Term t) {
+        match ref t {
+            case Goto(to) -> b.op("br label %bb{to}");
+            case Branch(c, th, el) -> {
+                let r = operand(m, c)?;
+                b.op("br i1 " + r.v + ", label %bb{th}, label %bb{el}");
+            }
+            case Return(o) -> {
+                let r = operand(m, o)?;
+                let rt = ty.cl(fun.ret);
+                let v = coerce(m, r.v, r.t, rt)?;
+                let x = m.lt(rt)?;
+                b.op("ret " + x + " " + v);
+            }
+            case Switch(p, vs, bbs, other) -> {
+                let pr = place(m, p, false)?;
+                let tg = m.enum_tag(ref mut b, pr.t, pr.ptr)?;
+                let str[] mut cases = [];
+                for (j, v) in vs {
+                    let i = m.variant_index(pr.t, v)?;
+                    cases.push("i32 {i}, label %bb{bbs[j]}");
+                }
+                b.op("switch i32 " + tg + ", label %bb{other} [ " + cases.join(" ") + " ]");
+            }
+            case Step(counter, step, next, done) -> {
+                let ct = ref fun.locals[counter].t;
+                if !ty.is(ct, "Int") { return Err("整数でないループの数"); }
+                let it = ty.int_of(ct);
+                let r = operand(m, step)?;
+                if !ty.is(r.t, "Int") { return Err("整数でない step"); }
+                let sty = ty.int_of(r.t);
+                let p = local_ptr(counter);
+                let bits = ty.bits(it);
+                let nv = b.val("load i{bits}, ptr " + p);
+                // i128 で足して、型の範囲に入るか（interp と同じ）
+                let n2 = b.val(llvm.ext(it) + " i{bits} " + nv + " to i128");
+                let s2 = b.val(llvm.ext(sty) + " i{ty.bits(sty)} " + r.v + " to i128");
+                let sum = b.val("add i128 " + n2 + ", " + s2);
+                let lo = b.val("icmp sge i128 " + sum + ", " + ty.min_text(it));
+                let hi = b.val("icmp sle i128 " + sum + ", " + ty.max_text(it));
+                let ok = b.val("and i1 " + lo + ", " + hi);
+                let tr = b.val("trunc i128 " + sum + " to i{bits}");
+                let no = b.if_true(ok);
+                b.op("store i{bits} " + tr + ", ptr " + p);
+                b.op("br label %bb{next}");
+                b.label(no);
+                b.op("br label %bb{done}");
+            }
+            case Fail(title, span, label) -> {
+                let tc = m.cstr(title);
+                let lc = m.cstr(label);
+                let s = m.site(span, "");
+                b.op("call void @jw_fail(ptr " + tc + ", ptr " + s + ", ptr " + lc + ", ptr null)");
+                b.op("unreachable");
+            }
+            case Unreachable -> b.op("unreachable");
+        }
+        Ok(())
+    }
+
+    // ------------------------------------------------------------ 場所
+
+    /// 場所の型（命令を出さずに決める）
+    fn mut Result<ty.Ty, str> place_ty(ref mut llvm.Module m, ref ir.Place p) {
+        let mut t = ty.cl(fun.locals[p.local].t);
+        for pr in p.proj {
+            let k = ty.tag(t);
+            let mut next = ty.Ty.Unit;
+            let mut ok = false;
+            match ref pr {
+                case Deref(c, s) -> {
+                    if k == "Own" || k == "Ref" {
+                        next = ty.inner(t);
+                        ok = true;
+                    }
+                }
+                case Field(i, s) -> {
+                    if k == "Struct" {
+                        let fs = m.struct_fields(t)?;
+                        next = ty.cl(fs[i]);
+                        ok = true;
+                    }
+                }
+                case Variant(v, i) -> {
+                    if k == "Enum" {
+                        let mut found = false;
+                        for vr in m.variants(t)? {
+                            if vr.name == v && !found {
+                                next = ty.cl(vr.tys[i]);
+                                found = true;
+                            }
+                        }
+                        if !found { return Err("enum の種類がない"); }
+                        ok = true;
+                    }
+                }
+                case Index(kx, s, a) -> {
+                    if k == "Array" || k == "List" || k == "Map" {
+                        next = ty.inner(t);
+                        ok = true;
+                    }
+                }
+            }
+            if !ok { return Err("場所の型 " + ty.show(t)); }
+            t = next;
+        }
+        Ok(t)
+    }
+
+    /// 場所をたどる（ref の世代チェック・添字の範囲・辞書のキー）。`create` なら最後の辞書のキーがなければ入れる
+    fn mut Result<PlaceRes, str> place(ref mut llvm.Module m, ref ir.Place p, bool create) {
+        let l = p.local;
+        check_live(m, l, p.span);
+        let ptr = local_ptr(l);
+        let blk0 = if boxed[l] { ptr } else { "" };
+        let mut r = PlaceRes {
+            ptr: ptr, t: ty.cl(fun.locals[l].t), block: blk0, list: false, map: false, list_block: false, tid: "", fresh: "",
+        };
+        let last = p.proj.len();
+        for (k, pr) in p.proj {
+            match ref pr {
+                case Deref(check, span) -> {
+                    let use_site = m.site(span, "");
+                    if ty.is(r.t, "Own") {
+                        let mut raw = "";
+                        if llvm.is_iface_ptr(r.t) {
+                            let v = b.val("load %iown, ptr " + r.ptr);
+                            r.tid = b.val("extractvalue %iown " + v + ", 1");
+                            raw = b.val("extractvalue %iown " + v + ", 0");
+                        } else {
+                            raw = b.val("load ptr, ptr " + r.ptr);
+                        }
+                        let tg = llvm.own_target(ref mut b, raw, check, use_site);
+                        r.ptr = tg;
+                        r.block = tg;
+                        r.t = ty.inner(r.t);
+                    } else if ty.is(r.t, "Ref") {
+                        let iface = llvm.is_iface_ptr(r.t);
+                        let rt = if iface { "%iref" } else { "%ref" };
+                        let v = b.val("load " + rt + ", ptr " + r.ptr);
+                        let addr = if check { llvm.check_ref(ref mut b, rt, v, use_site) } else { b.val("extractvalue " + rt + " " + v + ", 0") };
+                        if iface { r.tid = b.val("extractvalue %iref " + v + ", 4"); }
+                        r.block = b.val("extractvalue " + rt + " " + v + ", 1");
+                        r.ptr = addr;
+                        r.t = ty.inner(r.t);
+                    } else {
+                        return Err(ty.show(r.t) + " の先");
+                    }
+                    r.list = false;
+                    r.map = false;
+                    r.list_block = false;
+                }
+                case Field(i, s) -> {
+                    let st = m.lt(r.t)?;
+                    let fs = m.struct_fields(r.t)?;
+                    r.ptr = b.val("getelementptr " + st + ", ptr " + r.ptr + ", i32 0, i32 {i}");
+                    r.t = ty.cl(fs[i]);
+                }
+                case Variant(v, i) -> {
+                    let vs = m.variants(r.t)?;
+                    let mut at = -1;
+                    for (j, vr) in vs {
+                        if vr.name == v && at < 0 { at = j; }
+                    }
+                    if at < 0 { return Err("enum の種類がない"); }
+                    let vlt = m.variant_lt(vs[at].tys)?;
+                    let pl = m.enum_payload(ref mut b, r.t, r.ptr)?;
+                    r.ptr = b.val("getelementptr " + vlt + ", ptr " + pl + ", i32 0, i32 {i}");
+                    r.t = ty.cl(vs[at].tys[i]);
+                }
+                case Index(key, key_span, a) -> {
+                    let kr = operand(m, key)?;
+                    let kk = ty.tag(r.t);
+                    if kk == "Array" {
+                        let i = index(m, kr.v, kr.t, "{ty.arr_len(r.t)}", key_span)?;
+                        let at = m.lt(r.t)?;
+                        r.ptr = b.val("getelementptr " + at + ", ptr " + r.ptr + ", i64 0, i64 " + i);
+                        r.t = ty.inner(r.t);
+                    } else if kk == "List" {
+                        let x = ty.inner(r.t);
+                        let lp = b.val("getelementptr %list, ptr " + r.ptr + ", i32 0, i32 1");
+                        let len = b.val("load i64, ptr " + lp + llvm.tbaa_header());
+                        let i = index(m, kr.v, kr.t, len, key_span)?;
+                        let data = b.val("load ptr, ptr " + r.ptr + llvm.tbaa_header());
+                        let xt = m.lt(x)?;
+                        r.ptr = b.val("getelementptr " + xt + ", ptr " + data + ", i64 " + i);
+                        r.t = x;
+                        r.list = true;
+                        // 要素はリストの中身の区画にある（要素を借りた ref はこの区画の世代を持つ）
+                        r.block = data;
+                        r.map = false;
+                        r.list_block = true;
+                    } else if kk == "Map" {
+                        let kty = ty.map_key(r.t);
+                        let vty = ty.inner(r.t);
+                        let k64 = key64(kr.v, kty)?;
+                        let mp = b.val("load ptr, ptr " + r.ptr);
+                        let i = b.val("call i64 @jw_map_find(ptr " + mp + ", i64 " + k64 + ")");
+                        let missing = b.val("icmp slt i64 " + i + ", 0");
+                        if create && k + 1 == last {
+                            // `m[k] = v`: なければ入れる（キーは辞書のものになる）
+                            let ip = b.alloca("i64");
+                            b.op("store i64 " + i + ", ptr " + ip);
+                            let no = b.if_true(missing);
+                            let j = b.val("call i64 @jw_map_add(ptr " + mp + ", i64 " + k64 + ")");
+                            b.op("store i64 " + j + ", ptr " + ip);
+                            let skip = b.l();
+                            b.br(skip);
+                            b.label(no);
+                            release_key(kr.v, kty);
+                            b.br(skip);
+                            b.label(skip);
+                            let i2 = b.val("load i64, ptr " + ip);
+                            r.ptr = b.val("call ptr @jw_map_val(ptr " + mp + ", i64 " + i2 + ")");
+                            r.fresh = missing;
+                        } else {
+                            let ok = b.if_true(missing);
+                            let unsigned = ty.is(kty, "Int") && !ty.signed(ty.int_of(kty));
+                            let s = m.site(key_span, "");
+                            b.op("call void @jw_fail_nokey(i32 {llvm.key_kind(kty)}, i64 " + k64 + ", i32 " + (if unsigned { "1" } else { "0" }) +
+                                ", ptr " + s + ")");
+                            b.op("unreachable");
+                            b.label(ok);
+                            release_key(kr.v, kty);
+                            r.ptr = b.val("call ptr @jw_map_val(ptr " + mp + ", i64 " + i + ")");
+                        }
+                        r.t = vty;
+                        r.list = true;
+                        r.map = true;
+                    } else {
+                        return Err(ty.show(r.t) + " の添字");
+                    }
+                }
+            }
+        }
+        Ok(r)
+    }
+
+    /// 添字の範囲を確かめて i64 にする
+    fn mut Result<str, str> index(ref mut llvm.Module m, str kv, ref ty.Ty kt, str len, i64 span) {
+        if !ty.is(kt, "Int") { return Err("整数でない添字"); }
+        let it = ty.int_of(kt);
+        let i = llvm.widen(ref mut b, kv, it);
+        let mut bad = "";
+        if ty.signed(it) {
+            let neg = b.val("icmp slt i64 " + i + ", 0");
+            let big = b.val("icmp sge i64 " + i + ", " + len);
+            bad = b.val("or i1 " + neg + ", " + big);
+        } else {
+            bad = b.val("icmp uge i64 " + i + ", " + len);
+        }
+        let ok = b.if_true(bad);
+        let s = m.site(span, "");
+        b.op("call void @jw_fail_bounds(i64 " + i + ", i32 " + (if ty.signed(it) { "0" } else { "1" }) + ", i64 " + len + ", ptr " + s + ")");
+        b.op("unreachable");
+        b.label(ok);
+        Ok(i)
+    }
+
+    /// 辞書のキーを i64 にする
+    fn mut Result<str, str> key64(str kv, ref ty.Ty kt) {
+        if ty.is(kt, "Str") { return Ok(b.val("ptrtoint ptr " + kv + " to i64")); }
+        if ty.is(kt, "Bool") { return Ok(b.val("zext i1 " + kv + " to i64")); }
+        if ty.is(kt, "Int") { return Ok(llvm.widen(ref mut b, kv, ty.int_of(kt))); }
+        Err("辞書のキー " + ty.show(kt))
+    }
+
+    fn mut release_key(str kv, ref ty.Ty kt) {
+        if ty.is(kt, "Str") { b.op("call void @jw_str_release(ptr " + kv + ")"); }
+    }
+
+    // ------------------------------------------------------------ 値
+
+    /// 値（自分のものになった値。文字列なら数を 1 つ持つ）と型
+    fn mut Result<llvm.V, str> operand(ref mut llvm.Module m, ref ir.Operand o) {
+        match ref o {
+            case Const(c) -> {
+                match c {
+                    case Unit -> Ok(llvm.vt("0", ty.Ty.Unit));
+                    // ビットの形で書く（u64 の大きな値は負の数になる）
+                    case Int(neg, mag, t) -> Ok(llvm.vt(llvm.int_lit(neg, mag, t), ty.Ty.Int(t)));
+                    case Float(x) -> Ok(llvm.vt(llvm.float_lit(x), ty.Ty.Float));
+                    case Bool(x) -> Ok(llvm.vt(if x { "true" } else { "false" }, ty.Ty.Bool));
+                    case Str(s) -> Ok(llvm.vt(m.strconst(s), ty.Ty.Str));
+                }
+            }
+            case Copy(p) -> {
+                let pr = place(m, p, false)?;
+                let v = read_place(m, pr)?;
+                Ok(llvm.vt(v, ty.cl(pr.t)))
+            }
+            case Move(l, span) -> {
+                check_live(m, l, span);
+                let lty = ty.cl(fun.locals[l].t);
+                let x = m.lt(lty)?;
+                let p = local_ptr(l);
+                let v = b.val("load " + x + ", ptr " + p);
+                let why = "`" + name_of(l) + "` がムーブされた";
+                let site = m.site(span, why);
+                if boxed[l] {
+                    let size = m.sizeof(lty)?;
+                    b.op("call void @jw_free(ptr " + p + ", i64 " + size + ", ptr " + site + ")");
+                }
+                b.op("store ptr " + site + ", ptr %s{l}");
+                Ok(llvm.vt(v, lty))
+            }
+            case Read(l, span) -> read(m, l, span);
+        }
+    }
+
+    /// 値によって決める読み方（interp の `read_var`）。取り込んだ変数・関数の値の変数
+    fn mut Result<llvm.V, str> read(ref mut llvm.Module m, i64 l, i64 span) {
+        let lty = ty.cl(fun.locals[l].t);
+        let first_cap = fun.params - fun.captures;
+        let is_cap = l >= first_cap && l < fun.params;
+        check_live(m, l, span);
+        let p = local_ptr(l);
+        if is_cap {
+            // 取り込んだ元の値がムーブするものなら取り出せない（呼ぶたびに使うので）
+            let mut cant = "";
+            if ty.is(lty, "Fn") {
+                cant = llvm.env_flag(ref mut b, p, 4);
+            } else {
+                // own は ref として受け取っている（元は own なのでムーブする）
+                let orig_moves = ty.is(lty, "Ref") && cap_was_own(l) || m.moves(lty)?;
+                if orig_moves { cant = "true"; }
+            }
+            if cant != "" {
+                let always = cant == "true";
+                let ok = b.if_true(cant);
+                let title = m.cstr("クロージャに取り込んだ `" + fun.locals[l].name + "` は取り出せません");
+                let lab = m.cstr("クロージャは何度も呼べるので、取り込んだ値をムーブできない");
+                let s = m.site(span, "");
+                let note = m.cstr("`ref` で借りるか、中の値をコピーして使ってください");
+                b.op("call void @jw_fail(ptr " + title + ", ptr " + s + ", ptr " + lab + ", ptr " + note + ")");
+                b.op("unreachable");
+                b.label(ok);
+                if always {
+                    // ここには来ない。元の型の値として続ける
+                    let ci = l - first_cap;
+                    let orig = if ci < fun.cap_tys.len() { ty.cl(fun.cap_tys[ci]) } else { lty };
+                    return Ok(llvm.vt("poison", orig));
+                }
+            }
+            let v = read_copy(m, p, lty)?;
+            return Ok(llvm.vt(v, lty));
+        }
+        if !ty.is(lty, "Fn") { return Err("値で決める読み方 " + ty.show(lty)); }
+        // 関数の値: 取り込んだものがムーブするならムーブ、でなければ複製
+        let mv = llvm.env_flag(ref mut b, p, 1);
+        let out = b.alloca("%fnv");
+        let yes = b.l();
+        let no = b.l();
+        let done = b.l();
+        b.op("br i1 " + mv + ", label %" + yes + ", label %" + no);
+        b.label(yes);
+        let v = b.val("load %fnv, ptr " + p);
+        b.op("store %fnv " + v + ", ptr " + out);
+        let why = "`" + fun.locals[l].name + "` がムーブされた";
+        let site = m.site(span, why);
+        if boxed[l] {
+            let size = m.sizeof(lty)?;
+            b.op("call void @jw_free(ptr " + p + ", i64 " + size + ", ptr " + site + ")");
+        }
+        b.op("store ptr " + site + ", ptr %s{l}");
+        b.br(done);
+        b.label(no);
+        let c = read_copy(m, p, lty)?;
+        b.op("store %fnv " + c + ", ptr " + out);
+        b.br(done);
+        b.label(done);
+        Ok(llvm.vt(b.val("load %fnv, ptr " + out), lty))
+    }
+
+    /// 取り込んだ変数 `l` の元の型が own だったか（lower が ref にしている）
+    fn bool cap_was_own(i64 l) {
+        let first = fun.params - fun.captures;
+        let ci = l - first;
+        ci >= 0 && ci < fun.cap_tys.len() && ty.is(fun.cap_tys[ci], "Own")
+    }
+
+    /// たどった場所の写しを読む（リスト・辞書の要素の中の数なら、要素の印をつける）
+    fn mut Result<str, str> read_place(ref mut llvm.Module m, ref PlaceRes pr) {
+        let x = m.lt(pr.t)?;
+        if pr.list && m.trivial(pr.t)? && llvm.scalar_lt(x) {
+            return Ok(b.val("load " + x + ", ptr " + pr.ptr + llvm.tbaa_element()));
+        }
+        read_copy(m, pr.ptr, pr.t)
+    }
+
+    fn mut Result<str, str> read_copy(ref mut llvm.Module m, str ptr, ref ty.Ty t) {
+        let x = m.lt(t)?;
+        if m.trivial(t)? { return Ok(b.val("load " + x + ", ptr " + ptr)); }
+        if ty.is(t, "Str") {
+            let v = b.val("load ptr, ptr " + ptr);
+            b.op("call void @jw_str_retain(ptr " + v + ")");
+            return Ok(v);
+        }
+        let tmp = b.alloca(x);
+        let c = m.helper("Clone", t);
+        b.op("call void " + c + "(ptr " + ptr + ", ptr " + tmp + ")");
+        Ok(b.val("load " + x + ", ptr " + tmp))
+    }
+
+    /// %ref を %iref にする（構造体の番号 tv をつける）
+    fn mut str to_iref(str rv, str tv) {
+        let mut acc = "undef";
+        let fts = ["ptr", "ptr", "i64", "ptr"];
+        for k in range(4) {
+            let f = b.val("extractvalue %ref " + rv + ", {k}");
+            acc = b.val("insertvalue %iref " + acc + ", " + fts[k] + " " + f + ", {k}");
+        }
+        b.val("insertvalue %iref " + acc + ", i64 " + tv + ", 4")
+    }
+
+    /// 型 `from` の値を `to` の形にする（interface への変換・整数の幅・own の写し → ref）
+    fn mut Result<str, str> coerce(ref mut llvm.Module m, str v, ref ty.Ty from, ref ty.Ty to) {
+        if ty.eq(from, to) || ty.is(to, "Never") { return Ok(v); }
+        if ty.is(from, "Never") {
+            let x = m.lt(to)?;
+            return Ok(if x == "i8" { "0" } else { "poison" });
+        }
+        let lf = m.lt(from)?;
+        let lto = m.lt(to)?;
+        let fk = ty.tag(from);
+        let tk = ty.tag(to);
+        if fk == "Own" && tk == "Own" && ty.is(ty.inner(to), "Iface") && !ty.is(ty.inner(from), "Iface") {
+            let tidn = m.tid(ty.inner(from));
+            let a = b.val("insertvalue %iown undef, ptr " + v + ", 0");
+            return Ok(b.val("insertvalue %iown " + a + ", i64 {tidn}, 1"));
+        }
+        if fk == "Ref" && tk == "Ref" && ty.is(ty.inner(to), "Iface") && !ty.is(ty.inner(from), "Iface") {
+            let tidn = m.tid(ty.inner(from));
+            return Ok(to_iref(v, "{tidn}"));
+        }
+        // own の写し（for の要素）を ref にする
+        if fk == "Own" && tk == "Ref" && ty.eq(ty.inner(from), ty.inner(to)) && !llvm.is_iface_ptr(from) {
+            let bits = b.val("ptrtoint ptr " + v + " to i64");
+            let tg = b.val("and i64 " + bits + ", 1");
+            let real = b.val("icmp eq i64 " + tg + ", 0");
+            let no = b.if_true(real);
+            let msg = m.cstr("own を ref にしようとした");
+            b.op("call void @jw_bug(ptr " + msg + ")");
+            b.op("unreachable");
+            b.label(no);
+            let t = b.val("call ptr @jw_view_target_nocheck(ptr " + v + ")");
+            let g = b.val("call i64 @jw_view_gen(ptr " + v + ")");
+            let s = b.val("call ptr @jw_view_site(ptr " + v + ")");
+            b.op("call void @jw_view_free(ptr " + v + ")");
+            return Ok(make_ref(t, t, g, s));
+        }
+        // interface の own の写し（for の要素）を ref にする: 中の写しを ref にして、構造体の番号をつける
+        if fk == "Own" && tk == "Ref" && ty.eq(ty.inner(from), ty.inner(to)) && llvm.is_iface_ptr(from) {
+            let p = b.val("extractvalue %iown " + v + ", 0");
+            let tv = b.val("extractvalue %iown " + v + ", 1");
+            let unit = ty.Ty.Struct("", own []);
+            let r = coerce(m, p, ty.Ty.Own(own ty.cl(unit)), ty.Ty.Ref(own unit, ty.ref_mut(to)))?;
+            return Ok(to_iref(r, tv));
+        }
+        if fk == "Int" && tk == "Int" {
+            let a = ty.int_of(from);
+            let c = ty.int_of(to);
+            if ty.bits(a) == ty.bits(c) { return Ok(v); }
+            if ty.bits(a) > ty.bits(c) { return Ok(b.val("trunc " + lf + " " + v + " to " + lto)); }
+            return Ok(b.val(llvm.ext(a) + " " + lf + " " + v + " to " + lto));
+        }
+        if lf == lto { return Ok(v); }
+        // ポインタ 1 つで表す enum と、そうでない形のあいだは、種類の番号で作り直す
+        if fk == "Enum" && tk == "Enum" {
+            let nf = m.niche(from)?;
+            let nt = m.niche(to)?;
+            if ty.name_of(from) == ty.name_of(to) && nf != nt {
+                let tmp = b.alloca(lf);
+                b.op("store " + lf + " " + v + ", ptr " + tmp);
+                let tg = m.enum_tag(ref mut b, from, tmp)?;
+                let pl = m.enum_payload(ref mut b, from, tmp)?;
+                let out = b.alloca(lto);
+                b.op("store " + lto + " zeroinitializer, ptr " + out);
+                let vs = m.variants(to)?;
+                let fvs = m.variants(from)?;
+                for (vi, vr) in vs {
+                    let is = b.val("icmp eq i32 " + tg + ", {vi}");
+                    let skip = b.if_true(is);
+                    if nt < 0 {
+                        let tp = b.val("getelementptr " + lto + ", ptr " + out + ", i32 0, i32 0");
+                        b.op("store i32 {vi}, ptr " + tp);
+                    }
+                    // 中身は形が同じときだけ写す
+                    if vr.tys.len() > 0 && ty.eqs(fvs[vi].tys, vr.tys) {
+                        let vlt = m.variant_lt(vr.tys)?;
+                        let dpl = m.enum_payload(ref mut b, to, out)?;
+                        let x = b.val("load " + vlt + ", ptr " + pl);
+                        b.op("store " + vlt + " " + x + ", ptr " + dpl);
+                    }
+                    b.br(skip);
+                    b.label(skip);
+                }
+                return Ok(b.val("load " + lto + ", ptr " + out));
+            }
+        }
+        // 型の引数だけ違う（中身の型が決まらなかった空の値など）: 大きさが入るなら、置き直して読む
+        let saf = m.size_align(from)?;
+        let sat = m.size_align(to)?;
+        let sf = saf[0];
+        let stt = sat[0];
+        let same_enum = fk == "Enum" && tk == "Enum" && ty.name_of(from) == ty.name_of(to);
+        let seqs = fk == "List" && tk == "List" || fk == "Map" && tk == "Map";
+        if sf <= stt && !m.needs_drop(from)? || same_enum && sf <= stt || seqs {
+            let tmp = b.alloca(lto);
+            b.op("store " + lto + " zeroinitializer, ptr " + tmp);
+            b.op("store " + lf + " " + v + ", ptr " + tmp);
+            return Ok(b.val("load " + lto + ", ptr " + tmp));
+        }
+        Err("型の変換 " + ty.show(from) + " → " + ty.show(to))
+    }
+
+    /// 区画を借りるときの世代。リストの中身の区画なら「借りられた」「借りられたことがある」の印を立てる
+    fn mut str borrow_gen(str blk, bool list_block) {
+        let hp = b.val("getelementptr i8, ptr " + blk + ", i64 -8");
+        let g = b.val("load atomic i64, ptr " + hp + " monotonic, align 8");
+        if !list_block { return g; }
+        let g2 = b.val("or i64 " + g + ", 4611686018427387906");
+        b.op("store atomic i64 " + g2 + ", ptr " + hp + " monotonic, align 8");
+        g2
+    }
+
+    fn mut str make_ref(str addr, str blk, str gen, str site) {
+        let a1 = b.val("insertvalue %ref undef, ptr " + addr + ", 0");
+        let a2 = b.val("insertvalue %ref " + a1 + ", ptr " + blk + ", 1");
+        let a3 = b.val("insertvalue %ref " + a2 + ", i64 " + gen + ", 2");
+        b.val("insertvalue %ref " + a3 + ", ptr " + site + ", 3")
+    }
+
+    /// 値を作って、`want` の型にする
+    fn mut Result<str, str> rvalue(ref mut llvm.Module m, ref ir.Rvalue r, ref ty.Ty want) {
+        let x = rvalue_raw(m, r, want)?;
+        coerce(m, x.v, x.t, want)
+    }
+
+    fn mut Result<llvm.V[], str> operands(ref mut llvm.Module m, ref ir.Operand[] os) {
+        let llvm.V[] mut vals = [];
+        for o in os { vals.push(operand(m, o)?); }
+        Ok(vals)
+    }
+
+    fn mut Result<llvm.V, str> rvalue_raw(ref mut llvm.Module m, ref ir.Rvalue r, ref ty.Ty want) {
+        match ref r {
+            case Use(o) -> operand(m, o);
+            case Bin(op, a, c, span) -> binary(m, op, a, c, span);
+            case Un(op, a, sp) -> {
+                let x = operand(m, a)?;
+                let k = ty.tag(x.t);
+                if op == "Neg" && k == "Int" { return Ok(llvm.vt(b.val("sub i{ty.bits(ty.int_of(x.t))} 0, " + x.v), ty.cl(x.t))); }
+                if op == "Neg" && k == "Float" { return Ok(llvm.vt(b.val("fneg double " + x.v), ty.cl(x.t))); }
+                if op == "Not" && k == "Bool" { return Ok(llvm.vt(b.val("xor i1 " + x.v + ", true"), ty.cl(x.t))); }
+                if op == "BitNot" && k == "Int" { return Ok(llvm.vt(b.val("xor i{ty.bits(ty.int_of(x.t))} " + x.v + ", -1"), ty.cl(x.t))); }
+                Err(op + " " + ty.show(x.t))
+            }
+            case Cast(a, to) -> {
+                let x = operand(m, a)?;
+                let k = ty.tag(x.t);
+                if k == "Int" && ty.is(to, "Int") {
+                    let c = coerce(m, x.v, x.t, to)?;
+                    return Ok(llvm.vt(c, ty.cl(to)));
+                }
+                if k == "Int" && ty.is(to, "Float") {
+                    let it = ty.int_of(x.t);
+                    let cop = if ty.signed(it) { "sitofp" } else { "uitofp" };
+                    return Ok(llvm.vt(b.val(cop + " i{ty.bits(it)} " + x.v + " to double"), ty.Ty.Float));
+                }
+                if k == "Float" && ty.is(to, "Int") {
+                    let y = ty.int_of(to);
+                    let w = b.val("call i64 @jw_f2i(double " + x.v + ", i32 {ty.bits(y)}, i32 " + (if ty.signed(y) { "1" } else { "0" }) + ")");
+                    let rr = if ty.bits(y) < 64 { b.val("trunc i64 " + w + " to i{ty.bits(y)}") } else { w };
+                    return Ok(llvm.vt(rr, ty.cl(to)));
+                }
+                Ok(x)
+            }
+            case Ref(pl, rm, follows, what, span) -> {
+                let pr = place(m, pl, false)?;
+                let site = m.site(span, what);
+                if ty.is(pr.t, "Own") {
+                    let x = ty.inner(pr.t);
+                    let iface = llvm.is_iface_ptr(pr.t);
+                    let mut raw = "";
+                    let mut tv = "";
+                    if iface {
+                        let v = b.val("load %iown, ptr " + pr.ptr);
+                        raw = b.val("extractvalue %iown " + v + ", 0");
+                        tv = b.val("extractvalue %iown " + v + ", 1");
+                    } else {
+                        raw = b.val("load ptr, ptr " + pr.ptr);
+                    }
+                    // 写しなら、写しの借りた先・世代・位置をそのまま使う
+                    let bits = b.val("ptrtoint ptr " + raw + " to i64");
+                    let tg = b.val("and i64 " + bits + ", 1");
+                    let isv = b.val("icmp ne i64 " + tg + ", 0");
+                    let tgt = b.val("call ptr @jw_view_target_nocheck(ptr " + raw + ")");
+                    let target = b.val("select i1 " + isv + ", ptr " + tgt + ", ptr " + raw);
+                    let vg = b.alloca("i64");
+                    let vs = b.alloca("ptr");
+                    let no = b.if_true(isv);
+                    let g1 = b.val("call i64 @jw_view_gen(ptr " + raw + ")");
+                    let s1 = b.val("call ptr @jw_view_site(ptr " + raw + ")");
+                    b.op("store i64 " + g1 + ", ptr " + vg);
+                    b.op("store ptr " + s1 + ", ptr " + vs);
+                    let join = b.l();
+                    b.br(join);
+                    b.label(no);
+                    let hp = b.val("getelementptr i8, ptr " + raw + ", i64 -8");
+                    let g2 = b.val("load atomic i64, ptr " + hp + " monotonic, align 8");
+                    b.op("store i64 " + g2 + ", ptr " + vg);
+                    b.op("store ptr " + site + ", ptr " + vs);
+                    b.br(join);
+                    b.label(join);
+                    let g = b.val("load i64, ptr " + vg);
+                    let s = b.val("load ptr, ptr " + vs);
+                    let rv = make_ref(target, target, g, s);
+                    if iface { return Ok(llvm.vt(to_iref(rv, tv), ty.Ty.Ref(own x, false))); }
+                    return Ok(llvm.vt(rv, ty.Ty.Ref(own x, false)));
+                }
+                if ty.is(pr.t, "Ref") {
+                    let rt = if llvm.is_iface_ptr(pr.t) { "%iref" } else { "%ref" };
+                    return Ok(llvm.vt(b.val("load " + rt + ", ptr " + pr.ptr), ty.cl(pr.t)));
+                }
+                if pr.map {
+                    let title = m.cstr("辞書の中の値は借りられません");
+                    let lc = m.cstr("辞書はキーを取り除くと値の場所が詰まるので、中の場所が変わる");
+                    let s = m.site(span, "");
+                    let note = m.cstr("値を借りたいときは、値を own にしてください（`(own T)[K]`）");
+                    b.op("call void @jw_fail(ptr " + title + ", ptr " + s + ", ptr " + lc + ", ptr " + note + ")");
+                    b.op("unreachable");
+                    let after = b.l();
+                    b.label(after);
+                }
+                if pr.block == "" { return Err("区画にない変数を借りた"); }
+                let g = borrow_gen(pr.block, pr.list_block);
+                let rv = make_ref(pr.ptr, pr.block, g, site);
+                if pr.tid != "" { return Ok(llvm.vt(to_iref(rv, pr.tid), ty.Ty.Ref(own ty.cl(pr.t), false))); }
+                Ok(llvm.vt(rv, ty.Ty.Ref(own ty.cl(pr.t), false)))
+            }
+            case Own(a) -> {
+                let x = operand(m, a)?;
+                let inner = if ty.is(want, "Own") && !ty.is(ty.inner(want), "Iface") { ty.inner(want) } else { ty.cl(x.t) };
+                let v = coerce(m, x.v, x.t, inner)?;
+                let size = m.sizeof(inner)?;
+                let lt = m.lt(inner)?;
+                let p = b.val("call ptr @jw_alloc(i64 " + size + ")");
+                b.op("store " + lt + " " + v + ", ptr " + p);
+                Ok(llvm.vt(p, ty.Ty.Own(own inner)))
+            }
+            case Struct(name, ops) -> {
+                if !(ty.is(want, "Struct") && ty.name_of(want) == name) { return Err("構造体 " + name + " の型が分からない"); }
+                let st = ty.cl(want);
+                let fs = m.struct_fields(st)?;
+                let lt = m.lt(st)?;
+                let mut acc = "undef";
+                for (i, o) in ops {
+                    let x = operand(m, o)?;
+                    let v = coerce(m, x.v, x.t, fs[i])?;
+                    let ft = m.lt(fs[i])?;
+                    acc = b.val("insertvalue " + lt + " " + acc + ", " + ft + " " + v + ", {i}");
+                }
+                if ops.len() == 0 { acc = "zeroinitializer"; }
+                Ok(llvm.vt(acc, st))
+            }
+            case Enum(variant, ops, c) -> {
+                if !ty.is(want, "Enum") { return Err("enum の値 " + variant + " の型が分からない"); }
+                let vals = operands(m, ops)?;
+                let v = make_enum(m, want, variant, vals)?;
+                Ok(llvm.vt(v, ty.cl(want)))
+            }
+            case Take(pl) -> {
+                let pr = place(m, pl, false)?;
+                let lt = m.lt(pr.t)?;
+                Ok(llvm.vt(b.val("load " + lt + ", ptr " + pr.ptr), ty.cl(pr.t)))
+            }
+            case Array(items, list) -> {
+                let vals = operands(m, items)?;
+                make_seq(m, want, vals, list)
+            }
+            case Repeat(x0, cnt, list) -> {
+                let x = operand(m, x0)?;
+                let elem = if ty.is(want, "Array") || ty.is(want, "List") { ty.inner(want) } else { ty.cl(x.t) };
+                let v = coerce(m, x.v, x.t, elem)?;
+                let lt = m.lt(elem)?;
+                let llvm.V[] mut vals = [];
+                if cnt > 0 {
+                    let tmp = b.alloca(lt);
+                    b.op("store " + lt + " " + v + ", ptr " + tmp);
+                    let mut k = 1;
+                    while k < cnt as i64 {
+                        vals.push(llvm.vt(read_copy(m, tmp, elem)?, ty.cl(elem)));
+                        k += 1;
+                    }
+                    vals.push(llvm.vt(v, ty.cl(elem)));
+                }
+                if cnt > 64 { return Err("大きな [x; n]"); }
+                make_seq(m, want, vals, list)
+            }
+            case Map(ks, vs, span) -> {
+                if !ty.is(want, "Map") { return Err("辞書の型が分からない"); }
+                let kt = ty.map_key(want);
+                let vty = ty.inner(want);
+                let vsize = m.sizeof(vty)?;
+                let mp = b.val("call ptr @jw_map_new(i64 " + vsize + ", i32 {llvm.key_kind(kt)})");
+                let vl = m.lt(vty)?;
+                for (j, ko) in ks {
+                    let kx = operand(m, ko)?;
+                    let kv = coerce(m, kx.v, kx.t, kt)?;
+                    let vx = operand(m, vs[j])?;
+                    let vv = coerce(m, vx.v, vx.t, vty)?;
+                    let k64 = key64(kv, kt)?;
+                    let i = b.val("call i64 @jw_map_find(ptr " + mp + ", i64 " + k64 + ")");
+                    let missing = b.val("icmp slt i64 " + i + ", 0");
+                    let yes = b.l();
+                    let no = b.l();
+                    let done = b.l();
+                    b.op("br i1 " + missing + ", label %" + yes + ", label %" + no);
+                    b.label(yes);
+                    let jj = b.val("call i64 @jw_map_add(ptr " + mp + ", i64 " + k64 + ")");
+                    let p = b.val("call ptr @jw_map_val(ptr " + mp + ", i64 " + jj + ")");
+                    b.op("store " + vl + " " + vv + ", ptr " + p);
+                    b.br(done);
+                    b.label(no);
+                    // 同じキー: 後の値が残り、前の値は捨てる
+                    release_key(kv, kt);
+                    let p2 = b.val("call ptr @jw_map_val(ptr " + mp + ", i64 " + i + ")");
+                    let old = b.val("load " + vl + ", ptr " + p2);
+                    b.op("store " + vl + " " + vv + ", ptr " + p2);
+                    discard(m, old, vty, span, "辞書の同じキーに後から入れた値で置き換えられた")?;
+                    b.br(done);
+                    b.label(done);
+                }
+                Ok(llvm.vt(mp, ty.cl(want)))
+            }
+            case SeqOp(name, pl, argv, span, arg_span) -> seq_op(m, name, pl, argv, span, arg_span, want);
+            case Items(pl, what, span) -> {
+                let pr = place(m, pl, false)?;
+                let site = m.site(span, what);
+                let k = ty.tag(pr.t);
+                let mut elem = ty.Ty.Unit;
+                let mut cnt = "";
+                let mut base = "";
+                let mut at = "";
+                if k == "Array" {
+                    at = m.lt(pr.t)?;
+                    base = pr.ptr;
+                    elem = ty.inner(pr.t);
+                    cnt = "{ty.arr_len(pr.t)}";
+                } else if k == "List" {
+                    let lp = b.val("getelementptr %list, ptr " + pr.ptr + ", i32 0, i32 1");
+                    cnt = b.val("load i64, ptr " + lp);
+                    base = b.val("load ptr, ptr " + pr.ptr);
+                    elem = ty.inner(pr.t);
+                    at = m.lt(elem)?;
+                } else if k == "Map" {
+                    base = b.val("load ptr, ptr " + pr.ptr);
+                    cnt = b.val("call i64 @jw_map_len(ptr " + base + ")");
+                    elem = ty.inner(pr.t);
+                } else {
+                    return Err(ty.show(pr.t) + " の for");
+                }
+                let out = b.alloca("%list");
+                b.op("store %list zeroinitializer, ptr " + out);
+                let size = m.sizeof(elem)?;
+                b.op("call void @jw_list_reserve(ptr " + out + ", i64 " + size + ", i64 " + cnt + ")");
+                let view = m.helper("View", elem);
+                let e = b.loop_begin(cnt);
+                let src = if k == "Array" {
+                    b.val("getelementptr " + at + ", ptr " + base + ", i64 0, i64 " + e.i)
+                } else if k == "List" {
+                    b.val("getelementptr " + at + ", ptr " + base + ", i64 " + e.i)
+                } else {
+                    b.val("call ptr @jw_map_val(ptr " + base + ", i64 " + e.i + ")")
+                };
+                let dst = b.val("call ptr @jw_list_push_slot(ptr " + out + ", i64 " + size + ", ptr null)");
+                b.op("call void " + view + "(ptr " + src + ", ptr " + dst + ", ptr " + site + ")");
+                b.loop_end(e);
+                Ok(llvm.vt(b.val("load %list, ptr " + out), ty.Ty.List(own elem)))
+            }
+            case Keys(pl) -> {
+                let pr = place(m, pl, false)?;
+                let out = b.alloca("%list");
+                b.op("store %list zeroinitializer, ptr " + out);
+                if ty.is(pr.t, "Map") {
+                    let kt = ty.map_key(pr.t);
+                    let mp = b.val("load ptr, ptr " + pr.ptr);
+                    let len = b.val("call i64 @jw_map_len(ptr " + mp + ")");
+                    let size = m.sizeof(kt)?;
+                    b.op("call void @jw_list_reserve(ptr " + out + ", i64 " + size + ", i64 " + len + ")");
+                    let e = b.loop_begin(len);
+                    let kv = b.val("call i64 @jw_map_key(ptr " + mp + ", i64 " + e.i + ")");
+                    if ty.is(kt, "Str") {
+                        let kp = b.val("inttoptr i64 " + kv + " to ptr");
+                        b.op("call void @jw_str_retain(ptr " + kp + ")");
+                    }
+                    let dst = b.val("call ptr @jw_list_push_slot(ptr " + out + ", i64 " + size + ", ptr null)");
+                    m.store_key(ref mut b, kt, kv, dst)?;
+                    b.loop_end(e);
+                    return Ok(llvm.vt(b.val("load %list, ptr " + out), ty.Ty.List(own kt)));
+                }
+                let mut len = "";
+                if ty.is(pr.t, "Array") {
+                    len = "{ty.arr_len(pr.t)}";
+                } else if ty.is(pr.t, "List") {
+                    let lp = b.val("getelementptr %list, ptr " + pr.ptr + ", i32 0, i32 1");
+                    len = b.val("load i64, ptr " + lp);
+                } else {
+                    return Err(ty.show(pr.t) + " の for (i, x)");
+                }
+                b.op("call void @jw_list_reserve(ptr " + out + ", i64 8, i64 " + len + ")");
+                let e = b.loop_begin(len);
+                let dst = b.val("call ptr @jw_list_push_slot(ptr " + out + ", i64 8, ptr null)");
+                b.op("store i64 " + e.i + ", ptr " + dst);
+                b.loop_end(e);
+                Ok(llvm.vt(b.val("load %list, ptr " + out), ty.Ty.List(own ty.i64t())))
+            }
+            case Call(fi, ops, span) -> {
+                let callee = ref m.prog.fns[fi];
+                let str[] mut al = [];
+                for (i, o) in ops {
+                    let x = operand(m, o)?;
+                    let pt = ty.cl(callee.locals[i].t);
+                    let v = coerce(m, x.v, x.t, pt)?;
+                    al.push(m.lt(pt)? + " " + v);
+                }
+                let ret = ty.cl(callee.ret);
+                let v = call(m, "@f{fi}", ret, al, span)?;
+                Ok(llvm.vt(v, ret))
+            }
+            case CallDyn(snames, fns, this_p, mm, what, argv, span) -> {
+                let vals = operands(m, argv)?;
+                let pr = place(m, this_p, false)?;
+                if pr.tid == "" { return Err("interface でない this"); }
+                if pr.block == "" { return Err("区画にない this"); }
+                let g = borrow_gen(pr.block, pr.list_block);
+                let site = m.site(this_p.span, what);
+                let rv = make_ref(pr.ptr, pr.block, g, site);
+                let ret = ty.cl(want);
+                let rl = m.lt(ret)?;
+                let out = b.alloca(rl);
+                let done = b.l();
+                let str[] mut cases = [];
+                let str[] mut labels = [];
+                let i64[] mut targets = [];
+                for (tidx, sty) in ty.cls(m.tids) {
+                    if !ty.is(sty, "Struct") { continue; }
+                    let sn = ty.name_of(sty);
+                    let mut fi = -1;
+                    for (j, nm) in snames {
+                        if nm == sn && fi < 0 { fi = fns[j]; }
+                    }
+                    if fi < 0 { continue; }
+                    let lb = b.l();
+                    cases.push("i64 {tidx}, label %" + lb);
+                    labels.push(lb);
+                    targets.push(fi);
+                }
+                let bad = b.l();
+                b.op("switch i64 " + pr.tid + ", label %" + bad + " [ " + cases.join(" ") + " ]");
+                for (j, lb) in labels {
+                    b.label(lb);
+                    let fi = targets[j];
+                    let callee = ref m.prog.fns[fi];
+                    let str[] mut a = ["%ref " + rv];
+                    for (i, x) in vals {
+                        let pt = ty.cl(callee.locals[i + 1].t);
+                        let v = coerce(m, x.v, x.t, pt)?;
+                        a.push(m.lt(pt)? + " " + v);
+                    }
+                    let cr = ty.cl(callee.ret);
+                    let v0 = call(m, "@f{fi}", cr, a, span)?;
+                    let v = coerce(m, v0, cr, ret)?;
+                    b.op("store " + rl + " " + v + ", ptr " + out);
+                    b.br(done);
+                }
+                b.label(bad);
+                let msg = m.cstr("interface のメソッドが見つからない");
+                b.op("call void @jw_bug(ptr " + msg + ")");
+                b.op("unreachable");
+                b.label(done);
+                Ok(llvm.vt(b.val("load " + rl + ", ptr " + out), ret))
+            }
+            case Closure(fi, ops) -> {
+                let vals = operands(m, ops)?;
+                let ty.Ty[] mut ctys = [];
+                for x in vals { ctys.push(ty.cl(x.t)); }
+                let tv = m.closure_fns(fi, ctys)?;
+                let fv = b.val("insertvalue %fnv undef, ptr " + tv[0] + ", 0");
+                if vals.len() == 0 {
+                    let v = b.val("insertvalue %fnv " + fv + ", ptr null, 1");
+                    return Ok(llvm.vt(v, ty.cl(want)));
+                }
+                // 取り込んだ値の入れ物（頭 24 バイト: 数・表・印）
+                let caps_t = m.variant_lt(ctys)?;
+                let size = "ptrtoint (ptr getelementptr (" + caps_t + ", ptr null, i32 1) to i64)";
+                let total = b.val("add i64 24, " + size);
+                let env = b.val("call ptr @jw_env_new(i64 " + total + ", ptr " + tv[1] + ")");
+                let cp = b.val("getelementptr i8, ptr " + env + ", i64 24");
+                for (i, x) in vals {
+                    let lt = m.lt(x.t)?;
+                    let dst = b.val("getelementptr " + caps_t + ", ptr " + cp + ", i32 0, i32 {i}");
+                    b.op("store " + lt + " " + x.v + ", ptr " + dst);
+                }
+                let flags = m.env_flags(ref mut b, cp, ctys, caps_t)?;
+                let fp = b.val("getelementptr i8, ptr " + env + ", i64 16");
+                b.op("store i64 " + flags + ", ptr " + fp);
+                let v = b.val("insertvalue %fnv " + fv + ", ptr " + env + ", 1");
+                Ok(llvm.vt(v, ty.cl(want)))
+            }
+            case CallValue(fo, ops, span) -> {
+                let vals = operands(m, ops)?;
+                let fx = operand(m, fo)?;
+                let v = call_value(m, fx.v, fx.t, vals, span)?;
+                // 呼ぶために複製した関数の値を捨てる
+                discard(m, fx.v, fx.t, span, "呼び終わった関数の値")?;
+                if !ty.is(fx.t, "Fn") { return Err("関数でない値の呼び出し"); }
+                Ok(llvm.vt(v, ty.inner(fx.t)))
+            }
+            case CopyOut(pl, what, span) -> {
+                let pr = place(m, pl, false)?;
+                if m.can_hazard(pr.t)? {
+                    let h = m.helper("Hazard", pr.t);
+                    let bad = b.val("call i1 " + h + "(ptr " + pr.ptr + ")");
+                    let ok = b.if_true(bad);
+                    let title = m.cstr(what + "にある " + llvm.type_name(pr.t) + " は取り出せません");
+                    let lc = m.cstr("所有権をここから動かすことはできない");
+                    let s = m.site(span, "");
+                    let note = m.cstr(llvm.copy_out_note(what));
+                    b.op("call void @jw_fail(ptr " + title + ", ptr " + s + ", ptr " + lc + ", ptr " + note + ")");
+                    b.op("unreachable");
+                    b.label(ok);
+                }
+                let v = read_place(m, pr)?;
+                Ok(llvm.vt(v, ty.cl(pr.t)))
+            }
+            case Show(o, temp, span) -> {
+                let use_site = m.site(span, "");
+                let mut is_copy = false;
+                match ref o {
+                    case Copy(p) -> {
+                        is_copy = true;
+                        if !temp {
+                            let sb = b.val("call ptr @jw_sb_new()");
+                            let pr = place(m, p, false)?;
+                            let f = m.helper("Show", pr.t);
+                            b.op("call void " + f + "(ptr " + pr.ptr + ", ptr " + sb + ", i64 0, ptr " + use_site + ")");
+                            return Ok(llvm.vt(b.val("call ptr @jw_sb_finish(ptr " + sb + ")"), ty.Ty.Str));
+                        }
+                    }
+                    default -> {}
+                }
+                let x = operand(m, o)?;
+                // 整数は組み立てずにそのまま文字列にする
+                if ty.is(x.t, "Int") {
+                    let it = ty.int_of(x.t);
+                    let w = llvm.widen(ref mut b, x.v, it);
+                    let rr = b.val("call ptr @jw_str_int(i64 " + w + ", i32 " + (if ty.signed(it) { "0" } else { "1" }) + ")");
+                    return Ok(llvm.vt(rr, ty.Ty.Str));
+                }
+                let sb = b.val("call ptr @jw_sb_new()");
+                let lt = m.lt(x.t)?;
+                let tmp = b.alloca(lt);
+                b.op("store " + lt + " " + x.v + ", ptr " + tmp);
+                let f = m.helper("Show", x.t);
+                b.op("call void " + f + "(ptr " + tmp + ", ptr " + sb + ", i64 0, ptr " + use_site + ")");
+                if temp || is_copy {
+                    let why = if temp { "使い終わった一時的な値" } else { "表示のための写し" };
+                    let v2 = b.val("load " + lt + ", ptr " + tmp);
+                    discard(m, v2, x.t, span, why)?;
+                }
+                Ok(llvm.vt(b.val("call ptr @jw_sb_finish(ptr " + sb + ")"), ty.Ty.Str))
+            }
+            case Builtin(name, ops, span) -> builtin(m, name, ops, span, want);
+        }
+    }
+
+    /// 呼び出し（深さを確かめる）
+    fn mut Result<str, str> call(ref mut llvm.Module m, str f, ref ty.Ty ret, ref str[] al, i64 span) {
+        let d = depth;
+        let deep = b.val("icmp sge i64 " + d + ", {MAX_DEPTH}");
+        let ok = b.if_true(deep);
+        let s = m.site(span, "");
+        b.op("call void @jw_fail_depth(ptr " + s + ")");
+        b.op("unreachable");
+        b.label(ok);
+        let d1 = b.val("add i64 " + d + ", 1");
+        let rl = m.lt(ret)?;
+        let str[] mut all = ["i64 " + d1];
+        for x in al { all.push(x); }
+        Ok(b.val("call " + rl + " " + f + "(" + all.join(", ") + ")"))
+    }
+
+    /// 関数の値を呼ぶ（深さを確かめる）。引数は関数の型の引数の型にそろえる
+    fn mut Result<str, str> call_value(ref mut llvm.Module m, str fv, ref ty.Ty ft, ref llvm.V[] vals, i64 span) {
+        if !ty.is(ft, "Fn") { return Err("関数でない値 " + ty.show(ft)); }
+        let ps = ty.fn_params(ft);
+        let ret = ty.inner(ft);
+        let cd = b.val("extractvalue %fnv " + fv + ", 0");
+        let env = b.val("extractvalue %fnv " + fv + ", 1");
+        let site = m.site(span, "クロージャに取り込んだ値");
+        let str[] mut al = ["ptr " + env, "ptr " + site];
+        for (i, x) in vals {
+            if i >= ps.len() { return Err("引数の数が違う"); }
+            let v = coerce(m, x.v, x.t, ps[i])?;
+            al.push(m.lt(ps[i])? + " " + v);
+        }
+        call(m, cd, ret, al, span)
+    }
+
+    /// 整数の `sort()` / `sort_unstable()` は比べる関数なしの `jw_sort_int`（比べ方が見えないので速い手順でよい）。書き出したら true
+    fn mut bool sort_int(str data, str cnt, ref ty.Ty x) {
+        match ref x {
+            case Int(t) -> {
+                let sg = if ty.signed(t) { 1 } else { 0 };
+                b.op("call void @jw_sort_int(ptr " + data + ", i64 " + cnt + ", i32 {ty.bits(t) / 8}, i32 {sg})");
+                true
+            }
+            default -> false;
+        }
+    }
+
+    /// `sort_by(f)`（interp の `sort_list`）。要素の読むだけの写しを作って比べる関数に渡し、並べ終わった順に要素を動かす
+    fn mut Result<(), str> sort_by(ref mut llvm.Module m, str data, str cnt, ref ty.Ty x, ref llvm.V f, bool stable, i64 span) {
+        let fv = f.v;
+        let ft = ref f.t;
+        if !ty.is(ft, "Fn") { return Err("sort_by の関数の型"); }
+        let ps = ty.fn_params(ft);
+        if ps.len() == 0 { return Err("sort_by の関数の引数"); }
+        let pa = ty.cl(ps[0]);
+        let pl = m.lt(pa)?;
+        let xl = m.lt(x)?;
+        let xsize = m.sizeof(x)?;
+        let psize = m.sizeof(pa)?;
+        let site = m.site(span, "要素");
+        // 比べる関数に渡す値（要素の写し。ムーブする写しは区画に置いて ref で渡す）
+        let by0 = b.val("mul i64 " + cnt + ", " + psize);
+        let by1 = b.val("add i64 " + by0 + ", 8");
+        let argp = b.val("call ptr @malloc(i64 " + by1 + ")");
+        let bx = m.moves(x)? && !ty.is(x, "Own");
+        let view = m.helper("View", x);
+        let e = b.loop_begin(cnt);
+        let src = b.val("getelementptr " + xl + ", ptr " + data + ", i64 " + e.i);
+        let dst = b.val("getelementptr " + pl + ", ptr " + argp + ", i64 " + e.i);
+        if bx {
+            let blk = b.val("call ptr @jw_alloc(i64 " + xsize + ")");
+            b.op("call void " + view + "(ptr " + src + ", ptr " + blk + ", ptr " + site + ")");
+            let hp = b.val("getelementptr i8, ptr " + blk + ", i64 -8");
+            let g = b.val("load atomic i64, ptr " + hp + " monotonic, align 8");
+            let r = make_ref(blk, blk, g, site);
+            b.op("store %ref " + r + ", ptr " + dst);
+        } else {
+            let tmp = b.alloca(xl);
+            b.op("call void " + view + "(ptr " + src + ", ptr " + tmp + ", ptr " + site + ")");
+            let v0 = b.val("load " + xl + ", ptr " + tmp);
+            let v = coerce(m, v0, x, pa)?;
+            b.op("store " + pl + " " + v + ", ptr " + dst);
+        }
+        b.loop_end(e);
+        // 添字の並びを比べる関数で並べる
+        let ob0 = b.val("mul i64 " + cnt + ", 8");
+        let ob1 = b.val("add i64 " + ob0 + ", 8");
+        let order = b.val("call ptr @malloc(i64 " + ob1 + ")");
+        let e2 = b.loop_begin(cnt);
+        let op = b.val("getelementptr i64, ptr " + order + ", i64 " + e2.i);
+        b.op("store i64 " + e2.i + ", ptr " + op);
+        b.loop_end(e2);
+        let cmp = sort_cmp(m, ft, pa, span)?;
+        let ctx = b.alloca("{{ %fnv, ptr }}");
+        let c1 = b.val("insertvalue {{ %fnv, ptr }} undef, %fnv " + fv + ", 0");
+        let c2 = b.val("insertvalue {{ %fnv, ptr }} " + c1 + ", ptr " + argp + ", 1");
+        b.op("store {{ %fnv, ptr }} " + c2 + ", ptr " + ctx);
+        // 比べる関数は実行時ライブラリから呼ばれるので、深さはグローバル変数で渡す
+        b.op("store i64 " + depth + ", ptr @jw_depth");
+        let sf = if stable { "jw_sort" } else { "jw_sort_unstable" };
+        b.op("call void @" + sf + "(ptr " + order + ", i64 " + cnt + ", i64 8, ptr " + cmp + ", ptr " + ctx + ")");
+        // 写しを片づける
+        let fin = m.site(span, "sort_by の比べ終わった写し");
+        let e3 = b.loop_begin(cnt);
+        let ap = b.val("getelementptr " + pl + ", ptr " + argp + ", i64 " + e3.i);
+        if bx {
+            let r = b.val("load %ref, ptr " + ap);
+            let blk = b.val("extractvalue %ref " + r + ", 1");
+            if m.needs_drop(x)? {
+                let d = m.helper("Drop", x);
+                b.op("call void " + d + "(ptr " + blk + ", ptr " + fin + ")");
+            }
+            b.op("call void @jw_free(ptr " + blk + ", i64 " + xsize + ", ptr " + fin + ")");
+        } else if m.needs_drop(pa)? {
+            let d = m.helper("Drop", pa);
+            b.op("call void " + d + "(ptr " + ap + ", ptr " + fin + ")");
+        }
+        b.loop_end(e3);
+        b.op("call void @free(ptr " + argp + ")");
+        discard(m, fv, ft, span, "sort_by が使い終わった関数")?;
+        b.op("call void @jw_permute(ptr " + data + ", i64 " + cnt + ", i64 " + xsize + ", ptr " + order + ")");
+        b.op("call void @free(ptr " + order + ")");
+        Ok(())
+    }
+
+    /// sort_by の比べる関数（`i32 (ptr 添字a, ptr 添字b, ptr {関数の値, 写しの並び})`）
+    fn mut Result<str, str> sort_cmp(ref mut llvm.Module m, ref ty.Ty ft, ref ty.Ty pa, i64 span) {
+        let name = "@sortcmp{m.fresh()}";
+        let saved = llvm.B { text: b.text.drain(), allocas: b.allocas.drain(), n: b.n };
+        b.n = 0;
+        let dv = b.val("load i64, ptr @jw_depth");
+        let saved_depth = depth;
+        depth = dv;
+        let pl = m.lt(pa)?;
+        let fv = b.val("load %fnv, ptr %env");
+        let ap = b.val("getelementptr {{ %fnv, ptr }}, ptr %env, i32 0, i32 1");
+        let argp = b.val("load ptr, ptr " + ap);
+        let llvm.V[] mut vals = [];
+        for q in ["%p", "%q"] {
+            let k = b.val("load i64, ptr " + q);
+            let p = b.val("getelementptr " + pl + ", ptr " + argp + ", i64 " + k);
+            vals.push(llvm.vt(read_copy(m, p, pa)?, ty.cl(pa)));
+        }
+        let r0 = call_value(m, fv, ft, vals, span)?;
+        let r = b.val("zext i1 " + r0 + " to i32");
+        let body_allocas = b.allocas.join("");
+        let body_text = b.body();
+        b = saved;
+        depth = saved_depth;
+        m.code.push("define internal i32 " + name + "(ptr %p, ptr %q, ptr %env) {{\nentry:\n" + body_allocas + body_text + "  ret i32 " + r +
+            "\n}}\n\n");
+        Ok(name)
+    }
+
+    /// `Result<T, str>` を作る。`ok` が 0 でなければ `Ok(値)`、0 なら `Err(*err)`。
+    /// 値は kind が "str" なら `*from` の文字列、"int" なら `*from` の i64、"unit" なら ()
+    fn mut Result<llvm.V, str> result_of(ref mut llvm.Module m, ref ty.Ty want, str ok, str err, str kind, str from) {
+        let lt = m.lt(want)?;
+        let res = b.alloca(lt);
+        let failed = b.val("icmp eq i32 " + ok + ", 0");
+        let fine = b.if_true(failed);
+        let msg = b.val("load ptr, ptr " + err);
+        let ev = make_enum(m, want, "Err", [llvm.vt(msg, ty.Ty.Str)])?;
+        b.op("store " + lt + " " + ev + ", ptr " + res);
+        let done = b.l();
+        b.br(done);
+        b.label(fine);
+        let mut v = llvm.vt("0", ty.Ty.Unit);
+        if kind == "str" { v = llvm.vt(b.val("load ptr, ptr " + from), ty.Ty.Str); }
+        if kind == "int" { v = llvm.vt(b.val("load i64, ptr " + from), ty.i64t()); }
+        let ov = make_enum(m, want, "Ok", [v])?;
+        b.op("store " + lt + " " + ov + ", ptr " + res);
+        b.br(done);
+        b.label(done);
+        Ok(llvm.vt(b.val("load " + lt + ", ptr " + res), ty.cl(want)))
+    }
+
+    fn mut Result<str, str> make_enum(ref mut llvm.Module m, ref ty.Ty et, str variant, ref llvm.V[] vals) {
+        let vs = m.variants(et)?;
+        let mut vi = -1;
+        for (i, vr) in vs {
+            if vr.name == variant && vi < 0 { vi = i; }
+        }
+        if vi < 0 { return Err("enum の種類 " + variant + " がない"); }
+        let fs = ty.cls(vs[vi].tys);
+        let lt = m.lt(et)?;
+        let tmp = b.alloca(lt);
+        b.op("store " + lt + " zeroinitializer, ptr " + tmp);
+        if m.niche(et)? < 0 {
+            let tp = b.val("getelementptr " + lt + ", ptr " + tmp + ", i32 0, i32 0");
+            b.op("store i32 {vi}, ptr " + tp);
+        }
+        if fs.len() > 0 {
+            let vlt = m.variant_lt(fs)?;
+            let pl = m.enum_payload(ref mut b, et, tmp)?;
+            for (i, x) in vals {
+                let v = coerce(m, x.v, x.t, fs[i])?;
+                let ft = m.lt(fs[i])?;
+                let fp = b.val("getelementptr " + vlt + ", ptr " + pl + ", i32 0, i32 {i}");
+                b.op("store " + ft + " " + v + ", ptr " + fp);
+            }
+        }
+        Ok(b.val("load " + lt + ", ptr " + tmp))
+    }
+
+    /// 配列（list が false）・リストを作る
+    fn mut Result<llvm.V, str> make_seq(ref mut llvm.Module m, ref ty.Ty want, ref llvm.V[] vals, bool list) {
+        let mut elem = ty.Ty.Unit;
+        if ty.is(want, "Array") || ty.is(want, "List") {
+            elem = ty.inner(want);
+        } else if vals.len() > 0 {
+            elem = ty.cl(vals[0].t);
+        } else {
+            return Err("要素の型が分からない");
+        }
+        let el = m.lt(elem)?;
+        if !list {
+            let at = "[{vals.len()} x " + el + "]";
+            let mut acc = if vals.len() == 0 { "zeroinitializer" } else { "undef" };
+            for (i, x) in vals {
+                let v = coerce(m, x.v, x.t, elem)?;
+                acc = b.val("insertvalue " + at + " " + acc + ", " + el + " " + v + ", {i}");
+            }
+            return Ok(llvm.vt(acc, ty.Ty.Array(own elem, vals.len() as u64)));
+        }
+        let out = b.alloca("%list");
+        b.op("store %list zeroinitializer, ptr " + out);
+        let size = m.sizeof(elem)?;
+        b.op("call void @jw_list_reserve(ptr " + out + ", i64 " + size + ", i64 {vals.len()})");
+        for x in vals {
+            let v = coerce(m, x.v, x.t, elem)?;
+            let dst = b.val("call ptr @jw_list_push_slot(ptr " + out + ", i64 " + size + ", ptr null)");
+            b.op("store " + el + " " + v + ", ptr " + dst);
+        }
+        Ok(llvm.vt(b.val("load %list, ptr " + out), ty.Ty.List(own elem)))
+    }
+
+    /// `x << y` / `x >> y`（interp の `binary` と同じ: 幅以上なら 0 か -1、負ならエラー）
+    fn mut Result<llvm.V, str> shift(ref mut llvm.Module m, str op, str x, str i, str y, str n, i64 span) {
+        let bits = ty.bits(i);
+        let lt = "i{bits}";
+        let y64 = llvm.widen(ref mut b, y, n);
+        if ty.signed(n) {
+            let neg = b.val("icmp slt i64 " + y64 + ", 0");
+            let ok = b.if_true(neg);
+            let title = m.cstr("負の数だけはずらせません");
+            let lc = m.cstr("右の数が負です");
+            let s = m.site(span, "");
+            b.op("call void @jw_fail(ptr " + title + ", ptr " + s + ", ptr " + lc + ", ptr null)");
+            b.op("unreachable");
+            b.label(ok);
+        }
+        let big = b.val("icmp uge i64 " + y64 + ", {bits}");
+        let safe = b.val("select i1 " + big + ", i64 {bits - 1}, i64 " + y64);
+        let amt = if bits == 64 { safe } else { b.val("trunc i64 " + safe + " to " + lt) };
+        let mut v = "";
+        if op == "Shl" {
+            let s = b.val("shl " + lt + " " + x + ", " + amt);
+            v = b.val("select i1 " + big + ", " + lt + " 0, " + lt + " " + s);
+        } else if ty.signed(i) {
+            // 幅以上のときは幅 - 1 だけずらしたもの（符号つきなら 0 か -1、符号なしなら 0）
+            v = b.val("ashr " + lt + " " + x + ", " + amt);
+        } else {
+            let s = b.val("lshr " + lt + " " + x + ", " + amt);
+            v = b.val("select i1 " + big + ", " + lt + " 0, " + lt + " " + s);
+        }
+        Ok(llvm.vt(v, ty.Ty.Int(i)))
+    }
+
+    fn mut Result<llvm.V, str> binary(ref mut llvm.Module m, str op, ref ir.Operand a, ref ir.Operand c, i64 span) {
+        let xa = operand(m, a)?;
+        let xb = operand(m, c)?;
+        let x = xa.v;
+        let t = ty.cl(xa.t);
+        if (op == "Shl" || op == "Shr") && ty.is(t, "Int") && ty.is(xb.t, "Int") {
+            return shift(m, op, x, ty.int_of(t), xb.v, ty.int_of(xb.t), span);
+        }
+        let y = coerce(m, xb.v, xb.t, t)?;
+        let cmp = if op == "Eq" { "eq" } else if op == "Ne" { "ne" } else if op == "Lt" { "lt" } else if op == "Le" { "le" } else if op == "Gt" {
+            "gt"
+        } else {
+            "ge"
+        };
+        let k = ty.tag(t);
+        if k == "Int" {
+            let it = ty.int_of(t);
+            let lt = "i{ty.bits(it)}";
+            if op == "Add" || op == "Sub" || op == "Mul" {
+                let o = if op == "Add" { "add" } else if op == "Sub" { "sub" } else { "mul" };
+                return Ok(llvm.vt(b.val(o + " " + lt + " " + x + ", " + y), t));
+            }
+            if op == "Div" || op == "Rem" {
+                let z = b.val("icmp eq " + lt + " " + y + ", 0");
+                let ok = b.if_true(z);
+                let title = m.cstr("0 で割りました");
+                let lc = m.cstr("右辺が 0 です");
+                let s = m.site(span, "");
+                b.op("call void @jw_fail(ptr " + title + ", ptr " + s + ", ptr " + lc + ", ptr null)");
+                b.op("unreachable");
+                b.label(ok);
+                let div = op == "Div";
+                if ty.signed(it) {
+                    // -1 で割るときは、あふれ（LLVM では未定義）を避けて計算する
+                    let m1 = b.val("icmp eq " + lt + " " + y + ", -1");
+                    let safe = b.val("select i1 " + m1 + ", " + lt + " 1, " + lt + " " + y);
+                    let q = b.val((if div { "sdiv" } else { "srem" }) + " " + lt + " " + x + ", " + safe);
+                    let alt = if div { b.val("sub " + lt + " 0, " + x) } else { "0" };
+                    return Ok(llvm.vt(b.val("select i1 " + m1 + ", " + lt + " " + alt + ", " + lt + " " + q), t));
+                }
+                return Ok(llvm.vt(b.val((if div { "udiv" } else { "urem" }) + " " + lt + " " + x + ", " + y), t));
+            }
+            if op == "BitAnd" || op == "BitOr" || op == "BitXor" {
+                let o = if op == "BitAnd" { "and" } else if op == "BitOr" { "or" } else { "xor" };
+                return Ok(llvm.vt(b.val(o + " " + lt + " " + x + ", " + y), t));
+            }
+            if op == "Eq" || op == "Ne" { return Ok(llvm.vt(b.val("icmp " + cmp + " " + lt + " " + x + ", " + y), ty.Ty.Bool)); }
+            if op == "Lt" || op == "Le" || op == "Gt" || op == "Ge" {
+                let p = (if ty.signed(it) { "s" } else { "u" }) + cmp;
+                return Ok(llvm.vt(b.val("icmp " + p + " " + lt + " " + x + ", " + y), ty.Ty.Bool));
+            }
+            return Err(op + " の整数");
+        }
+        if k == "Float" {
+            if op == "Add" || op == "Sub" || op == "Mul" || op == "Div" || op == "Rem" {
+                let o = if op == "Add" { "fadd" } else if op == "Sub" { "fsub" } else if op == "Mul" { "fmul" } else if op == "Div" { "fdiv" } else {
+                    "frem"
+                };
+                return Ok(llvm.vt(b.val(o + " double " + x + ", " + y), ty.Ty.Float));
+            }
+            if op == "Ne" { return Ok(llvm.vt(b.val("fcmp une double " + x + ", " + y), ty.Ty.Bool)); }
+            return Ok(llvm.vt(b.val("fcmp o" + cmp + " double " + x + ", " + y), ty.Ty.Bool));
+        }
+        if k == "Bool" {
+            if op == "Eq" || op == "Ne" { return Ok(llvm.vt(b.val("icmp " + cmp + " i1 " + x + ", " + y), ty.Ty.Bool)); }
+            return Err(op + " の真偽値");
+        }
+        if k == "Unit" { return Ok(llvm.vt(if op == "Eq" { "true" } else { "false" }, ty.Ty.Bool)); }
+        if k == "Str" {
+            let mut r = llvm.vt("", ty.Ty.Str);
+            if op == "Add" {
+                r = llvm.vt(b.val("call ptr @jw_str_concat(ptr " + x + ", ptr " + y + ")"), ty.Ty.Str);
+            } else if op == "Eq" || op == "Ne" {
+                let e = b.val("call i32 @jw_str_eq(ptr " + x + ", ptr " + y + ")");
+                r = llvm.vt(b.val("icmp " + (if op == "Eq" { "ne" } else { "eq" }) + " i32 " + e + ", 0"), ty.Ty.Bool);
+            } else {
+                let cv = b.val("call i32 @jw_str_cmp(ptr " + x + ", ptr " + y + ")");
+                r = llvm.vt(b.val("icmp s" + cmp + " i32 " + cv + ", 0"), ty.Ty.Bool);
+            }
+            b.op("call void @jw_str_release(ptr " + x + ")");
+            b.op("call void @jw_str_release(ptr " + y + ")");
+            return Ok(r);
+        }
+        Err(op + " の " + ty.show(t))
+    }
+
+    fn mut release(ref llvm.V[] vals, i64 upto) {
+        for (i, x) in vals {
+            if i < upto && ty.is(x.t, "Str") { b.op("call void @jw_str_release(ptr " + x.v + ")"); }
+        }
+    }
+
+    /// `want` の Option を作る。`none` が真なら None、でなければ Some(v)
+    fn mut Result<str, str> option_pick(ref mut llvm.Module m, ref ty.Ty want, str none, ref llvm.V v) {
+        let lt = m.lt(want)?;
+        let res = b.alloca(lt);
+        let no = b.if_true(none);
+        let nv = make_enum(m, want, "None", [])?;
+        b.op("store " + lt + " " + nv + ", ptr " + res);
+        let done = b.l();
+        b.br(done);
+        b.label(no);
+        let sv = make_enum(m, want, "Some", [llvm.vt(v.v, ty.cl(v.t))])?;
+        b.op("store " + lt + " " + sv + ", ptr " + res);
+        b.br(done);
+        b.label(done);
+        Ok(b.val("load " + lt + ", ptr " + res))
+    }
+
+    fn mut Result<llvm.V, str> builtin(ref mut llvm.Module m, str name, ref ir.Operand[] ops, i64 span, ref ty.Ty want) {
+        // チャンネルのメソッドは、場所のチャンネルを複製せずに読む（数を増やすと、スレッドのあいだで取り合いになる）
+        let mut first_copy = false;
+        if ops.len() > 0 {
+            match ref ops[0] {
+                case Copy(p) -> first_copy = true;
+                default -> {}
+            }
+        }
+        let borrowed = name.starts_with("chan.") && first_copy;
+        // `append` は足す先の変数の場所を渡す（数が 1 ならその場で足して、場所の値を置き換える）
+        if name == "append" && ops.len() == 2 && first_copy {
+            match ref ops[0] {
+                case Copy(p) -> {
+                    let pr = place(m, p, false)?;
+                    let bx = operand(m, ops[1])?;
+                    let r = b.val("call ptr @jw_str_append(ptr " + pr.ptr + ", ptr " + bx.v + ")");
+                    b.op("call void @jw_str_release(ptr " + bx.v + ")");
+                    return Ok(llvm.vt(r, ty.Ty.Str));
+                }
+                default -> {}
+            }
+        }
+        let llvm.V[] mut vals = [];
+        for (i, o) in ops {
+            let mut done_one = false;
+            if i == 0 && borrowed {
+                match ref o {
+                    case Copy(p) -> {
+                        let pr = place(m, p, false)?;
+                        vals.push(llvm.vt(b.val("load ptr, ptr " + pr.ptr), ty.cl(pr.t)));
+                        done_one = true;
+                    }
+                    default -> {}
+                }
+            }
+            if !done_one { vals.push(operand(m, o)?); }
+        }
+        let all = vals.len();
+        if name == "spawn" {
+            let fi = match vals[0].v.to_int() {
+                case Some(x) -> x;
+                case None -> return Err("spawn の関数の番号");
+            };
+            let ty.Ty[] mut ctys = [];
+            for (i, x) in vals {
+                if i > 0 { ctys.push(ty.cl(x.t)); }
+            }
+            let args_t = m.variant_lt(ctys)?;
+            let size = "ptrtoint (ptr getelementptr (" + args_t + ", ptr null, i32 1) to i64)";
+            let argp = b.val("call ptr @jw_spawn_args(i64 " + size + ")");
+            let sent = m.site(span, "ほかのスレッドへ送られた");
+            let at = m.site(span, "");
+            for (i, x) in vals {
+                if i == 0 { continue; }
+                let lt = m.lt(x.t)?;
+                let p = b.val("getelementptr " + args_t + ", ptr " + argp + ", i32 0, i32 {i - 1}");
+                b.op("store " + lt + " " + x.v + ", ptr " + p);
+                if m.needs_drop(x.t)? {
+                    let f = m.helper("Send", x.t);
+                    b.op("call void " + f + "(ptr " + p + ", ptr " + sent + ")");
+                }
+            }
+            let thunk = m.spawn_thunk(fi, ctys)?;
+            if !ty.is(want, "Task") { return Err("spawn の型"); }
+            let rt = ty.inner(want);
+            let rsize = m.sizeof(rt)?;
+            let dropf = if m.needs_drop(rt)? { m.helper("Drop", rt) } else { "null" };
+            let t = b.val("call ptr @jw_spawn(ptr " + thunk + ", ptr " + argp + ", i64 " + rsize + ", ptr " + dropf + ", ptr " + at + ")");
+            return Ok(llvm.vt(t, ty.cl(want)));
+        }
+        if name == "chan" {
+            if !ty.is(want, "Chan") { return Err("chan の型"); }
+            let x = ty.inner(want);
+            let size = m.sizeof(x)?;
+            let dropf = if m.needs_drop(x)? { m.helper("Drop", x) } else { "null" };
+            return Ok(llvm.vt(b.val("call ptr @jw_chan_new(i64 " + size + ", ptr " + dropf + ")"), ty.cl(want)));
+        }
+        if name == "task.join" {
+            let lt = m.lt(want)?;
+            let out = b.alloca(lt);
+            let site = m.site(span, "");
+            b.op("call void @jw_task_join(ptr " + vals[0].v + ", ptr " + out + ", ptr " + site + ")");
+            return Ok(llvm.vt(b.val("load " + lt + ", ptr " + out), ty.cl(want)));
+        }
+        if name == "chan.send" || name == "chan.recv" || name == "chan.close" {
+            let c = vals[0].v;
+            let site = m.site(span, "");
+            let mut r = llvm.vt("0", ty.Ty.Unit);
+            if name == "chan.send" {
+                let lt = m.lt(vals[1].t)?;
+                let tmp = b.alloca(lt);
+                b.op("store " + lt + " " + vals[1].v + ", ptr " + tmp);
+                if m.needs_drop(vals[1].t)? {
+                    let sent = m.site(span, "ほかのスレッドへ送られた");
+                    let f = m.helper("Send", vals[1].t);
+                    b.op("call void " + f + "(ptr " + tmp + ", ptr " + sent + ")");
+                }
+                b.op("call void @jw_chan_send(ptr " + c + ", ptr " + tmp + ", ptr " + site + ")");
+            } else if name == "chan.recv" {
+                if !ty.is(want, "Enum") { return Err("recv の型"); }
+                let targs = ty.args_of(want);
+                let x = ty.cl(targs[0]);
+                let xl = m.lt(x)?;
+                let out = b.alloca(xl);
+                let got = b.val("call i32 @jw_chan_recv(ptr " + c + ", ptr " + out + ", ptr " + site + ")");
+                let lt = m.lt(want)?;
+                let res = b.alloca(lt);
+                let none = b.val("icmp eq i32 " + got + ", 0");
+                let no = b.if_true(none);
+                let nv = make_enum(m, want, "None", [])?;
+                b.op("store " + lt + " " + nv + ", ptr " + res);
+                let done = b.l();
+                b.br(done);
+                b.label(no);
+                let v = b.val("load " + xl + ", ptr " + out);
+                let sv = make_enum(m, want, "Some", [llvm.vt(v, x)])?;
+                b.op("store " + lt + " " + sv + ", ptr " + res);
+                b.br(done);
+                b.label(done);
+                r = llvm.vt(b.val("load " + lt + ", ptr " + res), ty.cl(want));
+            } else {
+                b.op("call void @jw_chan_close(ptr " + c + ", ptr " + site + ")");
+            }
+            // 一時的なチャンネルの値なら捨てる
+            if !borrowed { b.op("call void @jw_chan_release(ptr " + c + ", ptr " + site + ")"); }
+            return Ok(r);
+        }
+        if name == "print" || name == "eprint" {
+            b.op("call void @jw_" + name + "_begin()");
+            for (i, x) in vals {
+                b.op("call void @jw_" + name + "_part(ptr " + x.v + ", i32 " + (if i == 0 { "1" } else { "0" }) + ")");
+            }
+            b.op("call void @jw_" + name + "_end()");
+            release(vals, all);
+            return Ok(llvm.vt("0", ty.Ty.Unit));
+        }
+        if name == "chr" {
+            let site = m.site(span, "");
+            return Ok(llvm.vt(b.val("call ptr @jw_chr(i64 " + vals[0].v + ", ptr " + site + ")"), ty.Ty.Str));
+        }
+        // 戻らない（IR のブロックは続けて unreachable で終わる）
+        if name == "exit" {
+            b.op("call void @jw_exit(i64 " + vals[0].v + ")");
+            return Ok(llvm.vt("0", ty.Ty.Unit));
+        }
+        if name == "read_file" {
+            let out = b.alloca("ptr");
+            let ok = b.val("call i32 @jw_read_file(ptr " + vals[0].v + ", ptr " + out + ")");
+            release(vals, all);
+            return result_of(m, want, ok, out, "str", out);
+        }
+        if name == "write_file" {
+            let out = b.alloca("ptr");
+            let ok = b.val("call i32 @jw_write_file(ptr " + vals[0].v + ", ptr " + vals[1].v + ", ptr " + out + ")");
+            release(vals, all);
+            return result_of(m, want, ok, out, "unit", "");
+        }
+        // 引数のリストは jw_run_command が解放する
+        if name == "run_command" {
+            let lst = b.alloca("%list");
+            b.op("store %list " + vals[1].v + ", ptr " + lst);
+            let cd = b.alloca("i64");
+            let out = b.alloca("ptr");
+            let ok = b.val("call i32 @jw_run_command(ptr " + vals[0].v + ", ptr " + lst + ", ptr " + cd + ", ptr " + out + ")");
+            release(vals, 1);
+            return result_of(m, want, ok, out, "int", cd);
+        }
+        if name == "concat" && vals.len() == 2 {
+            let r = b.val("call ptr @jw_str_concat(ptr " + vals[0].v + ", ptr " + vals[1].v + ")");
+            release(vals, all);
+            return Ok(llvm.vt(r, ty.Ty.Str));
+        }
+        if name == "concat" {
+            let sb = b.val("call ptr @jw_sb_new()");
+            for x in vals { b.op("call void @jw_sb_str(ptr " + sb + ", ptr " + x.v + ")"); }
+            release(vals, all);
+            return Ok(llvm.vt(b.val("call ptr @jw_sb_finish(ptr " + sb + ")"), ty.Ty.Str));
+        }
+        if name == "assert" {
+            let bad = b.val("xor i1 " + vals[0].v + ", true");
+            let ok = b.if_true(bad);
+            let title = m.cstr("assert に失敗しました");
+            let lc = m.cstr("この条件が false でした");
+            let s = m.site(span, "");
+            b.op("call void @jw_fail(ptr " + title + ", ptr " + s + ", ptr " + lc + ", ptr null)");
+            b.op("unreachable");
+            b.label(ok);
+            return Ok(llvm.vt("0", ty.Ty.Unit));
+        }
+        if name == "read_line" {
+            let out = b.alloca("ptr");
+            let ok = b.val("call i32 @jw_read_line(ptr " + out + ")");
+            let none = b.val("icmp eq i32 " + ok + ", 0");
+            let lt = m.lt(want)?;
+            let res = b.alloca(lt);
+            let no = b.if_true(none);
+            let nv = make_enum(m, want, "None", [])?;
+            b.op("store " + lt + " " + nv + ", ptr " + res);
+            let done = b.l();
+            b.br(done);
+            b.label(no);
+            let line = b.val("load ptr, ptr " + out);
+            let sv = make_enum(m, want, "Some", [llvm.vt(line, ty.Ty.Str)])?;
+            b.op("store " + lt + " " + sv + ", ptr " + res);
+            b.br(done);
+            b.label(done);
+            return Ok(llvm.vt(b.val("load " + lt + ", ptr " + res), ty.cl(want)));
+        }
+        if name == "args" {
+            let out = b.alloca("%list");
+            b.op("store %list zeroinitializer, ptr " + out);
+            b.op("call void @jw_args(ptr " + out + ")");
+            return Ok(llvm.vt(b.val("load %list, ptr " + out), ty.Ty.List(own ty.Ty.Str)));
+        }
+        if name == "f64.to_bits" { return Ok(llvm.vt(b.val("bitcast double " + vals[0].v + " to i64"), ty.Ty.Int("u64"))); }
+        if name == "f64.sqrt" || name == "f64.abs" {
+            let f = if name == "f64.sqrt" { "sqrt" } else { "fabs" };
+            return Ok(llvm.vt(b.val("call double @llvm." + f + ".f64(double " + vals[0].v + ")"), ty.Ty.Float));
+        }
+        if name == "f64.max" || name == "f64.min" {
+            let f2 = if name == "f64.max" { "maxnum" } else { "minnum" };
+            let fv = b.val("call double @llvm." + f2 + ".f64(double " + vals[0].v + ", double " + vals[1].v + ")");
+            return Ok(llvm.vt(fv, ty.Ty.Float));
+        }
+        // 整数の abs / max / min は比べて選ぶ（abs は一周する: 最小の値はそのまま）
+        if name.starts_with("int.") {
+            let it = ty.int_of(vals[0].t);
+            let lt = "i{ty.bits(it)}";
+            let x = vals[0].v;
+            let mn = name.slice(4, name.len());
+            let mut r = x;
+            if mn == "abs" {
+                if ty.signed(it) {
+                    let n = b.val("sub " + lt + " 0, " + x);
+                    let c = b.val("icmp slt " + lt + " " + x + ", 0");
+                    r = b.val("select i1 " + c + ", " + lt + " " + n + ", " + lt + " " + x);
+                }
+            } else {
+                let y = vals[1].v;
+                let cmp = if mn == "max" { if ty.signed(it) { "sgt" } else { "ugt" } } else if ty.signed(it) { "slt" } else { "ult" };
+                let c2 = b.val("icmp " + cmp + " " + lt + " " + x + ", " + y);
+                r = b.val("select i1 " + c2 + ", " + lt + " " + x + ", " + lt + " " + y);
+            }
+            return Ok(llvm.vt(r, ty.Ty.Int(it)));
+        }
+        if name.starts_with("str.") {
+            let r = str_method(m, name.slice(4, name.len()), vals, span, want)?;
+            release(vals, all);
+            return Ok(r);
+        }
+        Err("組み込み " + name)
+    }
+
+    fn mut Result<str, str> int_arg(ref llvm.V[] vals, i64 i) {
+        if !ty.is(vals[i].t, "Int") { return Err("整数でない引数 " + ty.show(vals[i].t)); }
+        Ok(llvm.widen(ref mut b, vals[i].v, ty.int_of(vals[i].t)))
+    }
+
+    fn mut llvm.V list_of(str s, str f, str extra) {
+        let out = b.alloca("%list");
+        b.op("store %list zeroinitializer, ptr " + out);
+        b.op("call void @" + f + "(ptr " + s + extra + ", ptr " + out + ")");
+        llvm.vt(b.val("load %list, ptr " + out), ty.Ty.List(own ty.Ty.Str))
+    }
+
+    fn mut Result<llvm.V, str> str_method(ref mut llvm.Module m, str name, ref llvm.V[] vals, i64 span, ref ty.Ty want) {
+        let s = vals[0].v;
+        let site = m.site(span, "");
+        if name == "len" { return Ok(llvm.vt(b.val("call i64 @jw_str_chars(ptr " + s + ")"), ty.i64t())); }
+        if name == "byte_len" {
+            let lp = b.val("getelementptr i8, ptr " + s + ", i64 8");
+            return Ok(llvm.vt(b.val("load i64, ptr " + lp), ty.i64t()));
+        }
+        if name == "chars" { return Ok(list_of(s, "jw_str_chars_list", "")); }
+        if name == "bytes" {
+            let x = list_of(s, "jw_str_bytes", "");
+            return Ok(llvm.vt(x.v, ty.Ty.List(own ty.Ty.Int("u8"))));
+        }
+        if name == "code" { return Ok(llvm.vt(b.val("call i64 @jw_str_code(ptr " + s + ", ptr " + site + ")"), ty.i64t())); }
+        if name == "lines" { return Ok(list_of(s, "jw_str_lines", "")); }
+        if name == "split" {
+            let sep = vals[1].v;
+            let lp = b.val("getelementptr i8, ptr " + sep + ", i64 8");
+            let nv = b.val("load i64, ptr " + lp);
+            let empty = b.val("icmp eq i64 " + nv + ", 0");
+            let ok = b.if_true(empty);
+            let title = m.cstr("空の文字列では分けられません");
+            let lc = m.cstr("1 文字ずつにするなら `chars()` を使ってください");
+            b.op("call void @jw_fail(ptr " + title + ", ptr " + site + ", ptr " + lc + ", ptr null)");
+            b.op("unreachable");
+            b.label(ok);
+            return Ok(list_of(s, "jw_str_split", ", ptr " + sep));
+        }
+        if name == "trim" { return Ok(llvm.vt(b.val("call ptr @jw_str_trim(ptr " + s + ")"), ty.Ty.Str)); }
+        if name == "to_upper" { return Ok(llvm.vt(b.val("call ptr @jw_str_upper(ptr " + s + ")"), ty.Ty.Str)); }
+        if name == "to_lower" { return Ok(llvm.vt(b.val("call ptr @jw_str_lower(ptr " + s + ")"), ty.Ty.Str)); }
+        if name == "contains" || name == "starts_with" || name == "ends_with" {
+            let f = if name == "contains" { "jw_str_contains" } else if name == "starts_with" { "jw_str_starts" } else { "jw_str_ends" };
+            let r = b.val("call i32 @" + f + "(ptr " + s + ", ptr " + vals[1].v + ")");
+            return Ok(llvm.vt(b.val("icmp ne i32 " + r + ", 0"), ty.Ty.Bool));
+        }
+        if name == "find" {
+            let r = b.val("call i64 @jw_str_find(ptr " + s + ", ptr " + vals[1].v + ")");
+            return option_of(m, want, r, ty.i64t());
+        }
+        if name == "slice" {
+            let a = int_arg(vals, 1)?;
+            let c = int_arg(vals, 2)?;
+            return Ok(llvm.vt(b.val("call ptr @jw_str_slice(ptr " + s + ", i64 " + a + ", i64 " + c + ", ptr " + site + ")"), ty.Ty.Str));
+        }
+        if name == "replace" {
+            return Ok(llvm.vt(b.val("call ptr @jw_str_replace(ptr " + s + ", ptr " + vals[1].v + ", ptr " + vals[2].v + ")"), ty.Ty.Str));
+        }
+        if name == "repeat" {
+            let k = int_arg(vals, 1)?;
+            return Ok(llvm.vt(b.val("call ptr @jw_str_repeat(ptr " + s + ", i64 " + k + ", ptr " + site + ")"), ty.Ty.Str));
+        }
+        if name == "to_float" {
+            let out = b.alloca("double");
+            let ok = b.val("call i32 @jw_str_to_float(ptr " + s + ", ptr " + out + ")");
+            let lt = m.lt(want)?;
+            let res = b.alloca(lt);
+            let none = b.val("icmp eq i32 " + ok + ", 0");
+            let no = b.if_true(none);
+            let nv = make_enum(m, want, "None", [])?;
+            b.op("store " + lt + " " + nv + ", ptr " + res);
+            let done = b.l();
+            b.br(done);
+            b.label(no);
+            let v = b.val("load double, ptr " + out);
+            let sv = make_enum(m, want, "Some", [llvm.vt(v, ty.Ty.Float)])?;
+            b.op("store " + lt + " " + sv + ", ptr " + res);
+            b.br(done);
+            b.label(done);
+            return Ok(llvm.vt(b.val("load " + lt + ", ptr " + res), ty.cl(want)));
+        }
+        if name == "to_int" {
+            let out = b.alloca("i64");
+            let ok = b.val("call i32 @jw_str_to_int(ptr " + s + ", ptr " + out + ")");
+            let v = b.val("load i64, ptr " + out);
+            let none = b.val("icmp eq i32 " + ok + ", 0");
+            let r = b.val("select i1 " + none + ", i64 -1, i64 " + v);
+            // -1 の文字列と区別するため、ないときだけ None にする
+            let lt = m.lt(want)?;
+            let res = b.alloca(lt);
+            let no = b.if_true(none);
+            let nv = make_enum(m, want, "None", [])?;
+            b.op("store " + lt + " " + nv + ", ptr " + res);
+            let done = b.l();
+            b.br(done);
+            b.label(no);
+            let sv = make_enum(m, want, "Some", [llvm.vt(r, ty.i64t())])?;
+            b.op("store " + lt + " " + sv + ", ptr " + res);
+            b.br(done);
+            b.label(done);
+            return Ok(llvm.vt(b.val("load " + lt + ", ptr " + res), ty.cl(want)));
+        }
+        Err("文字列のメソッド " + name)
+    }
+
+    /// 負なら None、そうでなければ Some(v)
+    fn mut Result<llvm.V, str> option_of(ref mut llvm.Module m, ref ty.Ty want, str v, ty.Ty t) {
+        let lt = m.lt(want)?;
+        let res = b.alloca(lt);
+        let neg = b.val("icmp slt i64 " + v + ", 0");
+        let no = b.if_true(neg);
+        let nv = make_enum(m, want, "None", [])?;
+        b.op("store " + lt + " " + nv + ", ptr " + res);
+        let done = b.l();
+        b.br(done);
+        b.label(no);
+        let sv = make_enum(m, want, "Some", [llvm.vt(v, t)])?;
+        b.op("store " + lt + " " + sv + ", ptr " + res);
+        b.br(done);
+        b.label(done);
+        Ok(llvm.vt(b.val("load " + lt + ", ptr " + res), ty.cl(want)))
+    }
+
+    fn mut Result<llvm.V, str> seq_op(ref mut llvm.Module m, str name, ref ir.Place pl, ref ir.Operand[] argv, i64 span, i64 arg_span,
+            ref ty.Ty want) {
+        let vals = operands(m, argv)?;
+        let pr = place(m, pl, false)?;
+        let k = ty.tag(pr.t);
+        if k == "Map" {
+            let kt = ty.map_key(pr.t);
+            let vty = ty.inner(pr.t);
+            let mp = b.val("load ptr, ptr " + pr.ptr);
+            if name == "len" { return Ok(llvm.vt(b.val("call i64 @jw_map_len(ptr " + mp + ")"), ty.i64t())); }
+            if name == "keys" {
+                let out = b.alloca("%list");
+                b.op("store %list zeroinitializer, ptr " + out);
+                let len = b.val("call i64 @jw_map_len(ptr " + mp + ")");
+                let size = m.sizeof(kt)?;
+                b.op("call void @jw_list_reserve(ptr " + out + ", i64 " + size + ", i64 " + len + ")");
+                let e = b.loop_begin(len);
+                let kv = b.val("call i64 @jw_map_key(ptr " + mp + ", i64 " + e.i + ")");
+                if ty.is(kt, "Str") {
+                    let kp = b.val("inttoptr i64 " + kv + " to ptr");
+                    b.op("call void @jw_str_retain(ptr " + kp + ")");
+                }
+                let dst = b.val("call ptr @jw_list_push_slot(ptr " + out + ", i64 " + size + ", ptr null)");
+                m.store_key(ref mut b, kt, kv, dst)?;
+                b.loop_end(e);
+                return Ok(llvm.vt(b.val("load %list, ptr " + out), ty.Ty.List(own kt)));
+            }
+            let kv = coerce(m, vals[0].v, vals[0].t, kt)?;
+            let k64 = key64(kv, kt)?;
+            let i = b.val("call i64 @jw_map_find(ptr " + mp + ", i64 " + k64 + ")");
+            release_key(kv, kt);
+            let found = b.val("icmp sge i64 " + i + ", 0");
+            if name == "contains" { return Ok(llvm.vt(found, ty.Ty.Bool)); }
+            if name == "get" || name == "remove" {
+                let lt = m.lt(want)?;
+                let res = b.alloca(lt);
+                let yes = b.l();
+                let no = b.l();
+                let done = b.l();
+                b.op("br i1 " + found + ", label %" + yes + ", label %" + no);
+                b.label(yes);
+                let vp = b.val("call ptr @jw_map_val(ptr " + mp + ", i64 " + i + ")");
+                let mut v = "";
+                if name == "get" {
+                    v = read_copy(m, vp, vty)?;
+                } else {
+                    let vl = m.lt(vty)?;
+                    v = b.val("load " + vl + ", ptr " + vp);
+                    if ty.is(kt, "Str") {
+                        let key = b.val("call i64 @jw_map_key(ptr " + mp + ", i64 " + i + ")");
+                        let kp = b.val("inttoptr i64 " + key + " to ptr");
+                        b.op("call void @jw_str_release(ptr " + kp + ")");
+                    }
+                    b.op("call void @jw_map_remove_at(ptr " + mp + ", i64 " + i + ")");
+                }
+                let sv = make_enum(m, want, "Some", [llvm.vt(v, vty)])?;
+                b.op("store " + lt + " " + sv + ", ptr " + res);
+                b.br(done);
+                b.label(no);
+                let nv = make_enum(m, want, "None", [])?;
+                b.op("store " + lt + " " + nv + ", ptr " + res);
+                b.br(done);
+                b.label(done);
+                return Ok(llvm.vt(b.val("load " + lt + ", ptr " + res), ty.cl(want)));
+            }
+            return Err("辞書のメソッド " + name);
+        }
+        if k == "Array" {
+            let x = ty.inner(pr.t);
+            let cnt = "{ty.arr_len(pr.t)}";
+            if name == "len" { return Ok(llvm.vt(cnt, ty.i64t())); }
+            if name == "sort" || name == "sort_unstable" {
+                if !sort_int(pr.ptr, cnt, x) {
+                    let less = m.helper("Less", x);
+                    let size = m.sizeof(x)?;
+                    let sf = if name == "sort" { "jw_sort" } else { "jw_sort_unstable" };
+                    b.op("call void @" + sf + "(ptr " + pr.ptr + ", i64 " + cnt + ", i64 " + size + ", ptr " + less + ", ptr null)");
+                }
+                return Ok(llvm.vt("0", ty.Ty.Unit));
+            }
+            if name == "sort_by" || name == "sort_unstable_by" {
+                sort_by(m, pr.ptr, cnt, x, vals[0], name == "sort_by", span)?;
+                return Ok(llvm.vt("0", ty.Ty.Unit));
+            }
+            return Err("配列のメソッド " + name);
+        }
+        if k == "List" {
+            let x = ty.inner(pr.t);
+            let xl = m.lt(x)?;
+            let size = m.sizeof(x)?;
+            let lp = b.val("getelementptr %list, ptr " + pr.ptr + ", i32 0, i32 1");
+            let len = b.val("load i64, ptr " + lp);
+            // 要素が動いたときの位置（要素を借りた ref を無効にする。interp の `list_moved`）
+            let moved = if name == "len" { "" } else { m.site(span, "`" + name + "` でリストの要素が動いた") };
+            if name == "len" { return Ok(llvm.vt(len, ty.i64t())); }
+            if name == "join" {
+                let r = b.val("call ptr @jw_list_join(ptr " + pr.ptr + ", ptr " + vals[0].v + ")");
+                b.op("call void @jw_str_release(ptr " + vals[0].v + ")");
+                return Ok(llvm.vt(r, ty.Ty.Str));
+            }
+            if name == "push" {
+                let v = coerce(m, vals[0].v, vals[0].t, x)?;
+                let dst = b.val("call ptr @jw_list_push_slot(ptr " + pr.ptr + ", i64 " + size + ", ptr " + moved + ")");
+                b.op("store " + xl + " " + v + ", ptr " + dst);
+                return Ok(llvm.vt("0", ty.Ty.Unit));
+            }
+            if name == "pop" {
+                let lt = m.lt(want)?;
+                let res = b.alloca(lt);
+                let empty = b.val("icmp eq i64 " + len + ", 0");
+                let yes = b.l();
+                let no = b.l();
+                let done = b.l();
+                b.op("br i1 " + empty + ", label %" + yes + ", label %" + no);
+                b.label(yes);
+                let nv = make_enum(m, want, "None", [])?;
+                b.op("store " + lt + " " + nv + ", ptr " + res);
+                b.br(done);
+                b.label(no);
+                let n1 = b.val("sub i64 " + len + ", 1");
+                b.op("store i64 " + n1 + ", ptr " + lp);
+                b.op("call void @jw_list_moved(ptr " + pr.ptr + ", ptr " + moved + ")");
+                let data = b.val("load ptr, ptr " + pr.ptr);
+                let ep = b.val("getelementptr " + xl + ", ptr " + data + ", i64 " + n1);
+                let v = b.val("load " + xl + ", ptr " + ep);
+                let sv = make_enum(m, want, "Some", [llvm.vt(v, ty.cl(x))])?;
+                b.op("store " + lt + " " + sv + ", ptr " + res);
+                b.br(done);
+                b.label(done);
+                return Ok(llvm.vt(b.val("load " + lt + ", ptr " + res), ty.cl(want)));
+            }
+            if name == "remove" {
+                let i = index(m, vals[0].v, vals[0].t, len, arg_span)?;
+                let tmp = b.alloca(xl);
+                b.op("call void @jw_list_remove(ptr " + pr.ptr + ", i64 " + size + ", i64 " + i + ", ptr " + tmp + ", ptr " + moved + ")");
+                return Ok(llvm.vt(b.val("load " + xl + ", ptr " + tmp), x));
+            }
+            if name == "insert" {
+                if !ty.is(vals[0].t, "Int") { return Err("整数でない位置"); }
+                let i = llvm.widen(ref mut b, vals[0].v, ty.int_of(vals[0].t));
+                let v = coerce(m, vals[1].v, vals[1].t, x)?;
+                let neg = b.val("icmp slt i64 " + i + ", 0");
+                let big = b.val("icmp sgt i64 " + i + ", " + len);
+                let bad = b.val("or i1 " + neg + ", " + big);
+                let ok = b.if_true(bad);
+                discard(m, v, x, span, "入れられずに捨てられた")?;
+                let s = m.site(arg_span, "");
+                b.op("call void @jw_fail_insert(i64 " + i + ", i64 " + len + ", ptr " + s + ")");
+                b.op("unreachable");
+                b.label(ok);
+                let dst = b.val("call ptr @jw_list_insert_slot(ptr " + pr.ptr + ", i64 " + size + ", i64 " + i + ", ptr " + moved + ")");
+                b.op("store " + xl + " " + v + ", ptr " + dst);
+                return Ok(llvm.vt("0", ty.Ty.Unit));
+            }
+            if name == "reverse" {
+                b.op("call void @jw_list_reverse(ptr " + pr.ptr + ", i64 " + size + ", ptr " + moved + ")");
+                return Ok(llvm.vt("0", ty.Ty.Unit));
+            }
+            // 中身ごと新しいリストへ移し、元は空にする
+            if name == "drain" {
+                b.op("call void @jw_list_moved(ptr " + pr.ptr + ", ptr " + moved + ")");
+                let v = b.val("load %list, ptr " + pr.ptr);
+                b.op("store %list zeroinitializer, ptr " + pr.ptr);
+                return Ok(llvm.vt(v, ty.Ty.List(own x)));
+            }
+            if name == "sort_by" || name == "sort_unstable_by" {
+                let data = b.val("load ptr, ptr " + pr.ptr);
+                sort_by(m, data, len, x, vals[0], name == "sort_by", span)?;
+                b.op("call void @jw_list_moved(ptr " + pr.ptr + ", ptr " + moved + ")");
+                return Ok(llvm.vt("0", ty.Ty.Unit));
+            }
+            if name == "sort" || name == "sort_unstable" {
+                let data = b.val("load ptr, ptr " + pr.ptr);
+                if !sort_int(data, len, x) {
+                    let less = m.helper("Less", x);
+                    let sf = if name == "sort" { "jw_sort" } else { "jw_sort_unstable" };
+                    b.op("call void @" + sf + "(ptr " + data + ", i64 " + len + ", i64 " + size + ", ptr " + less + ", ptr null)");
+                }
+                b.op("call void @jw_list_moved(ptr " + pr.ptr + ", ptr " + moved + ")");
+                return Ok(llvm.vt("0", ty.Ty.Unit));
+            }
+            return Err("リストのメソッド " + name);
+        }
+        Err(ty.show(pr.t) + " のメソッド " + name)
+    }
+}
+
+fn FnGen new_gen(ref ir.Func f, i64 idx) {
+    let bool[] mut boxed = [];
+    let bool[] mut may_move = [];
+    for l in f.locals {
+        boxed.push(false);
+        may_move.push(false);
+    }
+    for blk in f.blocks {
+        for ins in blk.insts {
+            visit_operands(ins, ref mut may_move);
+            match ref ins {
+                case Assign(p, value, s, w) -> {
+                    match ref value {
+                        case Ref(q, m, follows, w2, sp) -> {
+                            if !follows && no_deref(q) { boxed[q.local] = true; }
+                        }
+                        case CallDyn(sn, fs, q, m, w2, os, sp) -> {
+                            if no_deref(q) { boxed[q.local] = true; }
+                        }
+                        default -> {}
+                    }
+                }
+                default -> {}
+            }
+        }
+        match ref blk.term {
+            case Branch(o, a, c) -> mark(o, ref mut may_move);
+            case Return(o) -> mark(o, ref mut may_move);
+            case Step(c, o, a, d) -> mark(o, ref mut may_move);
+            default -> {}
+        }
+    }
+    FnGen { fun: f, idx: idx, b: llvm.new_b(0), boxed: boxed, may_move: may_move, depth: "%depth" }
+}
+
+/// プログラム全体を LLVM のテキストにする。`files` はファイルの番号から名前。
+/// `sources` はファイルの中身（エラーでソースの行を出すため）。空なら位置だけ出す（`--release`）
+pub fn Result<str, str> emit(ref ir.Program prog, ref typeck.Checker ck, str[] files, ref str[] sources) {
+    let mut m = llvm.new_module(prog, ck, files);
+    for (i, f) in prog.fns {
+        let mut g = new_gen(f, i);
+        g.run(ref mut m)?;
+    }
+    if !prog.by_name.contains("main") { return Err("main がない"); }
+    let main_i = prog.by_name["main"];
+    let mf = ref prog.fns[main_i];
+    let ret = m.lt(mf.ret)?;
+    let site = m.site(mf.span, "");
+    m.code.push("define void @jw_main() {{\n  %r = call " + ret + " @f{main_i}(i64 1)\n  call void @jw_wait_all(ptr " + site +
+        ")\n  ret void\n}}\n\n");
+    m.finish_helpers()?;
+    let str[] mut entries = [];
+    for (i, text) in sources {
+        let fname = if i < m.files.len() { m.files[i] } else { "?" };
+        let nc = m.cstr(fname);
+        let tc = m.cstr(text);
+        entries.push("%wsrc {{ ptr " + nc + ", ptr " + tc + " }}");
+    }
+    m.globals.push("@jw_files = constant [{entries.len()} x %wsrc] [" + entries.join(", ") + "]\n@jw_nfiles = constant i32 {entries.len()}\n");
+    Ok(m.output())
+}

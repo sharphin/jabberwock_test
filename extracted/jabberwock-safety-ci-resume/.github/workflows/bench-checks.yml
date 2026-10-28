@@ -1,0 +1,19 @@
+# ベンチマークの検査の数を見張る（bench/checks.sh）。時間はぶれるので見ず、
+# 書き出した世代・添字の検査の数と、実行時に通った回数が bench/checks.txt より増えたら失敗にする
+name: bench-checks
+
+on:
+  workflow_dispatch:
+
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: clang の版
+        run: clang --version
+      - name: jabberwock を作る
+        run: cargo build --release
+      - name: 検査の数を比べる
+        run: bench/checks.sh

@@ -1,0 +1,22 @@
+fn main() {
+    let n = 600;
+    let f64[] mut a = [];
+    let f64[] mut b = [];
+    let f64[] mut c = [];
+    for i in range(n * n) {
+        a.push((i % 7) as f64 * 0.5);
+        b.push((i % 5) as f64 * 0.25);
+        c.push(0.0);
+    }
+    for i in range(n) {
+        for k in range(n) {
+            let aik = a[i * n + k];
+            for j in range(n) {
+                c[i * n + j] += aik * b[k * n + j];
+            }
+        }
+    }
+    let mut s = 0.0;
+    for i in range(n * n) { s += c[i]; }
+    print((s * 1000.0) as i64);
+}

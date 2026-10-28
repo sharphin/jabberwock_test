@@ -1,0 +1,36 @@
+// mandelbrot（1600×1600、50 回）。各行の点を 8 個ずつビットに詰めてリストに書き、数を数える
+fn main() {
+    let n = 1600;
+    let u8[] mut bits = [];
+    for i in range(n * n / 8) { bits.push(0); }
+    let mut pos = 0;
+    for y in range(n) {
+        let ci = 2.0 * (y as f64) / (n as f64) - 1.0;
+        let mut x = 0;
+        while x < n {
+            let mut byte = 0;
+            for b in range(8) {
+                let cr = 2.0 * ((x + b) as f64) / (n as f64) - 1.5;
+                let mut zr = 0.0;
+                let mut zi = 0.0;
+                let mut i = 0;
+                let mut inside = true;
+                while i < 50 {
+                    let tr = zr * zr - zi * zi + cr;
+                    zi = 2.0 * zr * zi + ci;
+                    zr = tr;
+                    if zr * zr + zi * zi > 4.0 { inside = false; break; }
+                    i += 1;
+                }
+                byte = byte << 1;
+                if inside { byte = byte | 1; }
+            }
+            bits[pos] = byte as u8;
+            pos += 1;
+            x += 8;
+        }
+    }
+    let mut sum = 0;
+    for v in bits { sum += (v as i64) * 7 % 255; }
+    print(pos, sum);
+}

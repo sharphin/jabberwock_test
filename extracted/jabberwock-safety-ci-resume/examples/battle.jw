@@ -1,0 +1,52 @@
+// 小さな戦闘シミュレーション（試しに書いたプログラム）: interface のリストと、構造体の中の ref
+interface Unit {
+    fn str name();
+    fn i64 hp();
+    fn mut hit(i64 dmg);
+}
+
+struct Slime {
+    i64 life;
+    fn str name() { "スライム" }
+    fn i64 hp() { life }
+    fn mut hit(i64 dmg) { life -= dmg; }
+}
+
+struct Dragon {
+    i64 life;
+    i64 armor;
+    fn str name() { "ドラゴン" }
+    fn i64 hp() { life }
+    fn mut hit(i64 dmg) {
+        if dmg > armor { life -= dmg - armor; }
+    }
+}
+
+struct Hero {
+    str name;
+    i64 power;
+    Option<ref mut Unit> target;
+}
+
+fn main() {
+    let (own Unit)[] mut enemies = [own Slime { life: 10 }, own Dragon { life: 30, armor: 2 }];
+    let mut hero = Hero { name: "勇者", power: 7, target: None };
+    let mut turn = 0;
+    while enemies.len() > 0 {
+        turn += 1;
+        // 先頭の敵を狙う
+        hero.target = Some(ref mut enemies[0]);
+        match hero.target {
+            case Some(t) -> {
+                t.hit(hero.power);
+                print("{turn}: {t.name()} の残り {t.hp()}");
+                if t.hp() <= 0 {
+                    print("{t.name()} を倒した");
+                    enemies.remove(0);
+                }
+            }
+            case None -> {}
+        }
+        if turn > 20 { break; }
+    }
+}

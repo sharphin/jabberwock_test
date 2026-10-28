@@ -1,0 +1,133 @@
+// 電卓: 字句解析 → 構文木（再帰する enum）→ 計算。エラーは Result と ?。match は形を重ねて書ける（`Some(Op("-"))`）
+enum Tok {
+    Num(i64 n);
+    Op(str op);
+    LParen;
+    RParen;
+}
+
+enum Expr {
+    Num(i64 n);
+    Bin(str op, own Expr l, own Expr r);
+    Neg(own Expr e);
+}
+
+fn Result<Tok[], str> lex(str src) {
+    let Tok[] mut out = [];
+    let cs = src.chars();
+    let mut i = 0;
+    while i < cs.len() {
+        let c = cs[i];
+        if c == " " { i += 1; continue; }
+        if "0123456789".contains(c) {
+            let mut n = 0;
+            while i < cs.len() && "0123456789".contains(cs[i]) {
+                n = n * 10 + ok_or(cs[i].to_int(), "数ではない")?;
+                i += 1;
+            }
+            out.push(Tok.Num(n));
+            continue;
+        }
+        match c {
+            case "(" -> out.push(Tok.LParen);
+            case ")" -> out.push(Tok.RParen);
+            case "+", "-", "*", "/" -> out.push(Tok.Op(c));
+            default -> return Err("知らない文字 '{c}'（{i} 文字目）");
+        }
+        i += 1;
+    }
+    Ok(out)
+}
+
+struct Parser {
+    Tok[] toks;
+    i64 pos;
+
+    fn Option<Tok> peek() {
+        if pos < toks.len() { Some(toks[pos]) } else { None }
+    }
+
+    fn mut Result<own Expr, str> expr() {
+        let mut l = term()?;
+        loop {
+            match peek() {
+                case Some(Op(op)) -> {
+                    if op != "+" && op != "-" { break; }
+                    pos += 1;
+                    let r = term()?;
+                    l = own Expr.Bin(op, l, r);
+                }
+                default -> break;
+            }
+        }
+        Ok(l)
+    }
+
+    fn mut Result<own Expr, str> term() {
+        let mut l = atom()?;
+        loop {
+            match peek() {
+                case Some(Op(op)) -> {
+                    if op != "*" && op != "/" { break; }
+                    pos += 1;
+                    let r = atom()?;
+                    l = own Expr.Bin(op, l, r);
+                }
+                default -> break;
+            }
+        }
+        Ok(l)
+    }
+
+    fn mut Result<own Expr, str> atom() {
+        let t = peek();
+        pos += 1;
+        match t {
+            case Some(Num(n)) -> Ok(own Expr.Num(n));
+            case Some(Op("-")) -> Ok(own Expr.Neg(atom()?));
+            case Some(Op(op)) -> Err("ここに {op} は書けません");
+            case Some(LParen) -> {
+                let e = expr()?;
+                match peek() {
+                    case Some(RParen) -> { pos += 1; Ok(e) }
+                    default -> Err("')' がありません");
+                }
+            }
+            case Some(RParen) -> Err("')' が多すぎます");
+            case None -> Err("式が途中で終わっています");
+        }
+    }
+}
+
+fn Result<i64, str> eval(ref Expr e) {
+    match e {
+        case Num(n) -> Ok(n);
+        case Neg(x) -> Ok(-eval(x)?);
+        case Bin(op, l, r) -> {
+            let a = eval(l)?;
+            let b = eval(r)?;
+            match op {
+                case "+" -> Ok(a + b);
+                case "-" -> Ok(a - b);
+                case "*" -> Ok(a * b);
+                default -> if b == 0 { Err("0 で割りました") } else { Ok(a / b) }
+            }
+        }
+    }
+}
+
+fn Result<i64, str> run(str src) {
+    let mut p = Parser { toks: lex(src)?, pos: 0 };
+    let e = p.expr()?;
+    if p.pos < p.toks.len() { return Err("余分なものがあります"); }
+    eval(e)
+}
+
+fn main() {
+    for src in ["1 + 2 * 3", "(1 + 2) * 3", "-4 + 10 / 2", "2 * (3 + ", "8 / (4 - 4)", "7 % 2"] {
+        match run(src) {
+            case Ok(v) -> print("{src} = {v}");
+            case Err(m) -> print("{src}: エラー: {m}");
+        }
+    }
+}

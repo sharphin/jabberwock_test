@@ -1,0 +1,3295 @@
+// 型検査（Rust 版の src/types.rs にあたる。同じ順に調べ、同じエラーを出す）
+//
+// Rust 版は結論を構文木の中（`Cell`）と、式のアドレスで引く表に書く。jwc は構文木を書き換えないので、
+// 式の番号（`ast.number` が振る `Expr.id`）で引く表（`Info`）に書く。
+use ast;
+use diag;
+use ty;
+
+// 固定長の配列の大きさの上限（8 バイトの数で 2^17 = 1 MiB）と、`[x; n]` のリストの上限（2^59）。types.rs と同じ
+const ARRAY_CELLS = 131072;
+const LIST_CELLS = 576460752303423488;
+// 大きさの数え方の頭打ち（2^60）
+const CELLS_CAP = 1152921504606846976;
+
+fn i64 cap_u64(u64 n) {
+    if n > CELLS_CAP as u64 { CELLS_CAP } else { n as i64 }
+}
+
+fn i64 cap_mul(i64 a, i64 b) {
+    let x = if a > CELLS_CAP { CELLS_CAP } else { a };
+    let y = if b > CELLS_CAP { CELLS_CAP } else { b };
+    if x != 0 && y > CELLS_CAP / x { CELLS_CAP } else { x * y }
+}
+
+fn i64 cap_add(i64 a, i64 b) {
+    let x = if a > CELLS_CAP { CELLS_CAP } else { a };
+    let y = if b > CELLS_CAP { CELLS_CAP } else { b };
+    if x + y > CELLS_CAP { CELLS_CAP } else { x + y }
+}
+
+const ORDERED = "ordered";
+
+const STR_METHODS = "len, byte_len, chars, bytes, code, lines, split, trim, to_upper, to_lower, contains, starts_with, ends_with, find, slice, replace, repeat, to_int, to_float";
+
+fn bool has(ref str[] xs, str x) {
+    for y in xs {
+        if y == x { return true; }
+    }
+    false
+}
+
+fn bool is_builtin(str n) {
+    n == "print" || n == "eprint" || n == "drop" || n == "assert" || n == "read_line" || n == "args" || n == "spawn"
+        || n == "chan" || n == "exit" || n == "read_file" || n == "write_file" || n == "run_command" || n == "chr"
+}
+
+/// 最後の `.` の位置（なければ -1）
+fn i64 last_dot(str s) {
+    let mut at = -1;
+    for (i, c) in s.chars() {
+        if c == "." { at = i; }
+    }
+    at
+}
+
+/// `<T: A + B>` の条件（" + " でつないだもの）を 1 つずつに
+fn str[] bound_list(str b) {
+    if b == "" { [] } else { b.split(" + ") }
+}
+
+/// 値を入れる先の型（Rust 版の `Option<&Ty>`）
+pub struct Hint {
+    bool some;
+    ty.Ty t;
+}
+
+fn Hint none() { Hint { some: false, t: ty.Ty.Unit } }
+
+fn Hint hint_of(ty.Ty t) { Hint { some: true, t: t } }
+
+fn Hint copy_hint(ref Hint h) { Hint { some: h.some, t: ty.cl(h.t) } }
+
+fn bool hint_is(ref Hint h, str k) { h.some && ty.is(h.t, k) }
+
+// ---------------------------------------------------------------- 定義の表
+
+struct SInfo {
+    str name;
+    str[] tparams;
+    str[] fields;
+    ty.Ty[] tys;
+    i64 span;
+
+    fn i64 field_index(str n) {
+        for (i, f) in fields {
+            if f == n { return i; }
+        }
+        -1
+    }
+}
+
+struct VInfo {
+    str name;
+    ty.Ty[] tys;
+}
+
+struct EInfo {
+    str name;
+    str[] tparams;
+    VInfo[] vs;
+    i64 span;
+    // 中身の型を全部読んだか（Rust 版は読み終わるまで種類なしに見える。cells が同じ数になるように）
+    bool ready;
+}
+
+struct IMethod {
+    str name;
+    bool m;
+    ty.Ty[] params;
+    ty.Ty ret;
+}
+
+struct IInfo {
+    str name;
+    IMethod[] ms;
+}
+
+struct FnSig {
+    str name;
+    // 最初の引数が `this` のメソッドか
+    bool method;
+    str[] tparams;
+    // 型の引数ごとの条件（" + " でつないだもの）
+    str[] bounds;
+    ty.Ty[] params;
+    ty.Ty ret;
+}
+
+struct VarInfo {
+    ty.Ty t;
+    bool m;
+    i64 decl;
+}
+
+fn VarInfo copy_var(ref VarInfo v) { VarInfo { t: ty.cl(v.t), m: v.m, decl: v.decl } }
+
+struct Scope {
+    str[] names;
+    VarInfo[] vars;
+
+    fn i64 find(str n) {
+        for (i, x) in names {
+            if x == n { return i; }
+        }
+        -1
+    }
+}
+
+fn Scope new_scope() { Scope { names: [], vars: [] } }
+
+struct LambdaScope {
+    i64 base;
+    str[] caps;
+    bool[] borrowed;
+    bool borrows;
+}
+
+/// 書き込めるか（Rust 版の `Access`）
+enum Access {
+    Write;
+    ImmutVar(str name, i64 decl);
+    ReadOnlyRef(str what, i64 origin);
+}
+
+/// ポインタ（型 `t`）の先の場所に書き込めるか。own の先は持ち主と同じ、ref の先は ref 次第
+fn Access through(Access a, ref ty.Ty t, i64 origin, str what) {
+    match ref t {
+        case Ref(x, m) -> if m { Access.Write } else { Access.ReadOnlyRef(what, origin) };
+        default -> a;
+    }
+}
+
+fn Result<(), diag.Diag> require(Access a, i64 span, str doing) {
+    match a {
+        case Write -> Ok(());
+        case ImmutVar(name, decl) -> {
+            if name == "this" {
+                return Err(diag.make("`this` そのものは書き換えられません")
+                    .at(span, "ここで{doing}")
+                    .with_note("this の先を丸ごと書き換えるなら `*this = 値;` と書いてください（`fn mut` のメソッドで）"));
+            }
+            Err(diag.make("`{name}` は mut ではないので書き換えられません")
+                .also(decl, "ここで `{name}` を宣言した（mut がない）")
+                .at(span, "ここで{doing}")
+                .with_note("書き換えるなら `let mut {name}` や `i64 mut {name}` のように mut をつけてください"))
+        }
+        case ReadOnlyRef(what, origin) -> {
+            if what == "this" {
+                return Err(diag.make("書き換えないメソッドの中で書き換えようとしました")
+                    .at(span, "ここで{doing}")
+                    .with_note("フィールドを書き換えるメソッドは `fn mut 名前()` と書いてください"));
+            }
+            Err(diag.make("読むだけの ref を通して書き換えようとしました")
+                .also(origin, "`{what}` は読むだけの ref（mut がない）")
+                .at(span, "ここで{doing}")
+                .with_note("書き換えるなら `ref mut` で借りてください"))
+        }
+    }
+}
+
+// ---------------------------------------------------------------- 型検査で分かったこと（式の番号で引く）
+
+struct LamInfo {
+    str[] caps;
+    bool[] borrowed;
+    bool returns;
+}
+
+pub struct Info {
+    // 式の型
+    bool[] has_ty;
+    ty.Ty[] tys;
+    // 整数の変換の印（なければ ""）・小数の印・自動で借りる印
+    str[] ints;
+    bool[] floats;
+    bool[] borrows;
+    // enum の値: 読むとコピーか（-1: 決めない、0: ムーブ、1: コピー）
+    i64[] copies;
+    // `[...]` を何として作るか（"" は配列、"list"、"map"）
+    str[] seqs;
+    // `[x; n]` をリストとして作るか
+    bool[] lists;
+    // メソッド呼び出しの相手の enum の名前（なければ ""）と、`fn take` か
+    str[] menums;
+    bool[] mtakes;
+    // `for x in e` の e（の番号）: その場で作ったリストを回す
+    bool[] consumes;
+    // クロージャの取り込み（`lams` の位置。なければ -1）
+    i64[] lam_at;
+    LamInfo[] lams;
+    // 呼び出し・構造体や enum の値で決めた型の引数（`targ_maps` の位置。なければ -1）
+    i64[] targ_at;
+    ty.TMap[] targ_maps;
+    // 変数の型（宣言の位置で引く）
+    i64[i64] var_at;
+    i64[] var_spans;
+    ty.Ty[] var_tys;
+    // 関数の戻り値の型
+    i64[str] ret_at;
+    str[] ret_names;
+    ty.Ty[] ret_tys;
+}
+
+pub fn Info new_info(i64 n) {
+    let mut info = Info {
+        has_ty: [], tys: [], ints: [], floats: [], borrows: [], copies: [], seqs: [], lists: [], menums: [], mtakes: [],
+        consumes: [], lam_at: [], lams: [], targ_at: [], targ_maps: [], var_at: [], var_spans: [], var_tys: [],
+        ret_at: [], ret_names: [], ret_tys: [],
+    };
+    for i in range(n + 1) {
+        info.has_ty.push(false);
+        info.tys.push(ty.Ty.Unit);
+        info.ints.push("");
+        info.floats.push(false);
+        info.borrows.push(false);
+        info.copies.push(-1);
+        info.seqs.push("");
+        info.lists.push(false);
+        info.menums.push("");
+        info.mtakes.push(false);
+        info.consumes.push(false);
+        info.lam_at.push(-1);
+        info.targ_at.push(-1);
+    }
+    info
+}
+
+// ---------------------------------------------------------------- エラー
+
+fn diag.Diag mismatch(ref ty.Ty want, ref ty.Ty got, i64 span) {
+    let d = diag.make("型が合いません").at(span, "ここは `{ty.show(got)}` ですが、`{ty.show(want)}` が必要です");
+    if ty.is(want, "Ref") && ty.ref_mut(want) && !ty.is(got, "Ref") {
+        return d.with_note("書き換えられる引数（`ref mut`）には、呼ぶ側でも `ref mut x` と書いてください");
+    }
+    if ty.is(got, "Int") && ty.is(want, "Int") {
+        return d.with_note("値が欠けるかもしれない変換は `as` で明示してください（例: `x as {ty.int_of(want)}`）");
+    }
+    d
+}
+
+fn diag.Diag out_of_range(ref ty.CV v, str t, i64 span) {
+    diag.make("`{ty.cv_text(v)}` は `{t}` に入りません").at(span, "{t} の範囲は {ty.min_text(t)}〜{ty.max_text(t)}")
+}
+
+fn diag.Diag not_an_array(ref ty.Ty t, i64 span) {
+    diag.make("添字が使えるのは配列とリストだけです").at(span, "ここは `{ty.show(t)}` です")
+}
+
+fn diag.Diag not_a_struct(ref ty.Ty t, i64 span) {
+    diag.make("フィールドを持たない値です").at(span, "`{ty.show(t)}` は構造体ではありません")
+}
+
+fn diag.Diag no_field(ref SInfo def, str name, i64 span) {
+    let fs = def.fields.join(", ");
+    diag.make("`{def.name}` にフィールド `{name}` はありません")
+        .at(span, "このフィールドは定義されていません")
+        .with_note("`{def.name}` のフィールド: {fs}")
+}
+
+fn diag.Diag arity_error(str name, i64 want, i64 got, i64 span) {
+    diag.make("`{name}` の引数の数が違います").at(span, "{want} 個必要ですが {got} 個渡されました")
+}
+
+fn diag.Diag map_borrow_error(i64 span) {
+    diag.make("辞書の中の値は借りられません")
+        .at(span, "辞書はキーを取り除くと値の場所が詰まるので、中の場所が変わる")
+        .with_note("値を借りたいときは、値を own にしてください（`(own T)[K]`）")
+}
+
+// ---------------------------------------------------------------- 構文木を見るだけの関数
+
+/// 整数の数だけでできた式か（`300`、`-1`、`60 * 60`）
+pub fn bool is_const_tree(ref ast.Expr e) {
+    match ref e.kind {
+        case Int(n) -> true;
+        case Unary(op, x) -> op == "-" && is_const_tree(x);
+        case Binary(op, l, r) -> (op == "+" || op == "-" || op == "*" || op == "/" || op == "%") && is_const_tree(l) && is_const_tree(r);
+        default -> false;
+    }
+}
+
+enum CErr {
+    DivZero(i64 span);
+    Overflow;
+}
+
+/// 定数の式の本当の値（一周させない）
+fn Result<ty.CV, CErr> const_val(ref ast.Expr e) {
+    match ref e.kind {
+        case Int(n) -> Ok(ty.cv(false, n));
+        case Unary(op, x) -> {
+            let v = const_val(x)?;
+            Ok(ty.cv_neg(v))
+        }
+        case Binary(op, l, r) -> {
+            let a = const_val(l)?;
+            let b = const_val(r)?;
+            if op == "+" { return Ok(ty.cv_add(a, b)); }
+            if op == "-" {
+                let nb = ty.cv_neg(b);
+                return Ok(ty.cv_add(a, nb));
+            }
+            if op == "*" { return Ok(ty.cv_mul(a, b)); }
+            if !b.big && b.mag == 0 { return Err(CErr.DivZero(e.span)); }
+            let v = ty.cv_div(a, b, op == "%");
+            if v.big { Err(CErr.Overflow) } else { Ok(v) }
+        }
+        default -> Ok(ty.cv(false, 0));
+    }
+}
+
+fn bool is_place(ref ast.Expr e) {
+    match ref e.kind {
+        case Var(n) -> true;
+        case Deref(x) -> true;
+        case Field(x, n) -> true;
+        case Index(b, i) -> true;
+        default -> false;
+    }
+}
+
+fn str describe(ref ast.Expr e) {
+    match ref e.kind {
+        case Var(n) -> n;
+        case Deref(x) -> "*" + describe(x);
+        case Field(x, n) -> describe(x) + "." + n;
+        default -> "式";
+    }
+}
+
+/// ブロックの値になる最後の式の番号（なければ -1）
+fn i64 tail_id(ref ast.Block b) {
+    let n = b.stmts.len();
+    if !b.tail || n == 0 { return -1; }
+    match ref b.stmts[n - 1] {
+        case Ex(e) -> e.id;
+        default -> -1;
+    }
+}
+
+fn i64 tail_span(ref ast.Block b) {
+    let n = b.stmts.len();
+    if !b.tail || n == 0 { return b.end; }
+    match ref b.stmts[n - 1] {
+        case Ex(e) -> e.span;
+        default -> b.end;
+    }
+}
+
+/// ループ本体の中で、このループを抜ける最初の break の位置（なければ -1）
+fn i64 find_break(ref ast.Block b) {
+    for s in b.stmts {
+        let at = match ref s {
+            case Break(sp) -> sp;
+            case Ex(e) -> {
+                match ref e.kind {
+                    case If(c, t, has_els, els) -> {
+                        let x = find_break(t);
+                        if x >= 0 { x } else if has_els { find_break(els) } else { -1 }
+                    }
+                    case Match(sc, arms, has_default, d) -> {
+                        let mut y = -1;
+                        for a in arms {
+                            if y < 0 { y = find_break(a.body); }
+                        }
+                        if y < 0 && has_default { y = find_break(d); }
+                        y
+                    }
+                    default -> -1;
+                }
+            }
+            case For(v, rg, rs, body, has_els, els) -> if has_els { find_break(els) } else { -1 };
+            case ForEach(hk, k, ks, v, vs, it, body, has_els, els) -> if has_els { find_break(els) } else { -1 };
+            default -> -1;
+        };
+        if at >= 0 { return at; }
+    }
+    -1
+}
+
+fn bool covers_both_bools(ref ast.MatchArm[] arms) {
+    let mut t = false;
+    let mut f = false;
+    for a in arms {
+        for p in a.pats {
+            match ref p {
+                case Bool(b) -> { if b { t = true; } else { f = true; } }
+                default -> {}
+            }
+        }
+    }
+    t && f
+}
+
+fn bool is_flat(ref ast.Pat p) {
+    match ref p {
+        case Variant(n, binds, spans, has_sub, subs) -> {
+            for h in has_sub {
+                if h { return false; }
+            }
+            true
+        }
+        default -> true;
+    }
+}
+
+/// 受け取る名前の最初の位置（重ねた形の中も。`_` は除く。なければ -1）
+fn i64 first_bind(ref ast.Pat p) {
+    match ref p {
+        case Variant(n, binds, spans, has_sub, subs) -> {
+            for (i, b) in binds {
+                if has_sub[i] {
+                    let s = first_bind(subs[i]);
+                    if s >= 0 { return s; }
+                } else if b != "_" {
+                    return spans[i];
+                }
+            }
+            -1
+        }
+        default -> -1;
+    }
+}
+
+fn str pat_variant(ref ast.Pat p) {
+    match ref p {
+        case Variant(n, binds, spans, has_sub, subs) -> n;
+        default -> "";
+    }
+}
+
+fn bool pat_is_bool(ref ast.Pat p, bool want) {
+    match ref p {
+        case Bool(b) -> b == want;
+        default -> false;
+    }
+}
+
+/// 型の中に（own / ref を通さず）じかに入っている構造体・enum の名前
+fn by_value_names(ref ty.Ty t, ref mut str[] out) {
+    match ref t {
+        case Array(x, n) -> by_value_names(x, out);
+        case Struct(n, xs) -> {
+            out.push(n);
+            for a in xs { by_value_names(a, out); }
+        }
+        case Enum(n, xs) -> {
+            out.push(n);
+            for a in xs { by_value_names(a, out); }
+        }
+        default -> {}
+    }
+}
+
+/// 配列・リスト（own / ref を 1 段たどる）の要素の型と、配列なら長さ
+struct SeqOf {
+    bool ok;
+    ty.Ty elem;
+    bool has_len;
+    u64 len;
+}
+
+fn SeqOf seq_of(ref ty.Ty t) {
+    let base = if ty.has_pointee(t) { ty.inner(t) } else { ty.cl(t) };
+    match ref base {
+        case Array(x, n) -> SeqOf { ok: true, elem: ty.cl(x), has_len: true, len: n };
+        case List(x) -> SeqOf { ok: true, elem: ty.cl(x), has_len: false, len: 0 };
+        default -> SeqOf { ok: false, elem: ty.Ty.Unit, has_len: false, len: 0 };
+    }
+}
+
+/// 辞書（own / ref を 1 段たどる）。辞書でなければ Unit
+fn ty.Ty map_of(ref ty.Ty t) {
+    let base = if ty.has_pointee(t) { ty.inner(t) } else { ty.cl(t) };
+    if ty.is(base, "Map") { base } else { ty.Ty.Unit }
+}
+
+// ---------------------------------------------------------------- 型検査
+
+pub struct Checker {
+    SInfo[] sdefs;
+    i64[str] s_at;
+    EInfo[] edefs;
+    i64[str] e_at;
+    FnSig[] sigs;
+    i64[str] f_at;
+    IInfo[] idefs;
+    i64[str] i_at;
+    Scope[] scopes;
+    // 今調べている関数の戻り値の型
+    ty.Ty cur_ret;
+    // 今いる定義の型の引数
+    str[] cur_tps;
+    // 今調べている関数の、型の引数ごとの条件
+    str[] b_names;
+    str[] b_vals;
+    // 今調べているメソッドの構造体のフィールド名
+    str[] cur_fields;
+    LambdaScope[] lstack;
+    diag.Diag[] warns;
+    str[] mods;
+    str[] cnames;
+    // 今調べている関数のモジュール（最初のファイルなら ""）
+    str cur_mod;
+    // いちばん最近 `instantiate` で決めた型の引数
+    bool has_pending;
+    ty.TMap pending;
+    // 引数にその場で書いたクロージャの位置
+    i64[] borrow_spans;
+    Info info;
+
+    // ------------------------------------------------ 表を引く
+
+    fn bool is_struct(str n) { s_at.contains(n) }
+    fn bool is_enum(str n) { e_at.contains(n) }
+    fn bool is_iface(str n) { i_at.contains(n) }
+    fn bool is_fn(str n) { f_at.contains(n) }
+
+    /// 型の引数ごとの条件（なければ ""）
+    fn str bound_of(str p) {
+        for (i, n) in b_names {
+            if n == p { return b_vals[i]; }
+        }
+        ""
+    }
+
+    fn bool tp_has(str n) { has(cur_tps, n) }
+
+    // ------------------------------------------------ 記録
+
+    fn mut record_var(i64 span, ref ty.Ty t) {
+        if info.var_at.contains(span) {
+            info.var_tys[info.var_at[span]] = ty.cl(t);
+        } else {
+            info.var_at[span] = info.var_spans.len();
+            info.var_spans.push(span);
+            info.var_tys.push(ty.cl(t));
+        }
+    }
+
+    /// 整数の値を、型 `want` の場所で使えるようにする（変換する印をつける）
+    fn mut convert(i64 id, ref ty.Ty got, ref ty.Ty want) {
+        let a = ty.int_of(got);
+        let b = ty.int_of(want);
+        if id >= 0 && a != "" && b != "" && a != b {
+            info.ints[id] = b;
+        }
+    }
+
+    fn mut set_tree(ref ast.Expr e, str t) {
+        info.ints[e.id] = t;
+        match ref e.kind {
+            case Unary(op, x) -> set_tree(x, t);
+            case Binary(op, l, r) -> {
+                set_tree(l, t);
+                set_tree(r, t);
+            }
+            default -> {}
+        }
+    }
+
+    fn mut set_float_tree(ref ast.Expr e) {
+        info.floats[e.id] = true;
+        match ref e.kind {
+            case Unary(op, x) -> set_float_tree(x);
+            case Binary(op, l, r) -> {
+                set_float_tree(l);
+                set_float_tree(r);
+            }
+            default -> {}
+        }
+    }
+
+    // ------------------------------------------------ 型を書いたもの → 型
+
+    /// own / ref の先の型。interface の名前はここでだけ書ける
+    fn Result<ty.Ty, diag.Diag> resolve_pointee(ref ast.TypeExpr t) {
+        match ref t.kind {
+            case Name(n) -> {
+                if is_iface(n) && !tp_has(n) { return Ok(ty.Ty.Iface(n)); }
+            }
+            default -> {}
+        }
+        resolve(t)
+    }
+
+    fn Result<ty.Ty[], diag.Diag> resolve_all(ref ast.TypeExpr[] ts) {
+        let ty.Ty[] mut out = [];
+        for t in ts { out.push(resolve(t)?); }
+        Ok(out)
+    }
+
+    fn Result<ty.Ty, diag.Diag> resolve(ref ast.TypeExpr t) {
+        match ref t.kind {
+            case Own(x) -> Ok(ty.Ty.Own(own resolve_pointee(x)?));
+            case App(n, xs) -> {
+                if n == "task" || n == "chan" {
+                    if xs.len() != 1 {
+                        return Err(diag.make("`{n}` の型の引数の数が違います").at(t.span, "1 個必要ですが {xs.len()} 個書かれています"));
+                    }
+                    let x = resolve(xs[0])?;
+                    if n == "task" { return Ok(ty.Ty.Task(own x)); }
+                    require_sendable(x, xs[0].span, "チャンネルで送る値")?;
+                    return Ok(ty.Ty.Chan(own x));
+                }
+                let want = if is_struct(n) { sdefs[s_at[n]].tparams.len() }
+                    else if is_enum(n) { edefs[e_at[n]].tparams.len() }
+                    else { return Err(diag.make("未定義の型 `{n}`").at(t.span, "この型は定義されていません")); };
+                if xs.len() != want {
+                    return Err(diag.make("`{n}` の型の引数の数が違います").at(t.span, "{want} 個必要ですが {xs.len()} 個書かれています"));
+                }
+                let argv = resolve_all(xs)?;
+                if is_struct(n) {
+                    let d = s_at[n];
+                    let m = ty.targs(sdefs[d].tparams, argv);
+                    for f in sdefs[d].tys { check_size(ty.subst(f, m), t.span)?; }
+                    Ok(ty.Ty.Struct(n, own argv))
+                } else {
+                    let result = ty.Ty.Enum(n, own argv);
+                    for v in variants_of(result) {
+                        for f in v.tys { check_size(f, t.span)?; }
+                    }
+                    Ok(result)
+                }
+            }
+            case Ref(x, m) -> Ok(ty.Ty.Ref(own resolve_pointee(x)?, m));
+            case Array(x, n) -> {
+                let a = ty.Ty.Array(own resolve(x)?, n);
+                check_size(a, t.span)?;
+                Ok(a)
+            }
+            case List(x) -> Ok(ty.Ty.List(own resolve(x)?));
+            case Map(v, k) -> {
+                let kt = resolve(k)?;
+                if !(ty.is(kt, "Int") || ty.is(kt, "Str") || ty.is(kt, "Bool")) {
+                    return Err(diag.make("`{ty.show(kt)}` は辞書のキーにできません").at(k.span, "キーにできるのは整数・str・bool だけ"));
+                }
+                Ok(ty.Ty.Map(own kt, own resolve(v)?))
+            }
+            case Fn(ps, has_ret, r) -> {
+                let pts = resolve_all(ps)?;
+                let rt = if has_ret { resolve(r)? } else { ty.Ty.Unit };
+                Ok(ty.Ty.Fn(own pts, own rt))
+            }
+            case Name(n) -> {
+                if n == "bool" { return Ok(ty.Ty.Bool); }
+                if n == "()" { return Ok(ty.Ty.Unit); }
+                if n == "str" { return Ok(ty.Ty.Str); }
+                if n == "f64" { return Ok(ty.Ty.Float); }
+                if ty.is_int_name(n) { return Ok(ty.Ty.Int(n)); }
+                if n == "isize" || n == "f32" {
+                    return Err(diag.make("型 `{n}` はまだ使えません")
+                        .at(t.span, "今使える数の型は整数（i8〜i64、u8〜u64、usize）と f64 だけです"));
+                }
+                if tp_has(n) { return Ok(ty.Ty.Param(n)); }
+                if is_iface(n) {
+                    return Err(diag.make("interface `{n}` は own か ref を通して使います")
+                        .at(t.span, "`own {n}` か `ref {n}` と書いてください")
+                        .with_note("中身の構造体によって大きさが違うので、そのままの値としては持てません"));
+                }
+                if is_struct(n) || is_enum(n) {
+                    let k = if is_struct(n) { sdefs[s_at[n]].tparams.len() } else { edefs[e_at[n]].tparams.len() };
+                    if k != 0 {
+                        let str[] mut ex = [];
+                        for i in range(k) { ex.push("i64"); }
+                        let exs = ex.join(", ");
+                        return Err(diag.make("`{n}` には型の引数が必要です")
+                            .at(t.span, "`{n}<{exs}>` のように書いてください"));
+                    }
+                    if is_struct(n) { return Ok(ty.Ty.Struct(n, own [])); }
+                    return Ok(ty.Ty.Enum(n, own []));
+                }
+                Err(diag.make("未定義の型 `{n}`")
+                    .at(t.span, "この型は定義されていません")
+                    .with_note("使える型: i8〜i64、u8〜u64、usize、bool、str、構造体の名前、own 型、ref 型、ref mut 型"))
+            }
+        }
+    }
+
+    // ------------------------------------------------ 型の性質
+
+    /// 構造体や enum が自分自身を（own / ref を通さず）じかに含んでいないか
+    fn Result<(), diag.Diag> check_finite(str name, i64 span) {
+        let str[] mut stack = [name];
+        let str[] mut seen = [];
+        while stack.len() > 0 {
+            let n = match stack.pop() {
+                case Some(x) -> x;
+                case None -> "";
+            };
+            let str[] mut direct = [];
+            if is_struct(n) {
+                for t in sdefs[s_at[n]].tys { by_value_names(t, ref mut direct); }
+            } else if is_enum(n) {
+                for v in edefs[e_at[n]].vs {
+                    for t in v.tys { by_value_names(t, ref mut direct); }
+                }
+            }
+            for m in direct {
+                if m == name {
+                    return Err(diag.make("`{name}` が自分自身をじかに含んでいます")
+                        .at(span, "これだと大きさが無限になる")
+                        .with_note("`own` を通して持ってください（例: `own Node next;`）"));
+                }
+                if !has(seen, m) {
+                    seen.push(m);
+                    stack.push(m);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// ほかのスレッドへ渡せる型か。だめなら理由
+    fn Result<(), str> sendable(ref ty.Ty t, ref mut str[] seen) {
+        let k = ty.tag(t);
+        if k == "Int" || k == "Float" || k == "Bool" || k == "Str" || k == "Unit" || k == "Never" || k == "Chan" { return Ok(()); }
+        if k == "Ref" { return Err("`{ty.show(t)}` は ref なので、ほかのスレッドへは渡せません"); }
+        if k == "Fn" { return Err("関数の値は、ほかのスレッドへは渡せません"); }
+        if k == "Param" { return Err("型の引数 `{ty.name_of(t)}` は ref かもしれないので、ほかのスレッドへは渡せません"); }
+        if k == "Iface" { return Err("interface `{ty.name_of(t)}` の中身は分からないので、ほかのスレッドへは渡せません"); }
+        if k == "Own" || k == "Array" || k == "List" || k == "Task" {
+            let x = ty.inner(t);
+            return sendable(x, seen);
+        }
+        if k == "Map" {
+            let kt = ty.map_key(t);
+            sendable(kt, seen)?;
+            let vt = ty.inner(t);
+            return sendable(vt, seen);
+        }
+        let key = ty.show(t);
+        if has(seen, key) { return Ok(()); }
+        seen.push(key);
+        let ty.Ty[] mut inside = [];
+        let argv = ty.args_of(t);
+        if k == "Struct" {
+            let d = s_at[ty.name_of(t)];
+            let m = ty.targs(sdefs[d].tparams, argv);
+            for x in sdefs[d].tys { inside.push(ty.subst(x, m)); }
+        } else {
+            for v in variants_of(t) {
+                for x in v.tys { inside.push(ty.cl(x)); }
+            }
+        }
+        for x in inside {
+            match sendable(x, seen) {
+                case Ok(u) -> {}
+                case Err(why) -> return Err("`{ty.show(t)}` の中: {why}");
+            }
+        }
+        Ok(())
+    }
+
+    fn Result<(), diag.Diag> require_sendable(ref ty.Ty t, i64 span, str what) {
+        let str[] mut seen = [];
+        match sendable(t, ref mut seen) {
+            case Ok(u) -> Ok(());
+            case Err(why) -> Err(diag.make("{what}に `{ty.show(t)}` は使えません")
+                .at(span, why)
+                .with_note("スレッドに渡せるのは own とコピーできる値（数・文字列・構造体など、中に ref のないもの）だけです"));
+        }
+    }
+
+    /// 値として読んだときにコピーされる型か（own や構造体を中に持ちうるならムーブ）
+    fn bool copyable(ref ty.Ty t) {
+        let k = ty.tag(t);
+        if k == "Int" || k == "Float" || k == "Bool" || k == "Str" || k == "Ref" || k == "Unit" || k == "Never" || k == "Chan" { return true; }
+        if k == "Array" {
+            let x = ty.inner(t);
+            return copyable(x);
+        }
+        if k == "Enum" {
+            for v in variants_of(t) {
+                for x in v.tys {
+                    if !copyable(x) { return false; }
+                }
+            }
+            return true;
+        }
+        false
+    }
+
+    /// 値の大きさ（8 バイトの数で数えたおよその数。CELLS_CAP で頭打ち）。types.rs の `cells` と同じ数え方
+    fn i64 cells(ref ty.Ty t, i64 depth) {
+        if depth > 32 { return 1; }
+        let k = ty.tag(t);
+        if k == "Array" {
+            return cap_mul(cap_u64(ty.arr_len(t)), cells(ty.inner(t), depth + 1));
+        }
+        if k == "Struct" {
+            let d = s_at[ty.name_of(t)];
+            let m = ty.targs(sdefs[d].tparams, ty.args_of(t));
+            let mut sum = 0;
+            for f in sdefs[d].tys { sum = cap_add(sum, cells(ty.subst(f, m), depth + 1)); }
+            return if sum > 1 { sum } else { 1 };
+        }
+        if k == "Enum" {
+            if !edefs[e_at[ty.name_of(t)]].ready { return 1; }
+            let mut most = 0;
+            for v in variants_of(t) {
+                let mut sum = 0;
+                for f in v.tys { sum = cap_add(sum, cells(f, depth + 1)); }
+                if sum > most { most = sum; }
+            }
+            return cap_add(most, 1);
+        }
+        1
+    }
+
+    /// 固定長の配列は 1 MiB まで（値なので、実行ファイルではスタックに置く）
+    fn Result<(), diag.Diag> check_size(ref ty.Ty t, i64 s) {
+        if ty.is(t, "Array") && cells(t, 0) > ARRAY_CELLS {
+            return Err(diag.make("配列が大きすぎます")
+                .at(s, "`{ty.show(t)}` は 1 MiB を超える")
+                .with_note("固定長の配列は 1 MiB まで（値なので、実行ファイルではスタックに置きます）。大きいものはリスト（`i64[]` など）にしてください"));
+        }
+        Ok(())
+    }
+
+    /// enum の種類の一覧（型の引数は置き換え済み）。enum でなければ空
+    fn VInfo[] variants_of(ref ty.Ty t) {
+        let VInfo[] mut out = [];
+        if !ty.is(t, "Enum") { return out; }
+        let d = e_at[ty.name_of(t)];
+        let argv = ty.args_of(t);
+        let m = ty.targs(edefs[d].tparams, argv);
+        for v in edefs[d].vs {
+            out.push(VInfo { name: v.name, tys: ty.substs(v.tys, m) });
+        }
+        out
+    }
+
+    // ------------------------------------------------ 型の引数を決める
+
+    /// 型の引数を決めながら、引数（や中身）を調べる。`pre_p` / `pre_h` は先に見比べる (型, 入れる先の型) の組。
+    /// 引数は `argv`、`use_inits` なら構造体の値の `inits` の値
+    fn mut Result<ty.TMap, diag.Diag> instantiate(ref str[] tparams, ref ty.Ty[] params, ref ast.Expr[] argv, ref ast.FieldInit[] inits,
+            bool use_inits, ref ty.Ty[] pre_p, ref ty.Ty[] pre_h, bool auto_ref) {
+        let mut m = ty.tmap();
+        for (i, p) in pre_p { ty.unify(p, pre_h[i], tparams, ref mut m); }
+        let n = if use_inits { inits.len() } else { argv.len() };
+        let bool[] mut done = [];
+        let ty.Ty[] mut got = [];
+        for i in range(n) {
+            done.push(false);
+            got.push(ty.Ty.Unit);
+        }
+        // 0: ふつうの式、1: 数の式、2: `None` など enum の値とクロージャ（中身の型を相手に合わせたいもの）
+        for pass in range(3) {
+            for i in range(n) {
+                if i >= params.len() { continue; }
+                let order = if use_inits { arg_order(inits[i].value) } else { arg_order(argv[i]) };
+                if done[i] || order != pass { continue; }
+                let p = ref params[i];
+                let is_lambda = if use_inits { is_lambda_expr(inits[i].value) } else { is_lambda_expr(argv[i]) };
+                let mut h = none();
+                if !ty.has_unbound(p, tparams, m) {
+                    h = hint_of(ty.subst(p, m));
+                } else if ty.is(p, "Fn") && is_lambda {
+                    // クロージャの引数の型だけ決まっていれば、それを渡す（戻り値の型は本体から決まる。`Never` は「分からない」）
+                    let ps = ty.fn_params(p);
+                    if !ty.any_unbound(ps, tparams, m) {
+                        h = hint_of(ty.Ty.Fn(own ty.substs(ps, m), own ty.Ty.Never));
+                    }
+                }
+                if auto_ref && h.some && !use_inits { h = hint_of(arg_hint(argv[i], ty.cl(h.t))); }
+                let t0 = if use_inits { expr_h(inits[i].value, h)? } else { expr_h(argv[i], h)? };
+                let is_unit_kind = if use_inits { is_unit_expr(inits[i].value) } else { is_unit_expr(argv[i]) };
+                if ty.is(t0, "Unit") && !is_unit_kind {
+                    let sp = if use_inits { inits[i].value.span } else { argv[i].span };
+                    return Err(diag.make("値のない式です").at(sp, "これは値を返さない"));
+                }
+                let t1 = if !auto_ref { t0 } else if use_inits { auto_borrow(inits[i].value, t0, p)? } else { auto_borrow(argv[i], t0, p)? };
+                ty.unify(p, t1, tparams, ref mut m);
+                got[i] = t1;
+                done[i] = true;
+            }
+        }
+        for i in range(n) {
+            if i >= params.len() { continue; }
+            let p = ref params[i];
+            if ty.has_unbound(p, tparams, m) { continue; }
+            let want = ty.subst(p, m);
+            let id = if use_inits { inits[i].value.id } else { argv[i].id };
+            if !fits(got[i], want) {
+                let sp = if use_inits { inits[i].value.span } else { argv[i].span };
+                return Err(mismatch(want, got[i], sp));
+            }
+            convert(id, got[i], want);
+        }
+        pending = ty.clone_map(m);
+        has_pending = true;
+        Ok(m)
+    }
+
+    /// 型の引数がすべて決まったか
+    fn Result<ty.Ty[], diag.Diag> all_bound(ref str[] tparams, ref ty.TMap m, i64 span, str what) {
+        let ty.Ty[] mut out = [];
+        for p in tparams {
+            if !m.has(p) {
+                return Err(diag.make("{what} の型の引数 `{p}` が決まりません")
+                    .at(span, "何の型か分からない")
+                    .with_note("`let Option<i64> x = None;` のように、入れる先の型を書いてください"));
+            }
+            out.push(m.get(p));
+        }
+        Ok(out)
+    }
+
+    // ------------------------------------------------ enum
+
+    /// `Shape.Circle(5)` / `Some(x)` / `None` の型
+    fn mut Result<ty.Ty, diag.Diag> variant_expr(ref ast.Expr e, str en, str vn, ref ast.Expr[] argv, ref Hint hint) {
+        let d = e_at[en];
+        let mut vi = -1;
+        for (i, v) in edefs[d].vs {
+            if v.name == vn { vi = i; }
+        }
+        if vi < 0 {
+            let str[] mut names = [];
+            for v in edefs[d].vs { names.push(v.name); }
+            let names_s = names.join(", ");
+            return Err(diag.make("`{en}` に種類 `{vn}` はありません")
+                .at(e.span, "この種類は定義されていません")
+                .with_note("`{en}` の種類: {names_s}"));
+        }
+        let params = ty.cls(edefs[d].vs[vi].tys);
+        if argv.len() != params.len() {
+            return Err(arity_error(en + "." + vn, params.len(), argv.len(), e.span));
+        }
+        let tparams = edefs[d].tparams.map((p) -> p);
+        let ty.Ty[] mut gargs = [];
+        for p in tparams { gargs.push(ty.Ty.Param(p)); }
+        let ty.Ty[] mut pre_p = [];
+        let ty.Ty[] mut pre_h = [];
+        if hint_is(hint, "Enum") && ty.name_of(hint.t) == en {
+            pre_p.push(ty.Ty.Enum(en, own gargs));
+            pre_h.push(ty.cl(hint.t));
+        }
+        let ast.FieldInit[] no_inits = [];
+        let m = instantiate(tparams, params, argv, no_inits, false, pre_p, pre_h, false)?;
+        let targs = match all_bound(tparams, m, e.span, en) {
+            case Ok(ts) -> ts;
+            case Err(d2) -> {
+                if en == "Option" {
+                    return Err(diag.make("{vn} の型が決まりません")
+                        .at(e.span, "何の Option か分からない")
+                        .with_note("`let Option<i64> x = None;` のように型を書いてください"));
+                }
+                return Err(d2);
+            }
+        };
+        let t = ty.Ty.Enum(en, own targs);
+        // 型の引数を含む（ジェネリックな関数の中）なら、実行時に中身を見て決める
+        info.copies[e.id] = if ty.contains_kind(t, "Param") { -1 } else if copyable(t) { 1 } else { 0 };
+        Ok(t)
+    }
+
+    /// enum（または Option）の match。全部の種類を書いたかも調べる
+    fn mut Result<ty.Ty, diag.Diag> match_enum(ref ast.Expr e, ref ty.Ty st, ref ast.MatchArm[] arms, bool has_default,
+            ref ast.Block dflt, bool want_value, ref Hint hint) {
+        // `match x`（値）か `match ref x` / ref の変数（借りる）か
+        let by_ref = ty.is(st, "Ref");
+        let by_mut = ty.ref_mut(st);
+        let ety = if ty.has_pointee(st) { ty.inner(st) } else { ty.cl(st) };
+        let variants = variants_of(ety);
+        let ty.Ty[] mut tys = [];
+        let i64[] mut spans = [];
+        let i64[] mut tails = [];
+        let mut h = copy_hint(hint);
+        for arm in arms {
+            scopes.push(new_scope());
+            let r1 = match_arm(ety, by_ref, by_mut, arm);
+            let r = match r1 {
+                case Ok(u) -> block(arm.body, want_value, h);
+                case Err(d) -> Err(d);
+            };
+            scopes.pop();
+            let t = r?;
+            // `case Some(x) -> Some(x); case None -> None;` の None の型を前の case から決める
+            if !h.some && ty.is(t, "Enum") && ty.args_of(t).len() > 0 {
+                h = hint_of(ty.cl(t));
+            }
+            tys.push(t);
+            spans.push(tail_span(arm.body));
+            tails.push(tail_id(arm.body));
+        }
+        if has_default {
+            tys.push(block(dflt, want_value, h)?);
+            spans.push(tail_span(dflt));
+            tails.push(tail_id(dflt));
+        } else {
+            let ast.Pat[] mut pats = [];
+            for a in arms {
+                for p in a.pats { pats.push(ast.clone_pat(p)); }
+            }
+            let str[] mut missing = [];
+            for v in variants {
+                if !variant_covered(ety, v.name, pats) { missing.push(v.name); }
+            }
+            if missing.len() > 0 {
+                let mut partly = false;
+                for mm in missing {
+                    for p in pats {
+                        if pat_variant(p) == mm { partly = true; }
+                    }
+                }
+                let note = if partly {
+                    "重ねた形で一部だけ書いた種類があります。`case Some(x) -> ...` のように残りを受ける case か、`default -> ...` を足してください"
+                } else {
+                    "case を足すか、`default -> ...` でまとめてください"
+                };
+                let missing_s = missing.join("・");
+                return Err(diag.make("match で {missing_s} の場合が書かれていません")
+                    .at(e.span, "`{ty.show(ety)}` の種類をすべて書く必要がある")
+                    .with_note(note));
+            }
+        }
+        join(tys, spans, tails, -1, want_value, "match", h)
+    }
+
+    /// enum の case 1 つ分。受け取る名前を今のスコープに置く
+    fn mut Result<(), diag.Diag> match_arm(ref ty.Ty ety, bool by_ref, bool by_mut, ref ast.MatchArm arm) {
+        let several = arm.pats.len() > 1;
+        for (i, pat) in arm.pats {
+            if several {
+                let bs = first_bind(pat);
+                if bs >= 0 {
+                    return Err(diag.make("種類をまとめた case では中身を受け取れません")
+                        .at(bs, "ここ")
+                        .with_note("case を分けるか、`_` にしてください"));
+                }
+            }
+            variant_pat(ety, by_ref, by_mut, pat, arm.spans[i])?;
+        }
+        Ok(())
+    }
+
+    /// enum の種類の形 1 つ（重ねた形の中も）。受け取る名前を今のスコープに置く
+    fn mut Result<(), diag.Diag> variant_pat(ref ty.Ty ety, bool by_ref, bool by_mut, ref ast.Pat pat, i64 span) {
+        match ref pat {
+            case Variant(name, binds, bspans, has_sub, subs) -> {
+                let variants = variants_of(ety);
+                let mut vi = -1;
+                for (i, v) in variants {
+                    if vi < 0 && v.name == name { vi = i; }
+                }
+                if vi < 0 {
+                    let str[] mut names = [];
+                    for v in variants { names.push(v.name); }
+                    let names_s = names.join(", ");
+                    return Err(diag.make("`{ty.show(ety)}` に種類 `{name}` はありません")
+                        .at(span, "この種類はない")
+                        .with_note("種類: {names_s}"));
+                }
+                let fields = ref variants[vi].tys;
+                if binds.len() != fields.len() {
+                    return Err(diag.make("`{name}` の中身の数が違います")
+                        .at(span, "中身は {fields.len()} 個ですが、{binds.len()} 個の名前が書かれています")
+                        .with_note("受け取らない中身には `_` と書いてください"));
+                }
+                for (i, b) in binds {
+                    let ft = ref fields[i];
+                    if has_sub[i] {
+                        sub_pat(ft, by_ref, by_mut, subs[i], bspans[i])?;
+                        continue;
+                    }
+                    if b == "_" { continue; }
+                    let t = if !by_ref || copyable(ft) {
+                        ty.cl(ft)
+                    } else if ty.is(ft, "Own") {
+                        ty.Ty.Ref(own ty.inner(ft), by_mut)
+                    } else {
+                        return Err(diag.make("借りて match するとき、この中身は受け取れません")
+                            .at(bspans[i], "中身は `{ty.show(ft)}`（own を通さずに持つ値）")
+                            .with_note("中身を `own` で持たせるか、`_` で受け取らないでください"));
+                    };
+                    declare(b, VarInfo { t: t, m: false, decl: bspans[i] })?;
+                }
+                Ok(())
+            }
+            default -> Err(diag.make("enum の match の case には種類の名前を書きます")
+                .at(span, "`{ty.show(ety)}` の種類ではない"));
+        }
+    }
+
+    /// 中身の位置に重ねて書いた形（`Some(Op(op))` の `Op(op)`、`Some(0)` の `0`）
+    fn mut Result<(), diag.Diag> sub_pat(ref ty.Ty ft, bool by_ref, bool by_mut, ref ast.Pat sub, i64 span) {
+        let mut lit = true;
+        let mut lt = ty.Ty.Unit;
+        match ref sub {
+            case Int(neg, v) -> {
+                let it = ty.int_of(ft);
+                if it != "" {
+                    let c = ty.cv(neg, v);
+                    if !ty.contains(it, c) { return Err(out_of_range(c, it, span)); }
+                    lt = ty.cl(ft);
+                } else {
+                    lt = ty.i64t();
+                }
+            }
+            case Bool(b) -> lt = ty.Ty.Bool;
+            case Str(s) -> lt = ty.Ty.Str;
+            case Variant(n, b, s, h, x) -> lit = false;
+        }
+        if lit {
+            if !ty.eq(lt, ft) {
+                return Err(diag.make("case の値と中身の型が合いません").at(span, "中身は `{ty.show(ft)}`、この形は `{ty.show(lt)}`"));
+            }
+            return Ok(());
+        }
+        let own_enum = ty.is(ft, "Own") && ty.is(ty.inner(ft), "Enum");
+        let target = if ty.is(ft, "Enum") {
+            ty.cl(ft)
+        } else if own_enum && by_ref {
+            // 借りた match なら own の先も重ねて書ける（中身はやはり借りて受け取る）
+            ty.inner(ft)
+        } else if own_enum {
+            return Err(diag.make("値の match では、own の中に形を重ねられません")
+                .at(span, "中身は `{ty.show(ft)}`")
+                .with_note("`match ref x` で借りて match すれば重ねて書けます"));
+        } else {
+            return Err(diag.make("この中身には形を重ねられません")
+                .at(span, "中身は `{ty.show(ft)}`（enum でも数・真偽値・文字列でもない）"));
+        };
+        variant_pat(target, by_ref, by_mut, sub, span)
+    }
+
+    /// 種類 `variant` が、case の形 `pats` のどれかに必ず当たるか
+    fn bool variant_covered(ref ty.Ty ety, str variant, ref ast.Pat[] pats) {
+        let ast.Pat[] mut mine = [];
+        for p in pats {
+            if pat_variant(p) == variant { mine.push(ast.clone_pat(p)); }
+        }
+        for p in mine {
+            if is_flat(p) { return true; }
+        }
+        let variants = variants_of(ety);
+        let mut vi = -1;
+        for (i, v) in variants {
+            if vi < 0 && v.name == variant { vi = i; }
+        }
+        if vi < 0 { return false; }
+        // どの形も同じ 1 か所だけ重ねているなら、その位置の形をまとめて調べる
+        for (k, ft) in variants[vi].tys {
+            let mut only_k = true;
+            for p in mine {
+                match ref p {
+                    case Variant(n, b, s, has_sub, subs) -> {
+                        for (i, hs) in has_sub {
+                            if hs && i != k { only_k = false; }
+                        }
+                    }
+                    default -> only_k = false;
+                }
+            }
+            if !only_k { continue; }
+            let ast.Pat[] mut at_k = [];
+            for p in mine {
+                match ref p {
+                    case Variant(n, b, s, has_sub, subs) -> {
+                        if k < has_sub.len() && has_sub[k] { at_k.push(ast.clone_pat(subs[k])); }
+                    }
+                    default -> {}
+                }
+            }
+            return pats_cover(ft, at_k);
+        }
+        false
+    }
+
+    /// 型 `t` の値が、形 `pats` のどれかに必ず当たるか
+    fn bool pats_cover(ref ty.Ty t0, ref ast.Pat[] pats) {
+        let t = if ty.is(t0, "Own") { ty.inner(t0) } else { ty.cl(t0) };
+        if ty.is(t, "Bool") {
+            let mut a = false;
+            let mut b = false;
+            for p in pats {
+                if pat_is_bool(p, true) { a = true; }
+                if pat_is_bool(p, false) { b = true; }
+            }
+            return a && b;
+        }
+        if ty.is(t, "Enum") {
+            for v in variants_of(t) {
+                if !variant_covered(t, v.name, pats) { return false; }
+            }
+            return true;
+        }
+        false
+    }
+
+    // ------------------------------------------------ 関数
+
+    fn mut Result<(), diag.Diag> check_fn(ref ast.FnDef f) {
+        let si = f_at[f.name];
+        // `geom.area` / `geom.Point.len` は geom の中の関数
+        cur_mod = "";
+        for m in mods {
+            if cur_mod == "" && f.name.len() > m.len() && f.name.starts_with(m + ".") { cur_mod = m; }
+        }
+        cur_ret = ty.cl(sigs[si].ret);
+        if info.ret_at.contains(f.name) {
+            info.ret_tys[info.ret_at[f.name]] = ty.cl(sigs[si].ret);
+        } else {
+            info.ret_at[f.name] = info.ret_names.len();
+            info.ret_names.push(f.name);
+            info.ret_tys.push(ty.cl(sigs[si].ret));
+        }
+        cur_tps = f.tparams.map((x) -> x);
+        b_names = f.tparams.map((x) -> x);
+        b_vals = f.bounds.map((x) -> x);
+        cur_fields = [];
+        let dot = last_dot(f.name);
+        if sigs[si].method && dot >= 0 {
+            let owner = f.name.slice(0, dot);
+            if is_struct(owner) { cur_fields = sdefs[s_at[owner]].fields.map((x) -> x); }
+        }
+        let mut params = new_scope();
+        for (i, p) in f.params {
+            if params.find(p.name) >= 0 {
+                return Err(diag.make("引数 `{p.name}` が二回あります").at(p.span, "同じ名前の引数がすでにある"));
+            }
+            not_a_field(p.name, p.span)?;
+            not_a_fn_name(p.name, p.span)?;
+            let t = ty.cl(sigs[si].params[i]);
+            record_var(p.span, t);
+            params.names.push(p.name);
+            params.vars.push(VarInfo { t: t, m: p.m, decl: p.span });
+        }
+        scopes = [params];
+        let ret = ty.cl(cur_ret);
+        let wants = !ty.is(ret, "Unit");
+        let rh = hint_of(ty.cl(ret));
+        let got = block(f.body, wants, rh)?;
+        if wants && !fits(got, ret) {
+            if ty.is(got, "Unit") {
+                return Err(diag.make("値を返さないまま関数が終わる道があります")
+                    .at(f.body.end, "ここで終わるが、`{ty.show(ret)}` の値を返していない")
+                    .with_note("最後に `;` のない式を書くか、`return 値;` で返してください"));
+            }
+            let n = f.body.stmts.len();
+            let mut sp = f.body.end;
+            if n > 0 {
+                match ref f.body.stmts[n - 1] {
+                    case Ex(e) -> sp = e.span;
+                    default -> {}
+                }
+            }
+            return Err(mismatch(ret, got, sp));
+        }
+        convert(tail_id(f.body), got, ret);
+        Ok(())
+    }
+
+    // ------------------------------------------------ 変数
+
+    /// 変数がどのスコープにあるか（外から数えた位置。なければ -1）
+    fn i64 var_index(str name) {
+        let mut i = scopes.len() - 1;
+        while i >= 0 {
+            if scopes[i].find(name) >= 0 { return i; }
+            i -= 1;
+        }
+        -1
+    }
+
+    fn Option<VarInfo> lookup(str name) {
+        let i = var_index(name);
+        if i < 0 { return None; }
+        Some(copy_var(scopes[i].vars[scopes[i].find(name)]))
+    }
+
+    /// 変数を宣言する。シャドーイングは禁止なので、見えている名前と同じならエラー
+    fn mut Result<(), diag.Diag> declare(str name, VarInfo v) {
+        match lookup(name) {
+            case Some(old) -> return Err(diag.make("`{name}` はすでにある名前です")
+                .also(old.decl, "ここで宣言した")
+                .at(v.decl, "同じ名前で宣言し直している")
+                .with_note("シャドーイング（同じ名前で宣言し直すこと）はできません。別の名前をつけてください"));
+            case None -> {}
+        }
+        not_a_field(name, v.decl)?;
+        not_a_fn_name(name, v.decl)?;
+        record_var(v.decl, v.t);
+        let last = scopes.len() - 1;
+        scopes[last].names.push(name);
+        scopes[last].vars.push(v);
+        Ok(())
+    }
+
+    /// 変数に関数と同じ名前はつけられない（`f(x)` がどちらの呼び出しか分からなくなるため）
+    fn Result<(), diag.Diag> not_a_fn_name(str name, i64 span) {
+        let full = if cur_mod != "" { cur_mod + "." + name } else { name };
+        if has(cnames, full) {
+            return Err(diag.make("`{name}` は定数の名前です")
+                .at(span, "変数や引数に、定数と同じ名前はつけられない")
+                .with_note("別の名前をつけてください"));
+        }
+        if has(mods, name) {
+            return Err(diag.make("`{name}` はモジュールの名前です")
+                .at(span, "変数や引数に、モジュールと同じ名前はつけられない")
+                .with_note("別の名前をつけてください"));
+        }
+        // モジュールの中では、モジュール名をつける前の関数の名前も同じ
+        let in_module = cur_mod != "" && is_fn(cur_mod + "." + name);
+        if is_fn(name) || in_module || is_builtin(name) {
+            return Err(diag.make("`{name}` は関数の名前です")
+                .at(span, "変数や引数に、関数と同じ名前はつけられない")
+                .with_note("別の名前をつけてください"));
+        }
+        Ok(())
+    }
+
+    /// メソッドの中では、フィールドと同じ名前の引数や変数を作れない
+    fn Result<(), diag.Diag> not_a_field(str name, i64 span) {
+        if has(cur_fields, name) {
+            return Err(diag.make("`{name}` はフィールドの名前です")
+                .at(span, "メソッドの中では、フィールドと同じ名前の引数や変数を作れない")
+                .with_note("フィールドは `{name}` のまま使えます。引数や変数には別の名前をつけてください"));
+        }
+        Ok(())
+    }
+
+    /// 式の中で変数を使う。クロージャの外の変数なら、そのクロージャが取り込むものとして覚える
+    fn mut Option<VarInfo> use_var(str name) {
+        let i = var_index(name);
+        if i < 0 { return None; }
+        let mut v = copy_var(scopes[i].vars[scopes[i].find(name)]);
+        for k in range(lstack.len()) {
+            if i >= lstack[k].base { continue; }
+            let borrow = lstack[k].borrows && borrowable(v.t);
+            if borrow {
+                v.t = if ty.is(v.t, "Own") { ty.Ty.Ref(own ty.inner(v.t), false) } else { ty.Ty.Ref(own ty.cl(v.t), false) };
+            }
+            if !has(lstack[k].caps, name) {
+                lstack[k].caps.push(name);
+                lstack[k].borrowed.push(borrow);
+            }
+        }
+        Some(v)
+    }
+
+    /// 引数に書いたクロージャが、取り込むときに借りる型か
+    fn bool borrowable(ref ty.Ty t) {
+        !copyable(t) && !ty.is(t, "Fn") && !ty.is(t, "Task")
+    }
+
+    /// 今いるクロージャが取り込んだ（外の）変数か
+    fn bool is_captured(str name) {
+        let i = var_index(name);
+        let n = lstack.len();
+        i >= 0 && n > 0 && i < lstack[n - 1].base
+    }
+
+    // ------------------------------------------------ クロージャ
+
+    fn bool borrows_at(i64 span) { borrow_spans.map((x) -> x == span).len() > 0 && has_span(borrow_spans, span) }
+
+    /// `(a, b) -> 本体`。引数の型は書いてあればそれ、なければ入れる先の関数の型（`hint`）から決める
+    fn mut Result<ty.Ty, diag.Diag> lambda(ref ast.Expr e, ref ast.Lambda l, ref Hint hint) {
+        let mut has_hps = false;
+        let ty.Ty[] mut hps = [];
+        let mut hret = none();
+        if hint_is(hint, "Fn") && ty.fn_params(hint.t).len() == l.params.len() {
+            has_hps = true;
+            hps = ty.fn_params(hint.t);
+            let r = ty.inner(hint.t);
+            // 戻り値が Never の手がかりは「引数の型だけ分かっている」（`a.map(f)`）
+            if !ty.is(r, "Never") { hret = hint_of(r); }
+        }
+        let ty.Ty[] mut ptys = [];
+        for (i, p) in l.params {
+            if p.has_ty {
+                ptys.push(resolve(p.ty)?);
+            } else if has_hps {
+                ptys.push(ty.cl(hps[i]));
+            } else {
+                return Err(diag.make("クロージャの引数 `{p.name}` の型が分かりません")
+                    .at(p.span, "型を決める手がかりがない")
+                    .with_note("`(i64 a) -> ...` のように型を書くか、関数の型が決まっている場所（引数など）で使ってください"));
+            }
+        }
+        let base = scopes.len();
+        lstack.push(LambdaScope { base: base, caps: [], borrowed: [], borrows: has_span(borrow_spans, e.span) });
+        scopes.push(new_scope());
+        let saved_ret = ty.cl(cur_ret);
+        cur_ret = if hret.some { ty.cl(hret.t) } else { ty.Ty.Never };
+        let r = lambda_body(l, ptys, hret);
+        cur_ret = saved_ret;
+        while scopes.len() > base { scopes.pop(); }
+        let mut li = LamInfo { caps: [], borrowed: [], returns: false };
+        match lstack.pop() {
+            case Some(sc) -> {
+                let mut s2 = sc;
+                li.caps = s2.caps.drain();
+                li.borrowed = s2.borrowed.drain();
+            }
+            case None -> {}
+        }
+        if info.lam_at[e.id] < 0 {
+            info.lam_at[e.id] = info.lams.len();
+            info.lams.push(li);
+        } else {
+            let at = info.lam_at[e.id];
+            let returns = info.lams[at].returns;
+            li.returns = returns;
+            info.lams[at] = li;
+        }
+        let rt = r?;
+        info.lams[info.lam_at[e.id]].returns = !ty.is(rt, "Unit");
+        Ok(ty.Ty.Fn(own ptys, own rt))
+    }
+
+    /// クロージャの本体を調べて、戻り値の型を返す
+    fn mut Result<ty.Ty, diag.Diag> lambda_body(ref ast.Lambda l, ref ty.Ty[] ptys, ref Hint ret) {
+        for (i, p) in l.params {
+            declare(p.name, VarInfo { t: ty.cl(ptys[i]), m: false, decl: p.span })?;
+        }
+        if !ret.some {
+            // 戻り値の型は本体の最後の式から決める（この場合 return は使えない）
+            let nh = none();
+            let got = block(l.body, true, nh)?;
+            return Ok(if ty.is(got, "Never") { ty.Ty.Unit } else { got });
+        }
+        if ty.is(ret.t, "Unit") {
+            let nh2 = none();
+            block(l.body, false, nh2)?;
+            return Ok(ty.Ty.Unit);
+        }
+        let got2 = block(l.body, true, ret)?;
+        if !fits(got2, ret.t) {
+            let tid = tail_id(l.body);
+            let sp = if tid >= 0 { tail_span(l.body) } else { l.body.end };
+            return Err(mismatch(ret.t, got2, sp));
+        }
+        convert(tail_id(l.body), got2, ret.t);
+        Ok(ty.cl(ret.t))
+    }
+
+    /// 関数の値（変数 `name` の型 `t`）を呼ぶ
+    fn mut Result<ty.Ty, diag.Diag> call_value(str name, ref ty.Ty t, ref ast.Expr[] argv, i64 span) {
+        let f = if ty.is(t, "Fn") {
+            ty.cl(t)
+        } else if ty.has_pointee(t) && ty.is(ty.inner(t), "Fn") {
+            ty.inner(t)
+        } else {
+            return Err(diag.make("`{name}` は関数ではありません").at(span, "`{name}` は `{ty.show(t)}` です"));
+        };
+        let ps = ty.fn_params(f);
+        let ret = ty.inner(f);
+        if argv.len() != ps.len() {
+            return Err(arity_error(name, ps.len(), argv.len(), span));
+        }
+        for (i, a) in argv {
+            let h = hint_of(arg_hint(a, ty.cl(ps[i])));
+            let got = expr_h(a, h)?;
+            let got2 = auto_borrow(a, got, ps[i])?;
+            if !fits(got2, ps[i]) { return Err(mismatch(ps[i], got2, a.span)); }
+            convert(a.id, got2, ps[i]);
+        }
+        Ok(ret)
+    }
+
+    // ------------------------------------------------ ブロックと文
+
+    /// ブロックの型。`want_value` なら最後の `;` のない式の型（なければ値なし）。途中で必ず抜けるなら Never
+    fn mut Result<ty.Ty, diag.Diag> block(ref ast.Block b, bool want_value, ref Hint hint) {
+        scopes.push(new_scope());
+        let r = block_inner(b, want_value, hint);
+        scopes.pop();
+        r
+    }
+
+    fn mut Result<ty.Ty, diag.Diag> block_inner(ref ast.Block b, bool want_value, ref Hint hint) {
+        let mut diverges = false;
+        let n = b.stmts.len();
+        for (i, s) in b.stmts {
+            if want_value && b.tail && i + 1 == n {
+                match ref s {
+                    case Ex(e) -> {
+                        let t = expr_ctx(e, true, hint)?;
+                        return Ok(if diverges { ty.Ty.Never } else { t });
+                    }
+                    default -> {}
+                }
+            }
+            if stmt(s)? { diverges = true; }
+        }
+        Ok(if diverges { ty.Ty.Never } else { ty.Ty.Unit })
+    }
+
+    /// 文を調べる。必ずそこで抜ける（return など）なら true
+    fn mut Result<bool, diag.Diag> stmt(ref ast.Stmt s) {
+        match ref s {
+            case Let(name, has_ty, te, m, span, init) -> {
+                let mut h = none();
+                if has_ty { h = hint_of(resolve(te)?); }
+                let got = expr_h(init, h)?;
+                if ty.is(got, "Unit") {
+                    return Err(diag.make("値のない式は変数に入れられません").at(init.span, "これは値を返さない"));
+                }
+                let t = if has_ty {
+                    if !fits(got, h.t) {
+                        return Err(mismatch(h.t, got, init.span).also(te.span, "ここで型を決めた"));
+                    }
+                    convert(init.id, got, h.t);
+                    ty.cl(h.t)
+                } else {
+                    got
+                };
+                declare(name, VarInfo { t: t, m: m, decl: span })?;
+                Ok(false)
+            }
+            case Assign(target, value, span) -> {
+                let want = expr(target)?;
+                let a = access(target)?;
+                require(a, target.span, "書き換えようとした")?;
+                expect(value, want)?;
+                Ok(false)
+            }
+            case Ex(e) -> {
+                let nh = none();
+                let t = expr_ctx(e, false, nh)?;
+                Ok(ty.is(t, "Never"))
+            }
+            case While(cond, body) -> {
+                expect(cond, ty.Ty.Bool)?;
+                let nh = none();
+                block(body, false, nh)?;
+                Ok(false)
+            }
+            case Loop(body) -> {
+                let nh = none();
+                block(body, false, nh)?;
+                Ok(find_break(body) < 0)
+            }
+            case For(var, rng, range_span, body, has_els, els) -> {
+                // 始めと終わりは同じ整数型にそろえる（それがループ変数の型）。刻みはいつも i64
+                let ends = if rng.len() < 2 { rng.len() } else { 2 };
+                let mut it = "";
+                for i in range(ends) {
+                    if is_const_tree(rng[i]) { continue; }
+                    let at_t = expr(rng[i])?;
+                    let at = ty.int_of(at_t);
+                    if at == "" {
+                        let w = ty.i64t();
+                        return Err(mismatch(w, at_t, rng[i].span));
+                    }
+                    if it == "" {
+                        it = at;
+                    } else {
+                        let c = ty.common(it, at);
+                        if c == "" {
+                            return Err(diag.make("range の始めと終わりの型が違います")
+                                .at(range_span, "`{it}` と `{at}`")
+                                .with_note("`as` で型をそろえてください"));
+                        }
+                        it = c;
+                    }
+                }
+                if it == "" { it = "i64"; }
+                let t = ty.Ty.Int(it);
+                for i in range(ends) { expect(rng[i], t)?; }
+                if rng.len() > 2 {
+                    let w = ty.i64t();
+                    expect(rng[2], w)?;
+                }
+                scopes.push(new_scope());
+                let r = match declare(var, VarInfo { t: ty.cl(t), m: false, decl: range_span }) {
+                    case Ok(u) -> {
+                        let nh = none();
+                        block(body, false, nh)
+                    }
+                    case Err(d) -> Err(d);
+                };
+                scopes.pop();
+                r?;
+                if has_els {
+                    let nh2 = none();
+                    block(els, false, nh2)?;
+                    warn_for_else(body);
+                }
+                Ok(false)
+            }
+            case ForEach(has_key, key, key_span, var, var_span, iter, body, has_els, els) -> {
+                let t = expr(iter)?;
+                // その場で作ったリスト（`a.drain()`・関数の戻り値）は、要素を値として受け取る
+                let consume = ty.is(t, "List") && !is_place(iter);
+                info.consumes[iter.id] = consume;
+                // 前の名前の型（リストなら添字、辞書ならキー）と、要素の型
+                let sq = seq_of(t);
+                let mt = map_of(t);
+                let mut kt = ty.i64t();
+                let mut elem = ty.Ty.Unit;
+                if sq.ok {
+                    elem = ty.cl(sq.elem);
+                } else if ty.is(mt, "Map") {
+                    if !has_key {
+                        return Err(diag.make("辞書は `for (k, v) in m` で回します")
+                            .at(var_span, "キーと値の 2 つの名前を書く")
+                            .with_note("キーだけなら `for k in m.keys()`"));
+                    }
+                    kt = ty.map_key(mt);
+                    elem = ty.inner(mt);
+                } else {
+                    return Err(diag.make("for で回せるのは配列・リスト・辞書です")
+                        .at(iter.span, "ここは `{ty.show(t)}` です")
+                        .with_note("数を回すなら `for i in range(10)` と書きます"));
+                }
+                let vt = if consume { elem } else { view_ty(elem) };
+                scopes.push(new_scope());
+                let Result<(), diag.Diag> mut r1 = Ok(());
+                if has_key { r1 = declare(key, VarInfo { t: kt, m: false, decl: key_span }); }
+                let r = match r1 {
+                    case Ok(u) -> {
+                        match declare(var, VarInfo { t: vt, m: false, decl: var_span }) {
+                            case Ok(u2) -> {
+                                let nh = none();
+                                block(body, false, nh)
+                            }
+                            case Err(d) -> Err(d);
+                        }
+                    }
+                    case Err(d) -> Err(d);
+                };
+                scopes.pop();
+                r?;
+                if has_els {
+                    let nh2 = none();
+                    block(els, false, nh2)?;
+                    warn_for_else(body);
+                }
+                Ok(false)
+            }
+            case Break(sp) -> Ok(true);
+            case Continue(sp) -> Ok(true);
+            case Return(has_value, value, span) -> {
+                let ret = ty.cl(cur_ret);
+                if ty.is(ret, "Never") {
+                    // 戻り値の型の手がかりがないクロージャ（戻り値は最後の式で決める）
+                    return Err(diag.make("このクロージャでは return を使えません")
+                        .at(span, "戻り値の型が決まっていない")
+                        .with_note("最後の式（`;` なし）で値を返すか、関数の型が決まっている場所で使ってください"));
+                }
+                if !has_value && !ty.is(ret, "Unit") {
+                    return Err(diag.make("return に値がありません").at(span, "この関数は `{ty.show(ret)}` を返します"));
+                }
+                if has_value && ty.is(ret, "Unit") {
+                    return Err(diag.make("値を返さない関数で値を return しています")
+                        .at(value.span, "この値の行き先がない")
+                        .with_note("値を返すなら `fn i64 f()` のように戻り値の型を書いてください"));
+                }
+                if has_value { expect(value, ret)?; }
+                Ok(true)
+            }
+        }
+    }
+
+    /// 型 `want` の場所で使う式。整数は欠けない変換なら自動で変換する
+    fn mut Result<(), diag.Diag> expect(ref ast.Expr e, ref ty.Ty want) {
+        let h = hint_of(ty.cl(want));
+        let got = expr_h(e, h)?;
+        if fits(got, want) {
+            convert(e.id, got, want);
+            Ok(())
+        } else {
+            Err(mismatch(want, got, e.span))
+        }
+    }
+
+    fn mut Result<ty.Ty, diag.Diag> expr(ref ast.Expr e) {
+        let nh = none();
+        expr_ctx(e, true, nh)
+    }
+
+    fn mut Result<ty.Ty, diag.Diag> expr_h(ref ast.Expr e, ref Hint hint) {
+        expr_ctx(e, true, hint)
+    }
+
+    /// 式の型。`want_value` が false なら、if / match は文として使われている（値を捨てる）
+    fn mut Result<ty.Ty, diag.Diag> expr_ctx(ref ast.Expr e, bool want_value, ref Hint hint) {
+        has_pending = false;
+        let t = expr_kind(e, want_value, hint)?;
+        // 同じ式を何度か調べることがある。最後に調べた結果を残す
+        info.has_ty[e.id] = true;
+        info.tys[e.id] = ty.cl(t);
+        let instantiates = match ref e.kind {
+            case Call(n, xs) -> true;
+            case MethodCall(r, n, xs) -> true;
+            case StructLit(n, xs) -> true;
+            case Variant(en, vn, xs) -> true;
+            default -> false;
+        };
+        if has_pending && instantiates {
+            if info.targ_at[e.id] < 0 {
+                info.targ_at[e.id] = info.targ_maps.len();
+                info.targ_maps.push(ty.clone_map(pending));
+            } else {
+                info.targ_maps[info.targ_at[e.id]] = ty.clone_map(pending);
+            }
+        }
+        has_pending = false;
+        Ok(t)
+    }
+
+    fn mut Result<ty.Ty, diag.Diag> expr_kind(ref ast.Expr e, bool want_value, ref Hint hint) {
+        if is_const_tree(e) {
+            if hint_is(hint, "Float") {
+                // 整数の書き方でも、小数の場所では小数として計算する
+                set_float_tree(e);
+                return Ok(ty.Ty.Float);
+            }
+            let it = if hint_is(hint, "Int") { ty.int_of(hint.t) } else { "i64" };
+            return const_expr(e, it);
+        }
+        match ref e.kind {
+            case Float(v) -> Ok(ty.Ty.Float);
+            case Try(x) -> try_expr(x, e.span, hint);
+            case Index(base, idx) -> {
+                let t = expr(base)?;
+                let mt = map_of(t);
+                if ty.is(mt, "Map") {
+                    let kt = ty.map_key(mt);
+                    expect(idx, kt)?;
+                    return Ok(ty.inner(mt));
+                }
+                index_value(idx)?;
+                let sq = seq_of(t);
+                if !sq.ok { return Err(not_an_array(t, base.span)); }
+                // リストの長さは実行するまで分からないので、定数の添字を調べるのは配列だけ
+                if !sq.has_len { return Ok(ty.cl(sq.elem)); }
+                if is_const_tree(idx) {
+                    match const_val(idx) {
+                        case Ok(v) -> {
+                            if v.neg || v.big || v.mag >= sq.len {
+                                let last = (sq.len as i64) - 1;
+                                return Err(diag.make("添字 {ty.cv_text(v)} は配列の範囲の外です")
+                                    .at(idx.span, "`{ty.show(t)}` の添字は 0〜{last} です"));
+                            }
+                        }
+                        case Err(x) -> {}
+                    }
+                }
+                Ok(ty.cl(sq.elem))
+            }
+            case ArrayLit(items) -> {
+                if hint_is(hint, "Map") && items.len() == 0 {
+                    // 入れる先が辞書なら、空の `[]` は空の辞書
+                    info.seqs[e.id] = "map";
+                    return Ok(ty.cl(hint.t));
+                }
+                if hint_is(hint, "List") {
+                    // 入れる先がリストなら、リストとして作る
+                    info.seqs[e.id] = "list";
+                    let w = ty.inner(hint.t);
+                    for x in items { expect(x, w)?; }
+                    return Ok(ty.Ty.List(own w));
+                }
+                if hint_is(hint, "Array") && ty.arr_len(hint.t) == items.len() as u64 {
+                    let w2 = ty.inner(hint.t);
+                    for x in items { expect(x, w2)?; }
+                    return Ok(ty.Ty.Array(own w2, items.len() as u64));
+                }
+                if items.len() == 0 {
+                    return Err(diag.make("空の配列の型が決まりません")
+                        .at(e.span, "要素の型が分からない")
+                        .with_note("`let i64[0] a = [];` のように型を書いてください"));
+                }
+                // 要素の型をそろえる（数の書き方は、ほかの要素に合わせる）
+                let bool[] mut done = [];
+                let ty.Ty[] mut tys = [];
+                let mut has_acc = false;
+                let mut acc = ty.Ty.Unit;
+                for x in items {
+                    if is_const_tree(x) {
+                        done.push(false);
+                        tys.push(ty.Ty.Unit);
+                        continue;
+                    }
+                    let t = value(x)?;
+                    if !has_acc {
+                        acc = ty.cl(t);
+                        has_acc = true;
+                    } else if ty.is(acc, "Int") {
+                        let c = if ty.is(t, "Int") { ty.common(ty.int_of(acc), ty.int_of(t)) } else { "" };
+                        if c == "" { return Err(mismatch(acc, t, x.span)); }
+                        acc = ty.Ty.Int(c);
+                    } else if !fits(t, acc) {
+                        return Err(mismatch(acc, t, x.span));
+                    }
+                    done.push(true);
+                    tys.push(t);
+                }
+                let elem = if has_acc { acc } else { ty.i64t() };
+                for (i, x) in items {
+                    if done[i] { convert(x.id, tys[i], elem); } else { expect(x, elem)?; }
+                }
+                let a = ty.Ty.Array(own elem, items.len() as u64);
+                check_size(a, e.span)?;
+                Ok(a)
+            }
+            case MapLit(kvs) -> {
+                let mut kt = ty.Ty.Unit;
+                let mut vt = ty.Ty.Unit;
+                if hint_is(hint, "Map") {
+                    kt = ty.map_key(hint.t);
+                    vt = ty.inner(hint.t);
+                } else {
+                    // 入れる先の型がなければ、最初の組から決める
+                    kt = value(kvs[0])?;
+                    vt = value(kvs[1])?;
+                    if !(ty.is(kt, "Int") || ty.is(kt, "Str") || ty.is(kt, "Bool")) {
+                        return Err(diag.make("`{ty.show(kt)}` は辞書のキーにできません").at(kvs[0].span, "キーにできるのは整数・str・bool だけ"));
+                    }
+                }
+                let mut i = 0;
+                while i + 1 < kvs.len() {
+                    expect(kvs[i], kt)?;
+                    expect(kvs[i + 1], vt)?;
+                    i += 2;
+                }
+                Ok(ty.Ty.Map(own kt, own vt))
+            }
+            case ArrayRepeat(x, n) -> {
+                let mut h = none();
+                if hint_is(hint, "Array") {
+                    h = hint_of(ty.inner(hint.t));
+                } else if hint_is(hint, "List") {
+                    info.lists[e.id] = true;
+                    h = hint_of(ty.inner(hint.t));
+                }
+                let t = if h.some {
+                    expect(x, h.t)?;
+                    ty.cl(h.t)
+                } else {
+                    value(x)?
+                };
+                if !copyable(t) {
+                    return Err(diag.make("`{ty.show(t)}` は複製できないので並べられません")
+                        .at(x.span, "own や構造体は 1 つしかない")
+                        .with_note("`[a, b, c]` のように 1 つずつ書いてください"));
+                }
+                if info.lists[e.id] {
+                    // リストの中身は 2^62 バイトまで（数の掛け算があふれないように）
+                    if cap_mul(cap_u64(n), cells(t, 0)) > LIST_CELLS {
+                        return Err(diag.make("リストが大きすぎます")
+                            .at(e.span, "{n} 個は作れない")
+                            .with_note("リストの中身は 2^62 バイトまで"));
+                    }
+                    return Ok(ty.Ty.List(own t));
+                }
+                let a = ty.Ty.Array(own t, n);
+                check_size(a, e.span)?;
+                Ok(a)
+            }
+            case Interp(parts) -> {
+                // print と同じく、どんな値でも文字にできる
+                for p in parts {
+                    match ref p {
+                        case Code(x) -> { value(x)?; }
+                        case Lit(s) -> {}
+                    }
+                }
+                Ok(ty.Ty.Str)
+            }
+            case Cast(x, te) -> {
+                let target = resolve(te)?;
+                if !(ty.is(target, "Int") || ty.is(target, "Float")) {
+                    return Err(diag.make("`as` で変換できるのは数の型（整数と f64）だけです")
+                        .at(te.span, "`{ty.show(target)}` は数の型ではありません"));
+                }
+                let got = expr(x)?;
+                if !(ty.is(got, "Int") || ty.is(got, "Float")) {
+                    return Err(diag.make("`as` で変換できるのは数（整数と f64）だけです").at(x.span, "ここは `{ty.show(got)}` です"));
+                }
+                Ok(target)
+            }
+            case Bool(b) -> Ok(ty.Ty.Bool);
+            case Unit -> Ok(ty.Ty.Unit);
+            case Str(s) -> Ok(ty.Ty.Str);
+            case Lambda(l) -> lambda(e, l, hint);
+            case Var(name) -> {
+                match use_var(name) {
+                    case Some(v) -> return Ok(ty.cl(v.t));
+                    case None -> {}
+                }
+                // 名前のある関数を値として使う（`v.sort_by(less)`）
+                if is_fn(name) {
+                    let si = f_at[name];
+                    if sigs[si].method || sigs[si].tparams.len() > 0 {
+                        return Err(diag.make("`{name}` は値として使えません")
+                            .at(e.span, "メソッドや型の引数のある関数は、まだ値にできない")
+                            .with_note("`(a) -> f(a)` のようにクロージャで包んでください"));
+                    }
+                    return Ok(ty.Ty.Fn(own ty.cls(sigs[si].params), own ty.cl(sigs[si].ret)));
+                }
+                Err(diag.make("未定義の変数 `{name}`").at(e.span, "この名前は見つかりません"))
+            }
+            case Own(x) -> {
+                let mut ih = none();
+                if hint_is(hint, "Own") { ih = hint_of(ty.inner(hint.t)); }
+                let t = expr_h(x, ih)?;
+                if ty.is(t, "Unit") {
+                    return Err(diag.make("値のない式です").at(x.span, "これは値を返さない"));
+                }
+                Ok(ty.Ty.Own(own t))
+            }
+            case Ref(x, m) -> {
+                if !is_place(x) {
+                    return Err(diag.make("借用できない式です")
+                        .at(x.span, "`ref` は変数か `*p` か `p.f` にだけ使えます")
+                        .with_note("`let x = own ...;` で変数に入れてから `ref x` としてください"));
+                }
+                let t = expr(x)?;
+                // own なら先を、ref なら同じ先を借りる。それ以外の値は、その場所そのものを借りる
+                let target = if ty.has_pointee(t) {
+                    ty.inner(t)
+                } else {
+                    let at = inside_map(x)?;
+                    if at >= 0 { return Err(map_borrow_error(at)); }
+                    ty.cl(t)
+                };
+                if m {
+                    // own を ref mut で借りるには持ち主が mut、ref から借り直すにはその ref が ref mut
+                    let o = origin(x);
+                    let a = access(x)?;
+                    let b = through(a, t, o, describe(x));
+                    require(b, e.span, "ref mut で借りようとした")?;
+                }
+                Ok(ty.Ty.Ref(own target, m))
+            }
+            case Deref(x) -> {
+                let t = expr(x)?;
+                if ty.has_pointee(t) { return Ok(ty.inner(t)); }
+                Err(diag.make("`*` でたどれるのは own と ref だけです").at(x.span, "ここは `{ty.show(t)}` です"))
+            }
+            case Field(base, name) -> {
+                let t = expr(base)?;
+                let st = if ty.is(t, "Struct") { ty.cl(t) } else if ty.has_pointee(t) { ty.inner(t) } else { ty.Ty.Unit };
+                if !ty.is(st, "Struct") { return Err(not_a_struct(t, base.span)); }
+                let d = s_at[ty.name_of(st)];
+                let fi = sdefs[d].field_index(name);
+                if fi < 0 { return Err(no_field(sdefs[d], name, e.span)); }
+                let argv = ty.args_of(st);
+                let m = ty.targs(sdefs[d].tparams, argv);
+                Ok(ty.subst(sdefs[d].tys[fi], m))
+            }
+            case StructLit(name, inits) -> {
+                if !is_struct(name) {
+                    return Err(diag.make("未定義の構造体 `{name}`").at(e.span, "この構造体は定義されていません"));
+                }
+                let d = s_at[name];
+                let bool[] mut seen = [];
+                for f in sdefs[d].fields { seen.push(false); }
+                let ty.Ty[] mut params = [];
+                for init in inits {
+                    let fi = sdefs[d].field_index(init.name);
+                    if fi < 0 { return Err(no_field(sdefs[d], init.name, init.span)); }
+                    if seen[fi] {
+                        return Err(diag.make("フィールド `{init.name}` が二回書かれています").at(init.span, "ここが二回目"));
+                    }
+                    seen[fi] = true;
+                    params.push(ty.cl(sdefs[d].tys[fi]));
+                }
+                let str[] mut missing = [];
+                for (i, f) in sdefs[d].fields {
+                    if !seen[i] { missing.push(f); }
+                }
+                if missing.len() > 0 {
+                    let missing_s = missing.join(", ");
+                    return Err(diag.make("`{name}` のフィールドが足りません").at(e.span, "{missing_s} がありません"));
+                }
+                let tparams = sdefs[d].tparams.map((p) -> p);
+                let ty.Ty[] mut gargs = [];
+                for p in tparams { gargs.push(ty.Ty.Param(p)); }
+                let ty.Ty[] mut pre_p = [];
+                let ty.Ty[] mut pre_h = [];
+                if hint_is(hint, "Struct") && ty.name_of(hint.t) == name {
+                    pre_p.push(ty.Ty.Struct(name, own gargs));
+                    pre_h.push(ty.cl(hint.t));
+                }
+                let ast.Expr[] no_args = [];
+                let m = instantiate(tparams, params, no_args, inits, true, pre_p, pre_h, false)?;
+                let targs = all_bound(tparams, m, e.span, name)?;
+                Ok(ty.Ty.Struct(name, own targs))
+            }
+            case If(cond, then, has_els, els) -> {
+                expect(cond, ty.Ty.Bool)?;
+                let a = block(then, want_value, hint)?;
+                // `if c { Some(1) } else { None }` の None の型を then から決める
+                let mut eh = copy_hint(hint);
+                if !hint.some && ty.is(a, "Enum") && ty.args_of(a).len() > 0 { eh = hint_of(ty.cl(a)); }
+                let ty.Ty[] mut tys = [a];
+                let i64[] mut spans = [tail_span(then)];
+                let i64[] mut tails = [tail_id(then)];
+                if has_els {
+                    tys.push(block(els, want_value, eh)?);
+                    spans.push(tail_span(els));
+                    tails.push(tail_id(els));
+                }
+                let missing = if has_els { -1 } else { e.span };
+                join(tys, spans, tails, missing, want_value, "if", hint)
+            }
+            case Variant(en, vn, xs) -> variant_expr(e, en, vn, xs, hint);
+            case Match(scrut, arms, has_default, dflt) -> {
+                let st = expr(scrut)?;
+                let subject = if ty.has_pointee(st) { ty.inner(st) } else { ty.cl(st) };
+                if ty.is(subject, "Enum") {
+                    return match_enum(e, st, arms, has_default, dflt, want_value, hint);
+                }
+                if !(ty.is(st, "Int") || ty.is(st, "Bool") || ty.is(st, "Str")) {
+                    return Err(diag.make("match できるのは、今のところ整数・真偽値・文字列・enum だけです")
+                        .at(scrut.span, "ここは `{ty.show(st)}` です"));
+                }
+                let ty.Ty[] mut tys = [];
+                let i64[] mut spans = [];
+                let i64[] mut tails = [];
+                for arm in arms {
+                    for (i, pat) in arm.pats {
+                        let span = arm.spans[i];
+                        let mut pt = ty.Ty.Unit;
+                        match ref pat {
+                            case Int(neg, v) -> {
+                                let it = ty.int_of(st);
+                                if it != "" {
+                                    let c = ty.cv(neg, v);
+                                    if !ty.contains(it, c) { return Err(out_of_range(c, it, span)); }
+                                    pt = ty.cl(st);
+                                } else {
+                                    pt = ty.i64t();
+                                }
+                            }
+                            case Bool(b) -> pt = ty.Ty.Bool;
+                            case Str(s) -> pt = ty.Ty.Str;
+                            case Variant(n, b, s, h, x) -> {
+                                return Err(diag.make("enum ではない値に、種類の case は使えません")
+                                    .also(scrut.span, "これは `{ty.show(st)}`")
+                                    .at(span, "`{n}` は種類の名前として読まれた"));
+                            }
+                        }
+                        if !ty.eq(pt, st) {
+                            return Err(diag.make("case の値と match する値の型が合いません")
+                                .also(scrut.span, "これは `{ty.show(st)}`")
+                                .at(span, "この case は `{ty.show(pt)}`"));
+                        }
+                    }
+                    tys.push(block(arm.body, want_value, hint)?);
+                    spans.push(tail_span(arm.body));
+                    tails.push(tail_id(arm.body));
+                }
+                if has_default {
+                    tys.push(block(dflt, want_value, hint)?);
+                    spans.push(tail_span(dflt));
+                    tails.push(tail_id(dflt));
+                }
+                // default がなく、どの case にも当たらなければ何もせず抜ける
+                let missing = if !has_default && !covers_both_bools(arms) { e.span } else { -1 };
+                join(tys, spans, tails, missing, want_value, "match", hint)
+            }
+            case Unary(op, x) -> {
+                if op == "!" {
+                    expect(x, ty.Ty.Bool)?;
+                    return Ok(ty.Ty.Bool);
+                }
+                let t = expr_h(x, hint)?;
+                if op == "~" {
+                    if ty.is(t, "Int") { return Ok(t); }
+                    return Err(diag.make("`~` は整数に使います").at(x.span, "ここは `{ty.show(t)}` です"));
+                }
+                if ty.is(t, "Float") { return Ok(t); }
+                let it = ty.int_of(t);
+                if it != "" && ty.signed(it) { return Ok(t); }
+                if it != "" {
+                    return Err(diag.make("符号なしの型 `{it}` に `-` は使えません")
+                        .at(e.span, "ここ")
+                        .with_note("符号つきの型（i64 など）に `as` で変換してください"));
+                }
+                let w = ty.i64t();
+                Err(mismatch(w, t, x.span))
+            }
+            case Binary(op, l, r) -> binary(op, l, r, e.span, hint);
+            case Call(name, argv) -> call(name, argv, e.span, hint);
+            case MethodCall(recv, name, argv) -> method_call(e, recv, name, argv, e.span, hint);
+            default -> Ok(ty.Ty.Unit);
+        }
+    }
+
+    /// 値として使う式。値なしならエラー
+    fn mut Result<ty.Ty, diag.Diag> value(ref ast.Expr e) {
+        let t = expr(e)?;
+        if ty.is(t, "Unit") && !is_unit_expr(e) {
+            return Err(diag.make("値のない式です").at(e.span, "これは値を返さない"));
+        }
+        Ok(t)
+    }
+
+    /// if / match の枝の型をまとめる。`missing` は枝がない場合（else / default なし）の位置（なければ -1）
+    fn mut Result<ty.Ty, diag.Diag> join(ref ty.Ty[] tys, ref i64[] spans, ref i64[] tails, i64 missing, bool want_value, str what,
+            ref Hint hint) {
+        if !want_value {
+            // 文として使うときは値を捨てる。どの枝も必ず抜けるなら、ここで必ず抜ける
+            let mut all_never = missing < 0;
+            for t in tys {
+                if !ty.is(t, "Never") { all_never = false; }
+            }
+            return Ok(if all_never { ty.Ty.Never } else { ty.Ty.Unit });
+        }
+        let ty.Ty[] mut list = ty.cls(tys);
+        let i64[] mut sps = spans.map((x) -> x);
+        if missing >= 0 {
+            list.push(ty.Ty.Unit);
+            sps.push(missing);
+        }
+        // 枝ごとに違う構造体でも、入れる先が interface でみな当てはまるなら、その interface にまとめる
+        if hint.some && ty.contains_kind(hint.t, "Iface") {
+            let mut all = true;
+            for t in list {
+                if !fits(t, hint.t) { all = false; }
+            }
+            if all { return Ok(ty.cl(hint.t)); }
+        }
+        let mut acc = ty.Ty.Never;
+        let mut has_first = false;
+        let mut ft = ty.Ty.Unit;
+        let mut fs = 0;
+        for (i, t) in list {
+            if fits(t, acc) { continue; }
+            if fits(acc, t) {
+                acc = ty.cl(t);
+            } else {
+                return Err(diag.make("{what} の枝で値の型が違います")
+                    .also(fs, "こちらは `{ty.show(ft)}`")
+                    .at(sps[i], "こちらは `{ty.show(t)}`"));
+            }
+            if !has_first || !ty.is(t, "Never") {
+                has_first = true;
+                ft = ty.cl(t);
+                fs = sps[i];
+            }
+        }
+        // 整数の枝は広い方の型にそろえる
+        for (i, t) in tys { convert(tails[i], t, acc); }
+        Ok(acc)
+    }
+
+    fn mut Result<ty.Ty, diag.Diag> binary(str op, ref ast.Expr l, ref ast.Expr r, i64 span, ref Hint hint) {
+        // `a << n` / `a >> n`: 結果は a の型。n はどの整数の型でもよい
+        if op == "<<" || op == ">>" {
+            let h = if hint_is(hint, "Int") { copy_hint(hint) } else { none() };
+            let lt0 = expr_h(l, h)?;
+            let nh = none();
+            let rt0 = expr_h(r, nh)?;
+            if ty.is(lt0, "Int") && ty.is(rt0, "Int") { return Ok(lt0); }
+            return Err(diag.make("`<<` と `>>` は整数に使います").at(span, "`{ty.show(lt0)}` と `{ty.show(rt0)}` です"));
+        }
+        // 片方が定数なら、もう片方の型に合わせる。算術なら外の型も手がかりにする
+        let arith = op == "+" || op == "-" || op == "*" || op == "/" || op == "%" || op == "&" || op == "|" || op == "^";
+        let outer = if arith { copy_hint(hint) } else { none() };
+        let mut lt = ty.Ty.Unit;
+        let mut rt = ty.Ty.Unit;
+        if is_const_tree(l) {
+            rt = expr_h(r, outer)?;
+            let h = if ty.is(rt, "Int") || ty.is(rt, "Float") { hint_of(ty.cl(rt)) } else { copy_hint(outer) };
+            lt = expr_h(l, h)?;
+        } else {
+            lt = expr_h(l, outer)?;
+            let h = if ty.is(lt, "Int") || ty.is(lt, "Float") { hint_of(ty.cl(lt)) } else { copy_hint(outer) };
+            rt = expr_h(r, h)?;
+        }
+        let bad = diag.make("型が合わない演算です").at(span, "`{ty.show(lt)}` と `{ty.show(rt)}` にはこの演算を使えません");
+        let both_int = ty.is(lt, "Int") && ty.is(rt, "Int");
+        if op == "&&" || op == "||" {
+            if !ty.is(lt, "Bool") { return Err(mismatch(ty.Ty.Bool, lt, l.span)); }
+            if !ty.is(rt, "Bool") { return Err(mismatch(ty.Ty.Bool, rt, r.span)); }
+            return Ok(ty.Ty.Bool);
+        }
+        if op == "&" || op == "|" || op == "^" {
+            if both_int { return Ok(ty.Ty.Int(common_of(l, lt, r, rt, span)?)); }
+            return Err(bad.with_note("`&` `|` `^` は整数のビット演算です（真偽値には `&&` `||` を使ってください）"));
+        }
+        if op == "+" && ty.is(lt, "Str") && ty.is(rt, "Str") { return Ok(ty.Ty.Str); }
+        if arith {
+            if both_int { return Ok(ty.Ty.Int(common_of(l, lt, r, rt, span)?)); }
+            if ty.is(lt, "Float") && ty.is(rt, "Float") { return Ok(ty.Ty.Float); }
+            if (ty.is(lt, "Float") && ty.is(rt, "Int")) || (ty.is(lt, "Int") && ty.is(rt, "Float")) {
+                return Err(bad.with_note("整数と小数をまぜて計算するときは、`x as f64` のように型をそろえてください"));
+            }
+            return Err(bad);
+        }
+        if op == "<" || op == "<=" || op == ">" || op == ">=" {
+            if both_int {
+                common_of(l, lt, r, rt, span)?;
+                return Ok(ty.Ty.Bool);
+            }
+            if (ty.is(lt, "Str") && ty.is(rt, "Str")) || (ty.is(lt, "Float") && ty.is(rt, "Float")) { return Ok(ty.Ty.Bool); }
+            if ty.eq(lt, rt) && is_ordered_param(lt) { return Ok(ty.Ty.Bool); }
+            if ty.is(lt, "Param") || ty.is(rt, "Param") {
+                return Err(bad.with_note("型の引数どうしを比べるには `<T: ordered>` と条件をつけてください"));
+            }
+            return Err(bad);
+        }
+        // == と !=
+        if both_int {
+            common_of(l, lt, r, rt, span)?;
+            return Ok(ty.Ty.Bool);
+        }
+        if ty.eq(lt, rt) && is_ordered_param(lt) { return Ok(ty.Ty.Bool); }
+        if ty.eq(lt, rt) && (ty.is(lt, "Bool") || ty.is(lt, "Str") || ty.is(lt, "Float")) { return Ok(ty.Ty.Bool); }
+        Err(diag.make("型が合わない比較です").at(span, "`{ty.show(lt)}` と `{ty.show(rt)}` は比較できません"))
+    }
+
+    /// `from` の値を `to` の場所に入れられるか（`assignable` に、構造体 → interface を足したもの）
+    fn bool fits(ref ty.Ty from, ref ty.Ty to) {
+        if ty.assignable(from, to) { return true; }
+        if ty.is(from, "Ref") && ty.is(to, "Ref") && (ty.ref_mut(from) || !ty.ref_mut(to)) {
+            let a = ty.inner(from);
+            let b = ty.inner(to);
+            return fits_iface(a, b);
+        }
+        if ty.is(from, "Own") && ty.is(to, "Own") {
+            let a2 = ty.inner(from);
+            let b2 = ty.inner(to);
+            return fits_iface(a2, b2);
+        }
+        false
+    }
+
+    /// 構造体（や条件つきの T）を interface として扱えるか
+    fn bool fits_iface(ref ty.Ty from, ref ty.Ty to) {
+        if !ty.is(to, "Iface") || ty.is(from, "Iface") { return false; }
+        match satisfies(from, ty.name_of(to)) {
+            case Ok(u) -> true;
+            case Err(why) -> false;
+        }
+    }
+
+    /// 要素を読むだけで受け取るときの型（for の変数・sort_by の比べる関数の引数）
+    fn ty.Ty view_ty(ty.Ty elem) {
+        if copyable(elem) { elem }
+        else if ty.is(elem, "Own") { ty.Ty.Ref(own ty.inner(elem), false) }
+        else { ty.Ty.Ref(own elem, false) }
+    }
+
+    /// 書き換えるメソッドを呼んでよいか（`ref mut` で借りられる相手か）
+    fn mut Result<(), diag.Diag> require_mut(ref ast.Expr recv, ref ty.Ty rt, i64 span, str doing) {
+        let a = if is_place(recv) { access(recv)? } else { Access.Write };
+        let b = through(a, rt, origin(recv), describe(recv));
+        require(b, span, doing)
+    }
+
+    // ------------------------------------------------ 組み込みの型のメソッド
+
+    fn mut Result<ty.Ty, diag.Diag> list_method(ref ast.Expr recv, ref ty.Ty rt, ref ty.Ty elem, str name, ref ast.Expr[] argv, i64 span) {
+        let mut want = 0;
+        let mut ret = ty.Ty.Unit;
+        let mut mutable = true;
+        if name == "len" {
+            ret = ty.i64t();
+            mutable = false;
+        } else if name == "push" {
+            want = 1;
+        } else if name == "pop" {
+            ret = ty.opt(ty.cl(elem));
+        } else if name == "remove" {
+            want = 1;
+            ret = ty.cl(elem);
+        } else if name == "insert" {
+            want = 2;
+        } else if name == "reverse" {
+        } else if name == "join" {
+            if !ty.is(elem, "Str") || argv.len() != 1 {
+                return Err(diag.make("join は文字列のリストに使います")
+                    .at(span, "`{ty.show(elem)}` のリストです（`sep` を 1 つ渡します）"));
+            }
+            expect(argv[0], ty.Ty.Str)?;
+            return Ok(ty.Ty.Str);
+        } else if name == "map" || name == "filter" {
+            // 読むだけ。戻り値の型は関数を調べてから決める
+            want = 1;
+            mutable = false;
+        } else if name == "drain" {
+            ret = ty.Ty.List(own ty.cl(elem));
+        } else if name == "sort" || name == "sort_unstable" {
+        } else if name == "sort_by" || name == "sort_unstable_by" {
+            want = 1;
+        } else {
+            return Err(diag.make("リストにメソッド `{name}` はありません").at(span,
+                "リストのメソッドは `len()`・`push(x)`・`pop()`・`insert(i, x)`・`remove(i)`・`reverse()`・`drain()`・`map(f)`・`filter(f)`・`sort()`・`sort_by(f)`・`sort_unstable()`・`sort_unstable_by(f)`・`join(sep)` です"));
+        }
+        if argv.len() != want {
+            return Err(arity_error(name, want, argv.len(), span));
+        }
+        if mutable {
+            require_mut(recv, rt, span, "リストを `{name}` で書き換えようとした")?;
+        }
+        if name == "sort" || name == "sort_unstable" {
+            match satisfies(elem, ORDERED) {
+                case Ok(u) -> {}
+                case Err(why) -> return Err(diag.make("この要素は sort で並べられません")
+                    .at(span, why)
+                    .with_note("並べ方を決める関数を渡す `sort_by((a, b) -> a.x < b.x)` を使ってください"));
+            }
+        }
+        if name == "sort_by" || name == "sort_unstable_by" {
+            // 比べる関数: 「a を b より前に置くか」。要素は読むだけで受け取る
+            let v = view_ty(ty.cl(elem));
+            let f = ty.Ty.Fn(own [ty.cl(v), v], own ty.Ty.Bool);
+            expect(argv[0], f)?;
+            return Ok(ret);
+        }
+        if name == "filter" {
+            // 残す要素はコピーする
+            if !copyable(elem) {
+                return Err(diag.make("`{ty.show(elem)}` の要素は filter で選べません")
+                    .at(span, "filter は要素をコピーして新しいリストを作る")
+                    .with_note("`for x in a.drain() {{ if ... {{ b.push(x); }} }}` と書いてください"));
+            }
+            let f2 = ty.Ty.Fn(own [ty.cl(elem)], own ty.Ty.Bool);
+            expect(argv[0], f2)?;
+            return Ok(ty.Ty.List(own ty.cl(elem)));
+        }
+        if name == "map" {
+            // 関数は要素を読むだけで受け取る。戻り値の型は関数から決める
+            let v2 = view_ty(ty.cl(elem));
+            let h = hint_of(ty.Ty.Fn(own [ty.cl(v2)], own ty.Ty.Never));
+            let ft = expr_h(argv[0], h)?;
+            let ps = ty.fn_params(ft);
+            if !(ty.is(ft, "Fn") && ps.len() == 1 && fits(v2, ps[0])) {
+                let w = ty.Ty.Fn(own [v2], own ty.Ty.Param("U"));
+                return Err(mismatch(w, ft, argv[0].span));
+            }
+            let r = ty.inner(ft);
+            if ty.is(r, "Unit") {
+                return Err(diag.make("map の関数が値を返しません").at(argv[0].span, "要素ごとの新しい値を返す関数を渡してください"));
+            }
+            return Ok(ty.Ty.List(own r));
+        }
+        // 添字（insert・remove の最初の引数）は整数、要素（push・insert の最後の引数）は要素の型
+        if name == "remove" || name == "insert" { index_value(argv[0])?; }
+        if name == "insert" {
+            expect(argv[1], elem)?;
+        } else if name != "remove" && argv.len() > 0 {
+            expect(argv[0], elem)?;
+        }
+        Ok(ret)
+    }
+
+    fn mut Result<ty.Ty, diag.Diag> map_method(ref ast.Expr recv, ref ty.Ty rt, ref ty.Ty k, ref ty.Ty v, str name, ref ast.Expr[] argv, i64 span) {
+        let ty.Ty[] mut params = [];
+        let mut ret = ty.Ty.Unit;
+        let mut mutable = false;
+        if name == "len" {
+            ret = ty.i64t();
+        } else if name == "contains" {
+            params.push(ty.cl(k));
+            ret = ty.Ty.Bool;
+        } else if name == "get" {
+            params.push(ty.cl(k));
+            ret = ty.opt(ty.cl(v));
+        } else if name == "remove" {
+            params.push(ty.cl(k));
+            ret = ty.opt(ty.cl(v));
+            mutable = true;
+        } else if name == "keys" {
+            ret = ty.Ty.List(own ty.cl(k));
+        } else {
+            return Err(diag.make("辞書にメソッド `{name}` はありません").at(span,
+                "辞書のメソッドは `len()`・`contains(k)`・`get(k)`・`remove(k)`・`keys()` です"));
+        }
+        if argv.len() != params.len() {
+            return Err(arity_error(name, params.len(), argv.len(), span));
+        }
+        if name == "get" && !copyable(v) {
+            return Err(diag.make("`{ty.show(v)}` はコピーできないので get で取り出せません")
+                .at(span, "辞書の中の値はそのまま残るので、写しを作れない値は取り出せない")
+                .with_note("`m[k].x` のように場所として読むか、`remove(k)` で取り出してください"));
+        }
+        if mutable {
+            require_mut(recv, rt, span, "辞書を `{name}` で書き換えようとした")?;
+        }
+        for (i, a) in argv { expect(a, params[i])?; }
+        Ok(ret)
+    }
+
+    /// `spawn(f)`: 引数のないクロージャか関数の名前を、新しいスレッドで動かす
+    fn mut Result<ty.Ty, diag.Diag> spawn(ref ast.Expr[] argv, i64 span, ref Hint hint) {
+        if argv.len() != 1 {
+            return Err(arity_error("spawn", 1, argv.len(), span));
+        }
+        let a = ref argv[0];
+        let r0 = if hint_is(hint, "Task") { ty.inner(hint.t) } else { ty.Ty.Unit };
+        let fn_hint = ty.Ty.Fn(own [], own r0);
+        let ok_shape = match ref a.kind {
+            case Lambda(l) -> true;
+            case Var(n) -> {
+                let found = match lookup(n) {
+                    case Some(v) -> true;
+                    case None -> false;
+                };
+                !found && is_fn(n)
+            }
+            default -> false;
+        };
+        if !ok_shape {
+            return Err(diag.make("spawn にはその場で書いたクロージャか、関数の名前を渡してください")
+                .at(a.span, "ここで取り込んだ値が、ほかのスレッドへ渡せるか分からない")
+                .with_note("`spawn(() -> work(data))` のように書いてください"));
+        }
+        let h = if hint_is(hint, "Task") { hint_of(fn_hint) } else { none() };
+        let t = expr_h(a, h)?;
+        let ps = ty.fn_params(t);
+        let ret = ty.inner(t);
+        if ps.len() > 0 {
+            return Err(diag.make("spawn に渡す関数は引数を取れません")
+                .at(a.span, "引数が {ps.len()} 個ある")
+                .with_note("値はクロージャに取り込んで渡してください（`spawn(() -> work(x))`）"));
+        }
+        if is_lambda_expr(a) && info.lam_at[a.id] >= 0 {
+            let caps = info.lams[info.lam_at[a.id]].caps.map((c) -> c);
+            for c in caps {
+                let v = match lookup(c) {
+                    case Some(x) -> x;
+                    case None -> VarInfo { t: ty.Ty.Int("i64"), m: false, decl: 0 };
+                };
+                let str[] mut seen = [];
+                match sendable(v.t, ref mut seen) {
+                    case Ok(u) -> {}
+                    case Err(why) -> return Err(diag.make("`{c}` はほかのスレッドへ渡せません")
+                        .also(v.decl, "`{c}` は `{ty.show(v.t)}`")
+                        .at(a.span, why)
+                        .with_note("スレッドに渡せるのは own とコピーできる値（中に ref のないもの）だけです"));
+                }
+            }
+        }
+        require_sendable(ret, a.span, "スレッドの戻り値")?;
+        Ok(ty.Ty.Task(own ret))
+    }
+
+    fn Result<ty.Ty, diag.Diag> task_method(ref ty.Ty r, str name, ref ast.Expr[] argv, i64 span) {
+        if name != "join" {
+            return Err(diag.make("task にメソッド `{name}` はありません").at(span, "task のメソッドは `join()` だけです"));
+        }
+        if argv.len() > 0 { return Err(arity_error(name, 0, argv.len(), span)); }
+        Ok(ty.cl(r))
+    }
+
+    fn mut Result<ty.Ty, diag.Diag> chan_method(ref ty.Ty x, str name, ref ast.Expr[] argv, i64 span) {
+        let ty.Ty[] mut params = [];
+        let mut ret = ty.Ty.Unit;
+        if name == "send" {
+            params.push(ty.cl(x));
+        } else if name == "recv" {
+            ret = ty.opt(ty.cl(x));
+        } else if name == "close" {
+        } else {
+            return Err(diag.make("chan にメソッド `{name}` はありません").at(span, "chan のメソッドは `send(x)`・`recv()`・`close()` です"));
+        }
+        if argv.len() != params.len() {
+            return Err(arity_error(name, params.len(), argv.len(), span));
+        }
+        for (i, a) in argv { expect(a, params[i])?; }
+        Ok(ret)
+    }
+
+    /// 文字列のメソッド。位置と長さは文字単位
+    fn mut Result<ty.Ty, diag.Diag> str_method(str name, ref ast.Expr[] argv, i64 span) {
+        let ty.Ty[] mut params = [];
+        let mut ret = ty.Ty.Unit;
+        if name == "len" || name == "byte_len" || name == "code" {
+            ret = ty.i64t();
+        } else if name == "chars" || name == "lines" {
+            ret = ty.Ty.List(own ty.Ty.Str);
+        } else if name == "bytes" {
+            ret = ty.Ty.List(own ty.Ty.Int("u8"));
+        } else if name == "split" {
+            params.push(ty.Ty.Str);
+            ret = ty.Ty.List(own ty.Ty.Str);
+        } else if name == "trim" || name == "to_upper" || name == "to_lower" {
+            ret = ty.Ty.Str;
+        } else if name == "contains" || name == "starts_with" || name == "ends_with" {
+            params.push(ty.Ty.Str);
+            ret = ty.Ty.Bool;
+        } else if name == "find" {
+            params.push(ty.Ty.Str);
+            ret = ty.opt(ty.i64t());
+        } else if name == "slice" {
+            params.push(ty.i64t());
+            params.push(ty.i64t());
+            ret = ty.Ty.Str;
+        } else if name == "replace" {
+            params.push(ty.Ty.Str);
+            params.push(ty.Ty.Str);
+            ret = ty.Ty.Str;
+        } else if name == "repeat" {
+            params.push(ty.i64t());
+            ret = ty.Ty.Str;
+        } else if name == "to_int" {
+            ret = ty.opt(ty.i64t());
+        } else if name == "to_float" {
+            ret = ty.opt(ty.Ty.Float);
+        } else {
+            return Err(diag.make("文字列にメソッド `{name}` はありません")
+                .at(span, "このメソッドは定義されていません")
+                .with_note("文字列のメソッド: {STR_METHODS}"));
+        }
+        if argv.len() != params.len() {
+            return Err(arity_error(name, params.len(), argv.len(), span));
+        }
+        for (i, a) in argv { expect(a, params[i])?; }
+        Ok(ret)
+    }
+
+    /// 添字の式。整数ならどの型でもよい（数の書き方は i64）
+    fn mut Result<(), diag.Diag> index_value(ref ast.Expr idx) {
+        let h = hint_of(ty.i64t());
+        let t = expr_h(idx, h)?;
+        if ty.is(t, "Int") { return Ok(()); }
+        Err(diag.make("添字は整数です").at(idx.span, "ここは `{ty.show(t)}` です"))
+    }
+
+    // ------------------------------------------------ 条件と interface
+
+    /// `<T: ordered>` の T か
+    fn bool is_ordered_param(ref ty.Ty t) {
+        ty.is(t, "Param") && has(bound_list(bound_of(ty.name_of(t))), ORDERED)
+    }
+
+    /// 型 `t` が条件 `bound` を満たすか。満たさなければその理由
+    fn Result<(), str> satisfies(ref ty.Ty t, str bound) {
+        if ty.is(t, "Iface") {
+            let i = ty.name_of(t);
+            return if i == bound { Ok(()) } else { Err("interface `{i}` は `{bound}` ではありません") };
+        }
+        if ty.is(t, "Param") {
+            // 型の引数のまま渡すなら、こちらの関数にも同じ条件が要る
+            let p = ty.name_of(t);
+            return if has(bound_list(bound_of(p)), bound) { Ok(()) } else { Err("`{p}` に条件 `{bound}` がついていません") };
+        }
+        if bound == ORDERED {
+            return if ty.is(t, "Int") || ty.is(t, "Float") || ty.is(t, "Str") {
+                Ok(())
+            } else {
+                Err("`{ty.show(t)}` は大小を比べられません（ordered は整数・f64・str だけ）")
+            };
+        }
+        if !ty.is(t, "Struct") {
+            if ty.is(t, "Enum") {
+                // enum の値は実行時に型の名前を持たないので、interface のメソッドを探せない
+                return Err("interface に当てはめられるのは構造体だけです（`{ty.show(t)}` は enum）");
+            }
+            return Err("`{ty.show(t)}` は構造体ではないのでメソッドを持ちません");
+        }
+        let sname = ty.name_of(t);
+        let d = s_at[sname];
+        let argv = ty.args_of(t);
+        let m = ty.targs(sdefs[d].tparams, argv);
+        for im in idefs[i_at[bound]].ms {
+            let full = sname + "." + im.name;
+            if !is_fn(full) || !sigs[f_at[full]].method {
+                return Err("`{sname}` にメソッド `{im.name}` がありません");
+            }
+            let si = f_at[full];
+            let p0 = ref sigs[si].params[0];
+            if !ty.is(p0, "Ref") {
+                return Err("`{sname}.{im.name}` は this を値で受け取る（fn take）ので、interface のメソッドになれません");
+            }
+            let smut = ty.ref_mut(p0);
+            let ty.Ty[] mut params = [];
+            for (i, p) in sigs[si].params {
+                if i > 0 { params.push(ty.subst(p, m)); }
+            }
+            let sr = ty.subst(sigs[si].ret, m);
+            let shape_ok = sigs[si].tparams.len() == sdefs[d].tparams.len() && ty.eqs(params, im.params) && ty.eq(sr, im.ret);
+            if !shape_ok {
+                return Err("`{sname}.{im.name}` の引数か戻り値の型が `{bound}` の形と違います");
+            }
+            if smut && !im.m {
+                return Err("`{sname}.{im.name}` は fn mut ですが、`{bound}` では書き換えないメソッドです");
+            }
+        }
+        Ok(())
+    }
+
+    /// 呼び出しで決まった型の引数が、それぞれの条件を満たすか
+    fn Result<(), diag.Diag> check_bounds(ref str[] tparams, ref str[] bounds, ref ty.TMap m, i64 span) {
+        for (i, p) in tparams {
+            if !m.has(p) || i >= bounds.len() { continue; }
+            let t = m.get(p);
+            for b in bound_list(bounds[i]) {
+                match satisfies(t, b) {
+                    case Ok(u) -> {}
+                    case Err(why) -> return Err(diag.make("`{ty.show(t)}` は条件 `{b}` を満たしません")
+                        .at(span, "ここで `{p}` は `{ty.show(t)}` になる")
+                        .with_note(why));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// 型の引数（`T`）や interface の値に対するメソッド呼び出し。`ifaces` の interface から探す
+    fn mut Result<ty.Ty, diag.Diag> iface_method_call(ref ast.Expr recv, ref ty.Ty rt, ref str[] ifaces, str label, str help, str name,
+            ref ast.Expr[] argv, i64 span) {
+        let mut fi = -1;
+        let mut mi = -1;
+        for b in ifaces {
+            if fi >= 0 { break; }
+            let ii = i_at[b];
+            for (j, m) in idefs[ii].ms {
+                if mi < 0 && m.name == name {
+                    fi = ii;
+                    mi = j;
+                }
+            }
+        }
+        if fi < 0 {
+            return Err(diag.make("`{label}` にメソッド `{name}` があるか分かりません")
+                .at(span, "呼べるのは interface に書いたメソッドだけです")
+                .with_note(help));
+        }
+        let ps = ty.cls(idefs[fi].ms[mi].params);
+        let ret = ty.cl(idefs[fi].ms[mi].ret);
+        if argv.len() != ps.len() {
+            return Err(arity_error(name, ps.len(), argv.len(), span));
+        }
+        if idefs[fi].ms[mi].m {
+            require_mut(recv, rt, span, "書き換えるメソッド `{name}` を呼ぼうとした")?;
+        }
+        for (i, a) in argv {
+            let h = hint_of(arg_hint(a, ty.cl(ps[i])));
+            let got = expr_h(a, h)?;
+            let got2 = auto_borrow(a, got, ps[i])?;
+            if !fits(got2, ps[i]) { return Err(mismatch(ps[i], got2, a.span)); }
+            convert(a.id, got2, ps[i]);
+        }
+        Ok(ret)
+    }
+
+    // ------------------------------------------------ `?`・呼び出し・メソッド呼び出し
+
+    /// `e?`。式の型は中身の `T`
+    fn mut Result<ty.Ty, diag.Diag> try_expr(ref ast.Expr x, i64 span, ref Hint hint) {
+        // 中身の型の手がかりを、戻り値の型と合わせて渡す（`let i64 x = Ok(5)?;` の 5 を i64 に）
+        let mut ih = none();
+        let rn = if ty.is(cur_ret, "Enum") { ty.name_of(cur_ret) } else { "" };
+        let rargs = ty.args_of(cur_ret);
+        if rn == "Result" && hint.some {
+            ih = hint_of(ty.Ty.Enum("Result", own [ty.cl(hint.t), ty.cl(rargs[1])]));
+        } else if rn == "Option" && hint.some {
+            ih = hint_of(ty.Ty.Enum("Option", own [ty.cl(hint.t)]));
+        }
+        let t = expr_h(x, ih)?;
+        let kind = if ty.is(t, "Enum") && (ty.name_of(t) == "Result" || ty.name_of(t) == "Option") { ty.name_of(t) } else { "" };
+        if kind == "" {
+            return Err(diag.make("`?` は Result か Option に使います").at(x.span, "これは `{ty.show(t)}` です"));
+        }
+        let argv = ty.args_of(t);
+        let usage = if kind == "Result" {
+            "`?` は、Result を返す関数の中で使えます（Err ならそのまま返す）"
+        } else {
+            "`?` は、Option を返す関数の中で使えます（None ならそのまま返す）"
+        };
+        if rn == kind {
+            if kind == "Result" && !ty.eq(argv[1], rargs[1]) {
+                return Err(diag.make("エラーの型が合いません")
+                    .at(span, "ここの Err は `{ty.show(argv[1])}` ですが、関数が返す Err は `{ty.show(rargs[1])}` です")
+                    .with_note("`match` で取り出して、関数のエラーの型に作り直してください"));
+            }
+        } else {
+            return Err(diag.make("ここでは `?` を使えません")
+                .at(span, "この関数の戻り値は `{ty.show(cur_ret)}` です")
+                .with_note(usage));
+        }
+        Ok(ty.cl(argv[0]))
+    }
+
+    fn mut Result<ty.Ty, diag.Diag> call(str name, ref ast.Expr[] argv, i64 span, ref Hint hint) {
+        if name == "print" || name == "eprint" {
+            for a in argv { value(a)?; }
+            return Ok(ty.Ty.Unit);
+        }
+        if name == "chr" {
+            if argv.len() != 1 { return Err(arity_error(name, 1, argv.len(), span)); }
+            let w = ty.i64t();
+            expect(argv[0], w)?;
+            return Ok(ty.Ty.Str);
+        }
+        if name == "exit" || name == "read_file" || name == "write_file" || name == "run_command" {
+            let ty.Ty[] mut params = [];
+            let mut ret = ty.Ty.Unit;
+            if name == "exit" {
+                params.push(ty.i64t());
+                ret = ty.Ty.Never;
+            } else if name == "read_file" {
+                params.push(ty.Ty.Str);
+                ret = ty.Ty.Str;
+            } else if name == "write_file" {
+                params.push(ty.Ty.Str);
+                params.push(ty.Ty.Str);
+            } else {
+                params.push(ty.Ty.Str);
+                params.push(ty.Ty.List(own ty.Ty.Str));
+                ret = ty.i64t();
+            }
+            if argv.len() != params.len() {
+                return Err(arity_error(name, params.len(), argv.len(), span));
+            }
+            for (i, a) in argv { expect(a, params[i])?; }
+            if ty.is(ret, "Never") { return Ok(ret); }
+            return Ok(ty.Ty.Enum("Result", own [ret, ty.Ty.Str]));
+        }
+        if name == "read_line" || name == "args" {
+            if argv.len() > 0 { return Err(arity_error(name, 0, argv.len(), span)); }
+            if name == "args" { return Ok(ty.Ty.List(own ty.Ty.Str)); }
+            return Ok(ty.opt(ty.Ty.Str));
+        }
+        if name == "spawn" { return spawn(argv, span, hint); }
+        if name == "chan" {
+            if argv.len() > 0 { return Err(arity_error(name, 0, argv.len(), span)); }
+            if hint_is(hint, "Chan") { return Ok(ty.cl(hint.t)); }
+            return Err(diag.make("chan() の型が分かりません")
+                .at(span, "何を送るチャンネルか決める手がかりがない")
+                .with_note("`let chan<i64> c = chan();` のように型を書いてください"));
+        }
+        if name == "drop" || name == "assert" {
+            if argv.len() != 1 { return Err(arity_error(name, 1, argv.len(), span)); }
+            if name == "drop" {
+                value(argv[0])?;
+            } else {
+                expect(argv[0], ty.Ty.Bool)?;
+            }
+            return Ok(ty.Ty.Unit);
+        }
+        match use_var(name) {
+            // 関数の値を入れた変数（クロージャ）の呼び出し
+            case Some(v) -> return call_value(name, v.t, argv, span);
+            case None -> {}
+        }
+        if !is_fn(name) {
+            // `Shape.Square(1)`: 種類でもメソッドでもない（パーサは種類でない名前を静的メソッドとして読む）
+            let dot = last_dot(name);
+            if dot >= 0 {
+                let en = name.slice(0, dot);
+                let vn = name.slice(dot + 1, name.len());
+                if is_enum(en) {
+                    let str[] mut names = [];
+                    for v in edefs[e_at[en]].vs { names.push(v.name); }
+                    let names_s = names.join(", ");
+                    return Err(diag.make("`{en}` に種類 `{vn}` はありません")
+                        .at(span, "この種類は定義されていません")
+                        .with_note("`{en}` の種類: {names_s}"));
+                }
+            }
+            let d = diag.make("未定義の関数 `{name}`").at(span, "この関数は定義されていません");
+            if name == "range" { return Err(d.with_note("range(...) は `for i in range(...)` の中でだけ使えます")); }
+            return Err(d);
+        }
+        let si = f_at[name];
+        if sigs[si].method {
+            let dot2 = last_dot(name);
+            let s = name.slice(0, dot2);
+            let mn = name.slice(dot2 + 1, name.len());
+            return Err(diag.make("`{name}` は this のあるメソッドです")
+                .at(span, "型の名前からは呼べない")
+                .with_note("`{s}` の値 p に対して `p.{mn}()` と呼んでください"));
+        }
+        if argv.len() != sigs[si].params.len() {
+            return Err(arity_error(name, sigs[si].params.len(), argv.len(), span));
+        }
+        let tparams = sigs[si].tparams.map((x) -> x);
+        let params = ty.cls(sigs[si].params);
+        let ret = ty.cl(sigs[si].ret);
+        let bounds = sigs[si].bounds.map((x) -> x);
+        let ty.Ty[] mut pre_p = [];
+        let ty.Ty[] mut pre_h = [];
+        if hint.some {
+            pre_p.push(ty.cl(ret));
+            pre_h.push(ty.cl(hint.t));
+        }
+        let ast.FieldInit[] no_inits = [];
+        let m = instantiate(tparams, params, argv, no_inits, false, pre_p, pre_h, true)?;
+        if ty.contains_kind(ret, "Param") || ty.any_unbound(params, tparams, m) {
+            all_bound(tparams, m, span, "`{name}`")?;
+        }
+        check_bounds(tparams, bounds, m, span)?;
+        Ok(ty.subst(ret, m))
+    }
+
+    /// 数のメソッド。f64 は `to_bits` / `sqrt` / `abs` / `max` / `min`、整数は `abs` / `max` / `min`。
+    /// `max` / `min` の引数は receiver と同じ型（数の書き方はそれに合わせる）
+    fn mut Result<ty.Ty, diag.Diag> num_method(ref ty.Ty t, str name, ref ast.Expr[] argv, i64 span) {
+        let float = ty.is(t, "Float");
+        let mut arity = 0;
+        let mut ret = ty.cl(t);
+        if float && name == "to_bits" {
+            ret = ty.Ty.Int("u64");
+        } else if float && name == "sqrt" {
+        } else if name == "abs" {
+        } else if name == "max" || name == "min" {
+            arity = 1;
+        } else if float {
+            return Err(diag.make("f64 にメソッド `{name}` はありません")
+                .at(span, "f64 のメソッドは `to_bits()`（ビットの並びを u64 で）・`sqrt()`・`abs()`・`max(y)`・`min(y)` だけです"));
+        } else {
+            return Err(diag.make("`{ty.show(t)}` にメソッド `{name}` はありません")
+                .at(span, "整数のメソッドは `abs()`・`max(y)`・`min(y)` だけです"));
+        }
+        if argv.len() != arity { return Err(arity_error(name, arity, argv.len(), span)); }
+        for a in argv { expect(a, t)?; }
+        return Ok(ret);
+    }
+
+    /// `p.name(argv)`。メソッドは `構造体名.name` という関数で、最初の引数が `this`（`ref 構造体`）
+    fn mut Result<ty.Ty, diag.Diag> method_call(ref ast.Expr e, ref ast.Expr recv, str name, ref ast.Expr[] argv, i64 span, ref Hint hint) {
+        let rt = expr(recv)?;
+        let inner = if ty.has_pointee(rt) { ty.inner(rt) } else { ty.cl(rt) };
+        let k = ty.tag(inner);
+        if k == "Array" && (name == "sort" || name == "sort_by" || name == "sort_unstable" || name == "sort_unstable_by" || name == "map" || name == "filter") {
+            // 並べ替えは長さを変えないので、配列にも使える。map / filter は新しいリストを作る
+            let el = ty.inner(inner);
+            return list_method(recv, rt, el, name, argv, span);
+        }
+        if k == "Array" {
+            if name != "len" || argv.len() > 0 {
+                return Err(diag.make("配列にメソッド `{name}` はありません")
+                    .at(span, "配列のメソッドは `len()`（長さ）と `sort()`・`sort_by(f)`・`sort_unstable()`・`sort_unstable_by(f)`・`map(f)`・`filter(f)` だけです")
+                    .with_note("伸び縮みさせたいなら、リスト `i64[]` を使ってください"));
+            }
+            return Ok(ty.i64t());
+        }
+        if k == "List" {
+            let el2 = ty.inner(inner);
+            return list_method(recv, rt, el2, name, argv, span);
+        }
+        if k == "Map" {
+            let mk = ty.map_key(inner);
+            let mv = ty.inner(inner);
+            return map_method(recv, rt, mk, mv, name, argv, span);
+        }
+        if k == "Str" { return str_method(name, argv, span); }
+        if k == "Float" || k == "Int" { return num_method(inner, name, argv, span); }
+        if k == "Task" {
+            let tr = ty.inner(inner);
+            return task_method(tr, name, argv, span);
+        }
+        if k == "Chan" {
+            let cx = ty.inner(inner);
+            return chan_method(cx, name, argv, span);
+        }
+        if k == "Param" {
+            let p = ty.name_of(inner);
+            let str[] mut ifaces = [];
+            for b in bound_list(bound_of(p)) {
+                if b != ORDERED { ifaces.push(b); }
+            }
+            let help = "`<{p}: 名前>` のように、`{name}` を持つ interface を条件にしてください";
+            return iface_method_call(recv, rt, ifaces, p, help, name, argv, span);
+        }
+        if k == "Iface" {
+            let i = ty.name_of(inner);
+            let help2 = "interface `{i}` に書いたメソッドだけ呼べます";
+            let str[] one = [i];
+            return iface_method_call(recv, rt, one, i, help2, name, argv, span);
+        }
+        let rk = ty.tag(rt);
+        let st = if rk == "Struct" || rk == "Enum" {
+            ty.cl(rt)
+        } else if ty.has_pointee(rt) && (k == "Struct" || k == "Enum") {
+            ty.cl(inner)
+        } else {
+            return Err(diag.make("メソッドを呼べるのは構造体と enum だけです").at(recv.span, "これは `{ty.show(rt)}` です"));
+        };
+        let sname = ty.name_of(st);
+        if ty.is(st, "Enum") {
+            // interp は enum の値から型の名前が分からないので、ここで書いておく
+            info.menums[e.id] = sname;
+        }
+        let full = sname + "." + name;
+        if !is_fn(full) {
+            let prefix = sname + ".";
+            let str[] mut names = [];
+            for s in sigs {
+                if s.name.starts_with(prefix) { names.push(s.name.slice(prefix.len(), s.name.len())); }
+            }
+            names.sort();
+            let d = diag.make("`{sname}` にメソッド `{name}` はありません").at(span, "このメソッドは定義されていません");
+            let names_s = names.join(", ");
+            if names.len() == 0 { return Err(d.with_note("`{sname}` にはメソッドがありません")); }
+            return Err(d.with_note("`{sname}` のメソッド: {names_s}"));
+        }
+        let si = f_at[full];
+        if !sigs[si].method {
+            return Err(diag.make("`{full}` は静的メソッドです")
+                .at(span, "値からは呼べない")
+                .with_note("`{sname}.{name}(...)` と呼んでください"));
+        }
+        if argv.len() + 1 != sigs[si].params.len() {
+            return Err(arity_error(sname + "." + name, sigs[si].params.len() - 1, argv.len(), span));
+        }
+        let tparams = sigs[si].tparams.map((x) -> x);
+        let params = ty.cls(sigs[si].params);
+        let ret = ty.cl(sigs[si].ret);
+        let mut mutable = false;
+        let mut this_ty = ty.Ty.Unit;
+        if ty.is(params[0], "Ref") {
+            this_ty = ty.inner(params[0]);
+            mutable = ty.ref_mut(params[0]);
+        } else {
+            // `fn take`: receiver を値として渡す（ムーブ）。own / ref の先からは取り出せない
+            if !(rk == "Struct" || rk == "Enum") {
+                return Err(diag.make("`{full}` は this を値で受け取るメソッドです")
+                    .at(recv.span, "これは `{ty.show(rt)}` なので、中身を取り出せない")
+                    .with_note("own や ref の先の値には呼べません（構造体のフィールドから値を取り出せないのと同じ）"));
+            }
+            info.mtakes[e.id] = true;
+            this_ty = ty.cl(params[0]);
+        }
+        if mutable {
+            // 書き換えるメソッド（`fn mut`）は、`ref mut` で借りられる相手にだけ呼べる
+            require_mut(recv, rt, span, "書き換えるメソッド `{name}` を呼ぼうとした")?;
+        }
+        let ty.Ty[] mut pre_p = [this_ty];
+        let ty.Ty[] mut pre_h = [ty.cl(st)];
+        if hint.some {
+            pre_p.push(ty.cl(ret));
+            pre_h.push(ty.cl(hint.t));
+        }
+        let ty.Ty[] mut rest = [];
+        for (i, p) in params {
+            if i > 0 { rest.push(ty.cl(p)); }
+        }
+        let ast.FieldInit[] no_inits = [];
+        let m = instantiate(tparams, rest, argv, no_inits, false, pre_p, pre_h, true)?;
+        if ty.contains_kind(ret, "Param") || ty.any_unbound(params, tparams, m) {
+            all_bound(tparams, m, span, "`{name}`")?;
+        }
+        let bounds = sigs[si].bounds.map((x) -> x);
+        check_bounds(tparams, bounds, m, span)?;
+        Ok(ty.subst(ret, m))
+    }
+
+    // ------------------------------------------------ 整数
+
+    /// 二つの整数を同じ型（広い方）にそろえる
+    fn mut Result<str, diag.Diag> common_of(ref ast.Expr l, ref ty.Ty lt, ref ast.Expr r, ref ty.Ty rt, i64 span) {
+        let a = ty.int_of(lt);
+        let b = ty.int_of(rt);
+        let c = ty.common(a, b);
+        if c == "" {
+            return Err(diag.make("型の違う整数どうしの演算です")
+                .at(span, "`{a}` と `{b}`")
+                .with_note("どちらかに値が欠けずにそろえられないので、`as` で型をそろえてください"));
+        }
+        let ct = ty.Ty.Int(c);
+        convert(l.id, lt, ct);
+        convert(r.id, rt, ct);
+        Ok(c)
+    }
+
+    /// 整数の定数の式を型 `t` として調べる。数をそのまま書いて範囲を超えるならエラー、計算した結果が超えるなら警告
+    fn mut Result<ty.Ty, diag.Diag> const_expr(ref ast.Expr e, str t) {
+        set_tree(e, t);
+        match const_val(e) {
+            case Err(ce) -> {
+                match ce {
+                    case DivZero(sp) -> warns.push(diag.warn("0 で割っています").at(sp, "実行するとここでエラーになる"));
+                    case Overflow -> warn_overflow(e.span, t);
+                }
+            }
+            case Ok(v) -> {
+                if !ty.contains(t, v) {
+                    let bare = match ref e.kind {
+                        case Int(n) -> true;
+                        case Unary(op, x) -> {
+                            match ref x.kind {
+                                case Int(n) -> op == "-";
+                                default -> false;
+                            }
+                        }
+                        default -> false;
+                    };
+                    if bare { return Err(out_of_range(v, t, e.span)); }
+                    warn_overflow(e.span, t);
+                }
+            }
+        }
+        Ok(ty.Ty.Int(t))
+    }
+
+    /// for-else の本体に break があるときの警告
+    fn mut warn_for_else(ref ast.Block body) {
+        let at = find_break(body);
+        if at >= 0 {
+            warns.push(diag.warn("for の else は、1 回も回らなかったときだけ実行されます")
+                .at(at, "この break で抜けても抜けなくても、else とは関係ない")
+                .with_note("Python の for-else（break しなかったら実行）とは違います。break したかを知りたいときは、変数に記録してください"));
+        }
+    }
+
+    fn mut warn_overflow(i64 span, str t) {
+        warns.push(diag.warn("整数があふれます")
+            .at(span, "この計算は {t} の範囲を超える")
+            .with_note("実行すると値は一周します（{t} の範囲は {ty.min_text(t)}〜{ty.max_text(t)}。最大値 + 1 は最小値になる）"));
+    }
+
+    // ------------------------------------------------ 借りる・書き込む
+
+    /// 引数 `a`（型 `t`）を、引数の型 `want` が `ref T` なら自動で借りる。借りるのは場所だけ
+    fn mut Result<ty.Ty, diag.Diag> auto_borrow(ref ast.Expr a, ty.Ty t, ref ty.Ty want) {
+        if !(ty.is(want, "Ref") && !ty.ref_mut(want)) || ty.is(t, "Ref") {
+            return Ok(t);
+        }
+        if !is_place(a) {
+            // 一時的な値も借りる（呼び出しが終わったら捨てる）
+            if ty.is(t, "Unit") || ty.is(t, "Never") || ty.is(t, "Fn") { return Ok(t); }
+            info.borrows[a.id] = true;
+            let target = if ty.is(t, "Own") { ty.inner(t) } else { t };
+            return Ok(ty.Ty.Ref(own target, false));
+        }
+        let target = if ty.has_pointee(t) {
+            ty.inner(t)
+        } else {
+            let at = inside_map(a)?;
+            if at >= 0 { return Err(map_borrow_error(at)); }
+            t
+        };
+        info.borrows[a.id] = true;
+        Ok(ty.Ty.Ref(own target, false))
+    }
+
+    /// 場所 `e`（own / ref でない値）が、辞書の値の中にあるか。あればその添字の位置（なければ -1）
+    fn mut Result<i64, diag.Diag> inside_map(ref ast.Expr e) {
+        let mut is_index = false;
+        match ref e.kind {
+            case Field(base, n) -> {}
+            case Index(base, i) -> is_index = true;
+            default -> return Ok(-1);
+        }
+        // 型をもう一度求める（警告が二重に出ないよう、増えた分は捨てる）
+        let n = warns.len();
+        let bt = match ref e.kind {
+            case Field(base, f) -> expr(base);
+            case Index(base, i) -> expr(base);
+            default -> Ok(ty.Ty.Unit);
+        };
+        while warns.len() > n { warns.pop(); }
+        let t = bt?;
+        if ty.has_pointee(t) {
+            // own / ref の先は別のスロットなので、ここで道筋が切れる
+            let x = ty.inner(t);
+            return Ok(if ty.is(x, "Map") && is_index { e.span } else { -1 });
+        }
+        if ty.is(t, "Map") && is_index { return Ok(e.span); }
+        if ty.is(t, "List") && is_index { return Ok(-1); }
+        match ref e.kind {
+            case Field(base, f) -> inside_map(base);
+            case Index(base, i) -> inside_map(base);
+            default -> Ok(-1);
+        }
+    }
+
+    fn mut Result<Access, diag.Diag> access(ref ast.Expr e) {
+        match ref e.kind {
+            case Var(name) -> {
+                if is_captured(name) {
+                    return Err(diag.make("クロージャに取り込んだ `{name}` は書き換えられません")
+                        .at(e.span, "クロージャは外の変数の値を写して持つので、書き換えても外には届かない")
+                        .with_note("書き換えたいときは、外で `ref mut` を取り、その ref を使ってください"));
+                }
+                match lookup(name) {
+                    case Some(v) -> Ok(if v.m { Access.Write } else { Access.ImmutVar(name, v.decl) });
+                    case None -> Ok(Access.Write);
+                }
+            }
+            case Deref(x) -> {
+                let t = expr(x)?;
+                // 取り込んだ `ref mut` の先は書き換えられる（写しても同じ先を指す）
+                let mut captured_ref = false;
+                match ref x.kind {
+                    case Var(n) -> {
+                        match ref t {
+                            case Ref(r, m) -> { captured_ref = is_captured(n); }
+                            default -> {}
+                        }
+                    }
+                    default -> {}
+                }
+                let outer = if is_place(x) && !captured_ref { access(x)? } else { Access.Write };
+                Ok(through(outer, t, origin(x), describe(x)))
+            }
+            case Field(base, n) -> {
+                let a = access(base)?;
+                let t = expr(base)?;
+                Ok(through(a, t, origin(base), describe(base)))
+            }
+            case Index(base, i) -> {
+                let a = access(base)?;
+                let t = expr(base)?;
+                Ok(through(a, t, origin(base), describe(base)))
+            }
+            default -> Ok(Access.Write);
+        }
+    }
+
+    /// エラーで「この ref はどこから来たか」として指す位置。変数なら宣言
+    fn i64 origin(ref ast.Expr e) {
+        match ref e.kind {
+            case Var(n) -> {
+                match lookup(n) {
+                    case Some(v) -> v.decl;
+                    case None -> e.span;
+                }
+            }
+            default -> e.span;
+        }
+    }
+}
+
+fn bool has_span(ref i64[] xs, i64 x) {
+    for y in xs {
+        if y == x { return true; }
+    }
+    false
+}
+
+/// `ref T` の引数に書いた値の式（`[1, 2]`・`None`・`5` など）は、`T` を入れる先として調べる
+fn ty.Ty arg_hint(ref ast.Expr a, ty.Ty p) {
+    let literal = match ref a.kind {
+        case ArrayLit(xs) -> true;
+        case MapLit(xs) -> true;
+        case ArrayRepeat(x, n) -> true;
+        case Variant(en, vn, xs) -> true;
+        case StructLit(n, xs) -> true;
+        default -> is_const_tree(a);
+    };
+    if literal && ty.is(p, "Ref") && !ty.ref_mut(p) { ty.inner(p) } else { p }
+}
+
+fn i64 arg_order(ref ast.Expr a) {
+    match ref a.kind {
+        case Variant(en, vn, xs) -> 2;
+        case Lambda(l) -> 2;
+        default -> if is_const_tree(a) { 1 } else { 0 };
+    }
+}
+
+fn bool is_lambda_expr(ref ast.Expr a) {
+    match ref a.kind {
+        case Lambda(l) -> true;
+        default -> false;
+    }
+}
+
+fn bool is_unit_expr(ref ast.Expr a) {
+    match ref a.kind {
+        case Unit -> true;
+        default -> false;
+    }
+}
+
+// ---------------------------------------------------------------- 入り口
+
+/// プログラム全体の型を調べる。よければ、警告と記録を持った Checker を返す
+pub fn Result<Checker, diag.Diag> check(ref ast.Program prog) {
+    let mut c = Checker {
+        sdefs: [], s_at: [], edefs: [], e_at: [], sigs: [], f_at: [], idefs: [], i_at: [], scopes: [],
+        cur_ret: ty.Ty.Unit, cur_tps: [], b_names: [], b_vals: [], cur_fields: [], lstack: [], warns: [],
+        mods: prog.modules.map((x) -> x), cnames: prog.consts.map((x) -> x), cur_mod: "",
+        has_pending: false, pending: ty.tmap(), borrow_spans: prog.borrow_lambdas.map((x) -> x), info: new_info(prog.nodes),
+    };
+    for s in prog.structs {
+        if c.is_struct(s.name) {
+            return Err(diag.make("構造体 `{s.name}` が二重に定義されています").at(s.span, "ここで再定義されている"));
+        }
+        c.s_at[s.name] = c.sdefs.len();
+        c.sdefs.push(SInfo { name: s.name, tparams: s.tparams.map((x) -> x), fields: s.fields.map((x) -> x), tys: [], span: s.span });
+    }
+    for en in prog.enums {
+        if c.is_struct(en.name) || c.is_enum(en.name) {
+            return Err(diag.make("型 `{en.name}` が二重に定義されています").at(en.span, "同じ名前の型がすでにある"));
+        }
+        let VInfo[] mut vs = [];
+        for v in en.variants { vs.push(VInfo { name: v.name, tys: [] }); }
+        c.e_at[en.name] = c.edefs.len();
+        c.edefs.push(EInfo { name: en.name, tparams: en.tparams.map((x) -> x), vs: vs, span: en.span, ready: false });
+    }
+    for i in prog.interfaces {
+        if c.is_struct(i.name) || c.is_enum(i.name) || c.is_iface(i.name) || i.name == ORDERED {
+            return Err(diag.make("型 `{i.name}` が二重に定義されています").at(i.span, "同じ名前の型がすでにある"));
+        }
+        c.i_at[i.name] = c.idefs.len();
+        c.idefs.push(IInfo { name: i.name, ms: [] });
+    }
+    for i in prog.interfaces {
+        c.cur_tps = [];
+        let IMethod[] mut ms = [];
+        for (j, m) in i.methods {
+            let ty.Ty[] mut params = [];
+            for p in m.params { params.push(c.resolve(p.ty)?); }
+            let ret = if m.has_ret { c.resolve(m.ret)? } else { ty.Ty.Unit };
+            ms.push(IMethod { name: m.name, m: i.muts[j], params: params, ret: ret });
+        }
+        c.idefs[c.i_at[i.name]].ms = ms;
+    }
+    for s in prog.structs {
+        c.cur_tps = s.tparams.map((x) -> x);
+        let tys = c.resolve_all(s.field_types)?;
+        c.sdefs[c.s_at[s.name]].tys = tys;
+    }
+    for en in prog.enums {
+        c.cur_tps = en.tparams.map((x) -> x);
+        let d = c.e_at[en.name];
+        for (j, v) in en.variants {
+            let tys = c.resolve_all(v.types)?;
+            c.edefs[d].vs[j].tys = tys;
+        }
+        c.edefs[d].ready = true;
+    }
+    for s in prog.structs { c.check_finite(s.name, s.span)?; }
+    for en in prog.enums { c.check_finite(en.name, en.span)?; }
+    for f in prog.fns {
+        if is_builtin(f.name) {
+            return Err(diag.make("`{f.name}` は組み込み関数の名前です").at(f.span, "別の名前にしてください"));
+        }
+        if c.is_fn(f.name) {
+            return Err(diag.make("関数 `{f.name}` が二重に定義されています").at(f.span, "ここで再定義されている"));
+        }
+        if f.name == "main" && (f.has_ret || f.params.len() > 0) {
+            return Err(diag.make("`main` は引数も戻り値もない関数です")
+                .at(f.span, "ここ")
+                .with_note("`fn main() {{ ... }}` と書いてください"));
+        }
+        for b0 in f.bounds {
+            for b in bound_list(b0) {
+                if b != ORDERED && !c.is_iface(b) {
+                    return Err(diag.make("条件 `{b}` は定義されていません")
+                        .at(f.span, "型の引数の条件には interface の名前か `ordered` を書きます"));
+                }
+            }
+        }
+        c.cur_tps = f.tparams.map((x) -> x);
+        let ty.Ty[] mut params = [];
+        for p in f.params { params.push(c.resolve(p.ty)?); }
+        let ret = if f.has_ret { c.resolve(f.ret)? } else { ty.Ty.Unit };
+        let method = f.name.contains(".") && f.params.len() > 0 && f.params[0].name == "this";
+        c.f_at[f.name] = c.sigs.len();
+        c.sigs.push(FnSig {
+            name: f.name, method: method, tparams: f.tparams.map((x) -> x), bounds: f.bounds.map((x) -> x), params: params, ret: ret,
+        });
+    }
+    for f in prog.fns { c.check_fn(f)?; }
+    Ok(c)
+}

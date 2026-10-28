@@ -1,0 +1,22 @@
+# 名前 場所:世代 場所:消した 場所:添字 実行時:世代 実行時:消した 実行時:添字（bench/checks.sh が書く）
+binarytrees 8 0 0 306970644 0 0
+bst 14 0 0 446506554 0 0
+chan 0 0 0 0 0 0
+concat 0 0 0 0 0 0
+fannkuch 0 0 16 0 0 383871267
+fib 0 0 0 0 0 0
+graph 0 0 12 0 0 431279700
+linkedlist 5 0 0 500100000 0 0
+mandelbrot 0 0 2 0 0 640000
+matmul 0 0 5 0 0 648720000
+nbody 0 57 38 0 1230000276 1225000098
+parsum 0 0 1 0 0 0
+particles 0 15 14 0 970247632 970237632
+pingpong 0 0 0 0 0 0
+refmut 0 16 2 0 1070247632 100010000
+shortlived 2 0 3 0 0 300000000
+sieve 0 0 2 0 0 66588035
+sort 0 0 3 0 0 3002
+sortworst 0 0 1 0 0 12040
+spectralnorm 0 8 8 0 160160040 160088000
+words 0 0 2 0 0 10000

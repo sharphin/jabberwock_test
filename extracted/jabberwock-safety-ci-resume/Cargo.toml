@@ -1,0 +1,21 @@
+[package]
+name = "jabberwock"
+version = "0.1.0"
+edition = "2021"
+default-run = "jabberwock"
+description = "own と世代付き ref だけで安全を目指す小さな言語の核"
+
+[lib]
+name = "jabberwock"
+path = "src/lib.rs"
+
+[[bin]]
+name = "jabberwock"
+path = "src/main.rs"
+
+[[bin]]
+name = "alice"
+path = "src/alice.rs"
+
+[profile.release]
+opt-level = 3

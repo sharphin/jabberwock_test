@@ -1,0 +1,112 @@
+# 安全の確かめ（docs/safety-testing.md の「まだ確かめていないこと」を機械で流す）。
+# 自動起動はしない。GitHub Actionsから手動で起動した場合だけ scale を適用する。
+name: safety
+
+on:
+  workflow_dispatch:
+    inputs:
+      scale:
+        description: "本数の倍率"
+        default: "5"
+
+
+env:
+  JW_REQUIRE_RETIREMENT_TESTS: "1"
+  SCALE: ${{ inputs.scale || '1' }}
+  ASAN_FLAGS: "-fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer"
+
+jobs:
+  safety:
+    strategy:
+      fail-fast: false
+      matrix:
+        check:
+          - robust # 2・8: 極端な入力・壊したプログラム・攻撃プログラム（ASan/UBSan、-O2 と LTO）・書き出しの守り（4）
+          - fuzz-asan # 1・5: 型の通るプログラムを ASan/UBSan つきで（-O1 と -O2）。解析が間違って検査を消すと、ここで見つかる
+          - tsan # 3: スレッドのデータ競合
+          - msan # 6: 初期化していないメモリを読まないか
+          - jwc # 7: jwc で作った実行ファイルも比べる
+          - jwc-msan # 6・7: 自己ホストが生成した LLVM も MSan で検査
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+      - name: clang の sanitizer と lld を入れる
+        run: |
+          ver=$(clang -dumpversion | cut -d. -f1)
+          sudo apt-get update -q
+          sudo apt-get install -y -q "libclang-rt-$ver-dev" lld
+          # 新しいカーネルのアドレスの散らし方だと、TSan / MSan / ASan が起動できないことがある
+          sudo sysctl vm.mmap_rnd_bits=28
+          clang --version
+      - name: jabberwock を作る
+        run: cargo build --release && cargo test --no-run -q
+
+      - name: sanitizer が欠陥を検出できること（負例）
+        run: |
+          case '${{ matrix.check }}' in
+            tsan) flags='-fsanitize=thread' ;;
+            msan|jwc-msan) flags='-fsanitize=memory' ;;
+            *) flags="$ASAN_FLAGS" ;;
+          esac
+          JW_CFLAGS="$flags" TSAN_OPTIONS=halt_on_error=1 MSAN_OPTIONS=halt_on_error=1 \
+            cargo test --test sanitizers -- --nocapture
+
+      - name: 堅牢性テスト（ASan/UBSan）
+        if: matrix.check == 'robust'
+        run: |
+          JW_ROBUST=$((150 * SCALE)) JW_ROBUST_SEED=${{ github.run_number }}000 JW_ROBUST_ASAN=1 JW_ROBUST_DUMP=dump \
+            cargo test --test robust -- --nocapture
+      - name: 壊したプログラムを実行ファイルでも動かす（ASan/UBSan）
+        if: matrix.check == 'robust' && github.event_name != 'pull_request'
+        run: |
+          JW_ROBUST=$((100 * SCALE)) JW_ROBUST_SEED=${{ github.run_number }}500 JW_ROBUST_ASAN=1 JW_ROBUST_NATIVE=1 JW_ROBUST_DUMP=dump \
+            cargo test --test robust mutated
+
+      - name: 型の通るプログラム（ASan/UBSan、-O1）
+        if: matrix.check == 'fuzz-asan'
+        run: |
+          JW_CFLAGS="$ASAN_FLAGS" JW_FUZZ=$((200 * SCALE)) JW_FUZZ_SEED=${{ github.run_number }}000 JW_FUZZ_DUMP=dump \
+            cargo test --test fuzz -- --nocapture
+      - name: 型の通るプログラム（ASan/UBSan、-O2 と LTO）
+        if: matrix.check == 'fuzz-asan'
+        run: |
+          JW_NATIVE=o2 JW_CFLAGS="$ASAN_FLAGS" JW_FUZZ=$((100 * SCALE)) JW_FUZZ_SEED=${{ github.run_number }}500 JW_FUZZ_DUMP=dump \
+            cargo test --test fuzz -- --nocapture
+      - name: 全テストを ASan/UBSan つきの実行ファイルで突き合わせる
+        if: matrix.check == 'fuzz-asan'
+        run: JW_NATIVE=1 JW_CFLAGS="$ASAN_FLAGS" cargo test --no-fail-fast
+
+      - name: スレッドのテストを TSan つきで
+        if: matrix.check == 'tsan'
+        env:
+          TSAN_OPTIONS: halt_on_error=1
+        run: |
+          for i in $(seq 1 "$((3 * SCALE))"); do
+            JW_NATIVE=1 JW_CFLAGS="-fsanitize=thread" cargo test --no-fail-fast --test threads --test native --test system --test sanitizers --test retirement
+          done
+
+      - name: 全テストを MSan つきの実行ファイルで突き合わせる
+        if: matrix.check == 'msan'
+        env:
+          MSAN_OPTIONS: halt_on_error=1
+        run: JW_NATIVE=1 JW_CFLAGS="-fsanitize=memory -fno-omit-frame-pointer" cargo test --no-fail-fast
+
+      - name: jwc を作り、jwc で作った実行ファイルとも比べる
+        if: matrix.check == 'jwc' || matrix.check == 'jwc-msan'
+        run: |
+          ./target/release/jabberwock build -o jwc-bin jwc/main.jw
+          flags="$ASAN_FLAGS"
+          if [ '${{ matrix.check }}' = jwc-msan ]; then flags='-fsanitize=memory -fno-omit-frame-pointer'; fi
+          JW_CFLAGS="$flags" JW_FUZZ_JWC="$PWD/jwc-bin" JW_FUZZ=$((200 * SCALE)) JW_FUZZ_SEED=${{ github.run_number }}000 JW_FUZZ_DUMP=dump \
+            cargo test --test fuzz -- --nocapture
+          JW_NATIVE=o2 JW_CFLAGS="$flags" JW_FUZZ_JWC="$PWD/jwc-bin" JW_FUZZ=$((100 * SCALE)) JW_FUZZ_SEED=${{ github.run_number }}500 JW_FUZZ_DUMP=dump \
+            cargo test --test fuzz -- --nocapture
+
+      - name: 落ちた入力を残す
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dump-${{ matrix.check }}
+          path: dump
+          if-no-files-found: ignore

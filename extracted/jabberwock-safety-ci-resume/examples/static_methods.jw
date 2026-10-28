@@ -1,0 +1,33 @@
+struct Point {
+    i64 x;
+    i64 y;
+
+    static fn Point origin() {
+        Point { x: 0, y: 0 }
+    }
+
+    static fn Point at(i64 x, i64 y) {
+        Point { x: x, y: y }
+    }
+
+    fn Point moved(i64 d) {
+        at(x + d, y + d)
+    }
+}
+
+struct Pair<T> {
+    T a;
+    T b;
+
+    static fn Pair<T> same(T v) {
+        Pair { a: v, b: v }
+    }
+}
+
+fn main() {
+    let p = Point.origin();
+    let q = Point.at(1, 2).moved(10);
+    print(p.x, q.x, q.y);
+    let s = Pair.same("w");
+    print(s.a, s.b);
+}

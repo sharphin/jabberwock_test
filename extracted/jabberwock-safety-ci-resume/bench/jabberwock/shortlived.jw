@@ -1,0 +1,16 @@
+// 短い命の値を 1 億個作る。16 個の輪に own を入れ替えるので、毎回確保して古いものを解放する（同じ区画が使い回される）
+struct P {
+    i64 x;
+    i64 y;
+}
+
+fn main() {
+    let (own P)[] mut ring = [];
+    for i in range(16) { ring.push(own P { x: 0, y: 0 }); }
+    let mut s = 0;
+    for i in range(100000000) {
+        ring[i % 16] = own P { x: i, y: i * 2 };
+        s += ring[(i + 5) % 16].y - ring[(i + 3) % 16].x;
+    }
+    print(s);
+}
