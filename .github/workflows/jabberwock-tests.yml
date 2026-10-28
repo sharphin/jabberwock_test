@@ -99,6 +99,13 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+      - name: Install LLVM verifier
+        timeout-minutes: 5
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq llvm
+          command -v opt
+          opt --version
       - name: Linux safety probes
         timeout-minutes: 55
         run: |
