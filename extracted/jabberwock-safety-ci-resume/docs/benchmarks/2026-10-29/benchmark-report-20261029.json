@@ -1,0 +1,3060 @@
+{
+  "schema_version": 2,
+  "started_utc": "2026-10-29T00:03:22.519183+00:00",
+  "git_sha": "52c22771aef65e79403da810bd377fb2e2fa4af7",
+  "environment": {
+    "platform": "Linux-6.18.55-x86_64-with-glibc2.41",
+    "machine": "x86_64",
+    "processor": "",
+    "clang": "Debian clang version 19.1.7 (3~deb12u1)",
+    "clang++": "Debian clang version 19.1.7 (3~deb12u1)",
+    "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+    "go": "go version go1.27.3 linux/amd64"
+  },
+  "runs": 8,
+  "suite": [
+    "fib",
+    "matmul",
+    "mandelbrot",
+    "sort",
+    "linkedlist"
+  ],
+  "subjects": [
+    "jwc",
+    "rust",
+    "cpp",
+    "go"
+  ],
+  "measurement_order_balance": "BALANCED",
+  "flags": {
+    "jwc_codegen": [
+      "--ll"
+    ],
+    "jwc_native": [
+      "clang",
+      "-O2",
+      "-flto",
+      "-fuse-ld=lld"
+    ],
+    "rust": [
+      "rustc",
+      "-C",
+      "opt-level=3",
+      "-C",
+      "lto=fat",
+      "--edition",
+      "2021"
+    ],
+    "cpp": [
+      "clang++",
+      "-O2",
+      "-flto",
+      "-fuse-ld=lld",
+      "-std=c++17",
+      "-pthread"
+    ],
+    "go": [
+      "go",
+      "build"
+    ]
+  },
+  "compiler_hashes": {
+    "jwc": "2bb3a9669455b00aa4cb014a48c14d346e6f62696062913430da1bb1355ff19a",
+    "runtime": "4020f3be75324ff4baada3f4b02bb871c1cc902b2e86a38d1bc9f5d844660e92",
+    "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+    "clang++": "Debian clang version 19.1.7 (3~deb12u1)",
+    "go": "go version go1.27.3 linux/amd64"
+  },
+  "source_hashes": {
+    "fib": {
+      "jwc": "6da6fdf1a058ce6b32cfefea48407b9b91360b4373e17f16c25db0c60c052ba2",
+      "cpp": "4e7adfc7e7afd67492b57cb84d306e8461ca879928abb66826fd35dc803b0779",
+      "rust": "aa42a6aa23ba202ad96b42a6194a6f1fe6cbeb4146378797bb86d80dec44eda6",
+      "go": "03ed3bffe9d7abc9177c9255279955d923d5ef1e18f67ce5a45d722bc51f4c50"
+    },
+    "matmul": {
+      "jwc": "50e2ee7dca092bd17be2b1dafdd4288b6b1fe26a48c1c5e3a170d45ed14343ad",
+      "cpp": "d95ad6218b6373489d123cd32f50770ef9c7a775efc9115f9ad9a627c3d38e03",
+      "rust": "51c251f8b5bbfffe802cac72a16a57d964b21b6448fc8206a2f216f3da9cb763",
+      "go": "2a3c024b3a7345cb6811b66306fac3d56b8cdbdc4f05280ab9aed1def0a2d211"
+    },
+    "mandelbrot": {
+      "jwc": "f501ccb11ad068f028c21485d11d92cbfc3b15b5c5a7565dd8ea8184ed633d92",
+      "cpp": "2527aa3e68d0c5c8b5e05f820f3818915d5416802b07d0ccb4813e13005736bd",
+      "rust": "2fd0b821f1e33b0016b6eb966c9049c05ecb9154b3820ea709d609d3c65ef968",
+      "go": "60bceba85d7e4ed7071df2644d91b03e758febbc740168b1370743c2eb2900a9"
+    },
+    "sort": {
+      "jwc": "526c06c72e5ae72a4c2b3c9885cdd48b30fd23982c62a87b93e208affab15cad",
+      "cpp": "fcb09bcb51e77f34c76476bbcd316bc5b482e68244d248d89725545d3d11c417",
+      "rust": "08c1ce4f435a985113e9ed7d2279d70d2314abdacc04afca429b4c578924049d",
+      "go": "a1c7daeca83c371f529d808adef6e107453042f3b73625406292aeecfe7a2a8b"
+    },
+    "linkedlist": {
+      "jwc": "64a2ed136f4a3fcce13540926f1ba0f7eb34564b916edf4f7a8cc39d0960ea31",
+      "cpp": "7e33d3e29ae1cc8611026610ba8852c65e7ba6a5e62ea3a1fb52fdbabb420491",
+      "rust": "f6b0cc179d8e56794630c5ce05a63a75dc6deb3315e1e0d8fae7bd7acf6cbbc4",
+      "go": "db8c8fd9d590bac4f44613dc851cd016580c204bfb47e20b8972598d15c1c36e"
+    }
+  },
+  "preparation": [
+    {
+      "name": "measure-helper",
+      "cmd": [
+        "cc",
+        "-O2",
+        "-o",
+        "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+        "/workspace/jabberwock/bench/measure.c"
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    }
+  ],
+  "cases": {
+    "fib": {
+      "status": "PASS",
+      "commands": [
+        {
+          "stage": "jwc-LLVM",
+          "exit": 0,
+          "cmd": [
+            "/workspace/jabberwock/target/release/jwc-benchmark",
+            "--ll",
+            "/workspace/jabberwock/bench/jabberwock/fib.jw"
+          ],
+          "llvm_bytes": 20496,
+          "stderr": ""
+        },
+        {
+          "stage": "jwc-native",
+          "cmd": [
+            "clang",
+            "-O2",
+            "-flto",
+            "-fuse-ld=lld",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/fib/jwc.ll",
+            "/workspace/jabberwock/runtime/jw_rt.c",
+            "-lm",
+            "-pthread",
+            "-Wno-override-module",
+            "-o",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/fib/jwc"
+          ],
+          "exit": 0,
+          "stdout": "",
+          "stderr": ""
+        },
+        {
+          "stage": "rust",
+          "cmd": [
+            "rustc",
+            "-C",
+            "opt-level=3",
+            "-C",
+            "lto=fat",
+            "--edition",
+            "2021",
+            "-o",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/fib/rust",
+            "/workspace/jabberwock/bench/rust/fib.rs"
+          ],
+          "exit": 0,
+          "stdout": "",
+          "stderr": ""
+        },
+        {
+          "stage": "cpp",
+          "cmd": [
+            "clang++",
+            "-O2",
+            "-flto",
+            "-fuse-ld=lld",
+            "-std=c++17",
+            "-pthread",
+            "-o",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/fib/cpp",
+            "/workspace/jabberwock/bench/cpp/fib.cpp"
+          ],
+          "exit": 0,
+          "stdout": "",
+          "stderr": ""
+        },
+        {
+          "stage": "go",
+          "cmd": [
+            "go",
+            "build",
+            "-o",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/fib/go",
+            "/workspace/jabberwock/bench/go/fib.go"
+          ],
+          "exit": 0,
+          "stdout": "",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-jwc",
+          "round": 0,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/fib/jwc.run0.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/fib/jwc"
+          ],
+          "exit": 0,
+          "stdout": "0.325172 0.325172 0.325172 0.5\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-rust",
+          "round": 0,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/fib/rust.run0.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/fib/rust"
+          ],
+          "exit": 0,
+          "stdout": "0.312589 0.312589 0.312589 0.8\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-cpp",
+          "round": 0,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/fib/cpp.run0.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/fib/cpp"
+          ],
+          "exit": 0,
+          "stdout": "0.291791 0.291791 0.291791 1.5\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-go",
+          "round": 0,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/fib/go.run0.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/fib/go"
+          ],
+          "exit": 0,
+          "stdout": "0.530079 0.530079 0.530079 1.8\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-rust",
+          "round": 1,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/fib/rust.run1.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/fib/rust"
+          ],
+          "exit": 0,
+          "stdout": "0.298242 0.298242 0.298242 0.8\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-cpp",
+          "round": 1,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/fib/cpp.run1.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/fib/cpp"
+          ],
+          "exit": 0,
+          "stdout": "0.339940 0.339940 0.339940 1.5\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-go",
+          "round": 1,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/fib/go.run1.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/fib/go"
+          ],
+          "exit": 0,
+          "stdout": "0.580745 0.580745 0.580745 1.8\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-jwc",
+          "round": 1,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/fib/jwc.run1.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/fib/jwc"
+          ],
+          "exit": 0,
+          "stdout": "0.353057 0.353057 0.353057 0.6\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-cpp",
+          "round": 2,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/fib/cpp.run2.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/fib/cpp"
+          ],
+          "exit": 0,
+          "stdout": "0.301583 0.301583 0.301583 1.5\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-go",
+          "round": 2,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/fib/go.run2.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/fib/go"
+          ],
+          "exit": 0,
+          "stdout": "0.565784 0.565784 0.565784 1.9\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-jwc",
+          "round": 2,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/fib/jwc.run2.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/fib/jwc"
+          ],
+          "exit": 0,
+          "stdout": "0.330261 0.330261 0.330261 0.8\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-rust",
+          "round": 2,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/fib/rust.run2.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/fib/rust"
+          ],
+          "exit": 0,
+          "stdout": "0.303801 0.303801 0.303801 0.8\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-go",
+          "round": 3,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/fib/go.run3.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/fib/go"
+          ],
+          "exit": 0,
+          "stdout": "0.542376 0.542376 0.542376 1.8\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-jwc",
+          "round": 3,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/fib/jwc.run3.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/fib/jwc"
+          ],
+          "exit": 0,
+          "stdout": "0.303994 0.303994 0.303994 0.8\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-rust",
+          "round": 3,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/fib/rust.run3.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/fib/rust"
+          ],
+          "exit": 0,
+          "stdout": "0.318002 0.318002 0.318002 0.8\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-cpp",
+          "round": 3,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/fib/cpp.run3.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/fib/cpp"
+          ],
+          "exit": 0,
+          "stdout": "0.299044 0.299044 0.299044 1.5\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-go",
+          "round": 4,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/fib/go.run4.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/fib/go"
+          ],
+          "exit": 0,
+          "stdout": "0.504082 0.504082 0.504082 1.8\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-cpp",
+          "round": 4,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/fib/cpp.run4.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/fib/cpp"
+          ],
+          "exit": 0,
+          "stdout": "0.293250 0.293250 0.293250 1.5\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-rust",
+          "round": 4,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/fib/rust.run4.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/fib/rust"
+          ],
+          "exit": 0,
+          "stdout": "0.281984 0.281984 0.281984 0.8\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-jwc",
+          "round": 4,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/fib/jwc.run4.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/fib/jwc"
+          ],
+          "exit": 0,
+          "stdout": "0.304864 0.304864 0.304864 0.8\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-jwc",
+          "round": 5,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/fib/jwc.run5.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/fib/jwc"
+          ],
+          "exit": 0,
+          "stdout": "0.308345 0.308345 0.308345 0.8\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-go",
+          "round": 5,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/fib/go.run5.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/fib/go"
+          ],
+          "exit": 0,
+          "stdout": "0.503276 0.503276 0.503276 1.8\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-cpp",
+          "round": 5,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/fib/cpp.run5.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/fib/cpp"
+          ],
+          "exit": 0,
+          "stdout": "0.307191 0.307191 0.307191 1.5\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-rust",
+          "round": 5,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/fib/rust.run5.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/fib/rust"
+          ],
+          "exit": 0,
+          "stdout": "0.311592 0.311592 0.311592 0.8\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-rust",
+          "round": 6,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/fib/rust.run6.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/fib/rust"
+          ],
+          "exit": 0,
+          "stdout": "0.298578 0.298578 0.298578 0.8\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-jwc",
+          "round": 6,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/fib/jwc.run6.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/fib/jwc"
+          ],
+          "exit": 0,
+          "stdout": "0.298877 0.298877 0.298877 0.8\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-go",
+          "round": 6,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/fib/go.run6.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/fib/go"
+          ],
+          "exit": 0,
+          "stdout": "0.515094 0.515094 0.515094 1.8\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-cpp",
+          "round": 6,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/fib/cpp.run6.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/fib/cpp"
+          ],
+          "exit": 0,
+          "stdout": "0.292757 0.292757 0.292757 1.5\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-cpp",
+          "round": 7,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/fib/cpp.run7.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/fib/cpp"
+          ],
+          "exit": 0,
+          "stdout": "0.291028 0.291028 0.291028 1.5\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-rust",
+          "round": 7,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/fib/rust.run7.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/fib/rust"
+          ],
+          "exit": 0,
+          "stdout": "0.287097 0.287097 0.287097 0.8\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-jwc",
+          "round": 7,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/fib/jwc.run7.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/fib/jwc"
+          ],
+          "exit": 0,
+          "stdout": "0.323603 0.323603 0.323603 0.6\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-go",
+          "round": 7,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/fib/go.run7.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/fib/go"
+          ],
+          "exit": 0,
+          "stdout": "0.526285 0.526285 0.526285 1.8\n",
+          "stderr": ""
+        }
+      ],
+      "metrics": {
+        "jwc": {
+          "min_s": 0.298877,
+          "median_s": 0.315974,
+          "max_s": 0.353057,
+          "peak_rss_mb": 0.8,
+          "samples_s": [
+            0.325172,
+            0.353057,
+            0.330261,
+            0.303994,
+            0.304864,
+            0.308345,
+            0.298877,
+            0.323603
+          ]
+        },
+        "rust": {
+          "min_s": 0.281984,
+          "median_s": 0.3011895,
+          "max_s": 0.318002,
+          "peak_rss_mb": 0.8,
+          "samples_s": [
+            0.312589,
+            0.298242,
+            0.303801,
+            0.318002,
+            0.281984,
+            0.311592,
+            0.298578,
+            0.287097
+          ]
+        },
+        "cpp": {
+          "min_s": 0.291028,
+          "median_s": 0.296147,
+          "max_s": 0.33994,
+          "peak_rss_mb": 1.5,
+          "samples_s": [
+            0.291791,
+            0.33994,
+            0.301583,
+            0.299044,
+            0.29325,
+            0.307191,
+            0.292757,
+            0.291028
+          ]
+        },
+        "go": {
+          "min_s": 0.503276,
+          "median_s": 0.5281819999999999,
+          "max_s": 0.580745,
+          "peak_rss_mb": 1.9,
+          "samples_s": [
+            0.530079,
+            0.580745,
+            0.565784,
+            0.542376,
+            0.504082,
+            0.503276,
+            0.515094,
+            0.526285
+          ]
+        }
+      },
+      "outputs": {
+        "jwc": {
+          "sha256": "a9c936c441fe6280cabd79ab1abac782a93ac7ad3495f87b8040d653a046ff36",
+          "all_repetitions_verified": 8
+        },
+        "rust": {
+          "sha256": "a9c936c441fe6280cabd79ab1abac782a93ac7ad3495f87b8040d653a046ff36",
+          "all_repetitions_verified": 8
+        },
+        "cpp": {
+          "sha256": "a9c936c441fe6280cabd79ab1abac782a93ac7ad3495f87b8040d653a046ff36",
+          "all_repetitions_verified": 8
+        },
+        "go": {
+          "sha256": "a9c936c441fe6280cabd79ab1abac782a93ac7ad3495f87b8040d653a046ff36",
+          "all_repetitions_verified": 8
+        }
+      },
+      "ratios": {
+        "jwc_vs_rust": 1.0491,
+        "jwc_vs_cpp": 1.0669,
+        "jwc_vs_go": 0.5982
+      }
+    },
+    "matmul": {
+      "status": "PASS",
+      "commands": [
+        {
+          "stage": "jwc-LLVM",
+          "exit": 0,
+          "cmd": [
+            "/workspace/jabberwock/target/release/jwc-benchmark",
+            "--ll",
+            "/workspace/jabberwock/bench/jabberwock/matmul.jw"
+          ],
+          "llvm_bytes": 88473,
+          "stderr": ""
+        },
+        {
+          "stage": "jwc-native",
+          "cmd": [
+            "clang",
+            "-O2",
+            "-flto",
+            "-fuse-ld=lld",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/matmul/jwc.ll",
+            "/workspace/jabberwock/runtime/jw_rt.c",
+            "-lm",
+            "-pthread",
+            "-Wno-override-module",
+            "-o",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/matmul/jwc"
+          ],
+          "exit": 0,
+          "stdout": "",
+          "stderr": ""
+        },
+        {
+          "stage": "rust",
+          "cmd": [
+            "rustc",
+            "-C",
+            "opt-level=3",
+            "-C",
+            "lto=fat",
+            "--edition",
+            "2021",
+            "-o",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/matmul/rust",
+            "/workspace/jabberwock/bench/rust/matmul.rs"
+          ],
+          "exit": 0,
+          "stdout": "",
+          "stderr": ""
+        },
+        {
+          "stage": "cpp",
+          "cmd": [
+            "clang++",
+            "-O2",
+            "-flto",
+            "-fuse-ld=lld",
+            "-std=c++17",
+            "-pthread",
+            "-o",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/matmul/cpp",
+            "/workspace/jabberwock/bench/cpp/matmul.cpp"
+          ],
+          "exit": 0,
+          "stdout": "",
+          "stderr": ""
+        },
+        {
+          "stage": "go",
+          "cmd": [
+            "go",
+            "build",
+            "-o",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/matmul/go",
+            "/workspace/jabberwock/bench/go/matmul.go"
+          ],
+          "exit": 0,
+          "stdout": "",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-jwc",
+          "round": 0,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/matmul/jwc.run0.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/matmul/jwc"
+          ],
+          "exit": 0,
+          "stdout": "0.045275 0.045275 0.045275 9.0\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-rust",
+          "round": 0,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/matmul/rust.run0.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/matmul/rust"
+          ],
+          "exit": 0,
+          "stdout": "0.043751 0.043751 0.043751 9.3\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-cpp",
+          "round": 0,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/matmul/cpp.run0.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/matmul/cpp"
+          ],
+          "exit": 0,
+          "stdout": "0.045235 0.045235 0.045235 9.9\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-go",
+          "round": 0,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/matmul/go.run0.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/matmul/go"
+          ],
+          "exit": 0,
+          "stdout": "0.167002 0.167002 0.167002 26.6\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-rust",
+          "round": 1,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/matmul/rust.run1.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/matmul/rust"
+          ],
+          "exit": 0,
+          "stdout": "0.045985 0.045985 0.045985 9.2\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-cpp",
+          "round": 1,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/matmul/cpp.run1.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/matmul/cpp"
+          ],
+          "exit": 0,
+          "stdout": "0.046378 0.046378 0.046378 9.8\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-go",
+          "round": 1,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/matmul/go.run1.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/matmul/go"
+          ],
+          "exit": 0,
+          "stdout": "0.170164 0.170164 0.170164 22.7\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-jwc",
+          "round": 1,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/matmul/jwc.run1.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/matmul/jwc"
+          ],
+          "exit": 0,
+          "stdout": "0.046715 0.046715 0.046715 9.0\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-cpp",
+          "round": 2,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/matmul/cpp.run2.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/matmul/cpp"
+          ],
+          "exit": 0,
+          "stdout": "0.055114 0.055114 0.055114 9.8\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-go",
+          "round": 2,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/matmul/go.run2.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/matmul/go"
+          ],
+          "exit": 0,
+          "stdout": "0.179899 0.179899 0.179899 20.0\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-jwc",
+          "round": 2,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/matmul/jwc.run2.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/matmul/jwc"
+          ],
+          "exit": 0,
+          "stdout": "0.049413 0.049413 0.049413 9.0\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-rust",
+          "round": 2,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/matmul/rust.run2.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/matmul/rust"
+          ],
+          "exit": 0,
+          "stdout": "0.047453 0.047453 0.047453 9.3\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-go",
+          "round": 3,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/matmul/go.run3.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/matmul/go"
+          ],
+          "exit": 0,
+          "stdout": "0.201900 0.201900 0.201900 21.2\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-jwc",
+          "round": 3,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/matmul/jwc.run3.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/matmul/jwc"
+          ],
+          "exit": 0,
+          "stdout": "0.048439 0.048439 0.048439 9.0\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-rust",
+          "round": 3,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/matmul/rust.run3.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/matmul/rust"
+          ],
+          "exit": 0,
+          "stdout": "0.046320 0.046320 0.046320 9.3\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-cpp",
+          "round": 3,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/matmul/cpp.run3.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/matmul/cpp"
+          ],
+          "exit": 0,
+          "stdout": "0.047950 0.047950 0.047950 9.8\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-go",
+          "round": 4,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/matmul/go.run4.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/matmul/go"
+          ],
+          "exit": 0,
+          "stdout": "0.163399 0.163399 0.163399 19.9\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-cpp",
+          "round": 4,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/matmul/cpp.run4.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/matmul/cpp"
+          ],
+          "exit": 0,
+          "stdout": "0.046956 0.046956 0.046956 9.8\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-rust",
+          "round": 4,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/matmul/rust.run4.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/matmul/rust"
+          ],
+          "exit": 0,
+          "stdout": "0.045858 0.045858 0.045858 9.3\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-jwc",
+          "round": 4,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/matmul/jwc.run4.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/matmul/jwc"
+          ],
+          "exit": 0,
+          "stdout": "0.046867 0.046867 0.046867 9.0\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-jwc",
+          "round": 5,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/matmul/jwc.run5.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/matmul/jwc"
+          ],
+          "exit": 0,
+          "stdout": "0.047281 0.047281 0.047281 9.0\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-go",
+          "round": 5,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/matmul/go.run5.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/matmul/go"
+          ],
+          "exit": 0,
+          "stdout": "0.168388 0.168388 0.168388 21.0\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-cpp",
+          "round": 5,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/matmul/cpp.run5.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/matmul/cpp"
+          ],
+          "exit": 0,
+          "stdout": "0.045156 0.045156 0.045156 9.8\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-rust",
+          "round": 5,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/matmul/rust.run5.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/matmul/rust"
+          ],
+          "exit": 0,
+          "stdout": "0.046913 0.046913 0.046913 9.3\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-rust",
+          "round": 6,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/matmul/rust.run6.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/matmul/rust"
+          ],
+          "exit": 0,
+          "stdout": "0.044427 0.044427 0.044427 9.3\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-jwc",
+          "round": 6,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/matmul/jwc.run6.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/matmul/jwc"
+          ],
+          "exit": 0,
+          "stdout": "0.057341 0.057341 0.057341 9.0\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-go",
+          "round": 6,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/matmul/go.run6.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/matmul/go"
+          ],
+          "exit": 0,
+          "stdout": "0.169781 0.169781 0.169781 26.1\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-cpp",
+          "round": 6,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/matmul/cpp.run6.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/matmul/cpp"
+          ],
+          "exit": 0,
+          "stdout": "0.049971 0.049971 0.049971 9.9\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-cpp",
+          "round": 7,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/matmul/cpp.run7.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/matmul/cpp"
+          ],
+          "exit": 0,
+          "stdout": "0.048075 0.048075 0.048075 9.9\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-rust",
+          "round": 7,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/matmul/rust.run7.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/matmul/rust"
+          ],
+          "exit": 0,
+          "stdout": "0.057162 0.057162 0.057162 9.3\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-jwc",
+          "round": 7,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/matmul/jwc.run7.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/matmul/jwc"
+          ],
+          "exit": 0,
+          "stdout": "0.048694 0.048694 0.048694 9.0\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-go",
+          "round": 7,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/matmul/go.run7.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/matmul/go"
+          ],
+          "exit": 0,
+          "stdout": "0.171755 0.171755 0.171755 37.4\n",
+          "stderr": ""
+        }
+      ],
+      "metrics": {
+        "jwc": {
+          "min_s": 0.045275,
+          "median_s": 0.04786,
+          "max_s": 0.057341,
+          "peak_rss_mb": 9.0,
+          "samples_s": [
+            0.045275,
+            0.046715,
+            0.049413,
+            0.048439,
+            0.046867,
+            0.047281,
+            0.057341,
+            0.048694
+          ]
+        },
+        "rust": {
+          "min_s": 0.043751,
+          "median_s": 0.0461525,
+          "max_s": 0.057162,
+          "peak_rss_mb": 9.3,
+          "samples_s": [
+            0.043751,
+            0.045985,
+            0.047453,
+            0.04632,
+            0.045858,
+            0.046913,
+            0.044427,
+            0.057162
+          ]
+        },
+        "cpp": {
+          "min_s": 0.045156,
+          "median_s": 0.047452999999999995,
+          "max_s": 0.055114,
+          "peak_rss_mb": 9.9,
+          "samples_s": [
+            0.045235,
+            0.046378,
+            0.055114,
+            0.04795,
+            0.046956,
+            0.045156,
+            0.049971,
+            0.048075
+          ]
+        },
+        "go": {
+          "min_s": 0.163399,
+          "median_s": 0.1699725,
+          "max_s": 0.2019,
+          "peak_rss_mb": 37.4,
+          "samples_s": [
+            0.167002,
+            0.170164,
+            0.179899,
+            0.2019,
+            0.163399,
+            0.168388,
+            0.169781,
+            0.171755
+          ]
+        }
+      },
+      "outputs": {
+        "jwc": {
+          "sha256": "e1e226ca32acc9454a1f2e6e0a2e057fffdca26ce3f70c8e6c0f9386b6c84e9c",
+          "all_repetitions_verified": 8
+        },
+        "rust": {
+          "sha256": "e1e226ca32acc9454a1f2e6e0a2e057fffdca26ce3f70c8e6c0f9386b6c84e9c",
+          "all_repetitions_verified": 8
+        },
+        "cpp": {
+          "sha256": "e1e226ca32acc9454a1f2e6e0a2e057fffdca26ce3f70c8e6c0f9386b6c84e9c",
+          "all_repetitions_verified": 8
+        },
+        "go": {
+          "sha256": "e1e226ca32acc9454a1f2e6e0a2e057fffdca26ce3f70c8e6c0f9386b6c84e9c",
+          "all_repetitions_verified": 8
+        }
+      },
+      "ratios": {
+        "jwc_vs_rust": 1.037,
+        "jwc_vs_cpp": 1.0086,
+        "jwc_vs_go": 0.2816
+      }
+    },
+    "mandelbrot": {
+      "status": "PASS",
+      "commands": [
+        {
+          "stage": "jwc-LLVM",
+          "exit": 0,
+          "cmd": [
+            "/workspace/jabberwock/target/release/jwc-benchmark",
+            "--ll",
+            "/workspace/jabberwock/bench/jabberwock/mandelbrot.jw"
+          ],
+          "llvm_bytes": 113535,
+          "stderr": ""
+        },
+        {
+          "stage": "jwc-native",
+          "cmd": [
+            "clang",
+            "-O2",
+            "-flto",
+            "-fuse-ld=lld",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/mandelbrot/jwc.ll",
+            "/workspace/jabberwock/runtime/jw_rt.c",
+            "-lm",
+            "-pthread",
+            "-Wno-override-module",
+            "-o",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/mandelbrot/jwc"
+          ],
+          "exit": 0,
+          "stdout": "",
+          "stderr": ""
+        },
+        {
+          "stage": "rust",
+          "cmd": [
+            "rustc",
+            "-C",
+            "opt-level=3",
+            "-C",
+            "lto=fat",
+            "--edition",
+            "2021",
+            "-o",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/mandelbrot/rust",
+            "/workspace/jabberwock/bench/rust/mandelbrot.rs"
+          ],
+          "exit": 0,
+          "stdout": "",
+          "stderr": ""
+        },
+        {
+          "stage": "cpp",
+          "cmd": [
+            "clang++",
+            "-O2",
+            "-flto",
+            "-fuse-ld=lld",
+            "-std=c++17",
+            "-pthread",
+            "-o",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/mandelbrot/cpp",
+            "/workspace/jabberwock/bench/cpp/mandelbrot.cpp"
+          ],
+          "exit": 0,
+          "stdout": "",
+          "stderr": ""
+        },
+        {
+          "stage": "go",
+          "cmd": [
+            "go",
+            "build",
+            "-o",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/mandelbrot/go",
+            "/workspace/jabberwock/bench/go/mandelbrot.go"
+          ],
+          "exit": 0,
+          "stdout": "",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-jwc",
+          "round": 0,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/mandelbrot/jwc.run0.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/mandelbrot/jwc"
+          ],
+          "exit": 0,
+          "stdout": "0.185546 0.185546 0.185546 1.4\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-rust",
+          "round": 0,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/mandelbrot/rust.run0.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/mandelbrot/rust"
+          ],
+          "exit": 0,
+          "stdout": "0.185922 0.185922 0.185922 1.1\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-cpp",
+          "round": 0,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/mandelbrot/cpp.run0.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/mandelbrot/cpp"
+          ],
+          "exit": 0,
+          "stdout": "0.196347 0.196347 0.196347 1.9\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-go",
+          "round": 0,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/mandelbrot/go.run0.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/mandelbrot/go"
+          ],
+          "exit": 0,
+          "stdout": "0.254223 0.254223 0.254223 2.2\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-rust",
+          "round": 1,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/mandelbrot/rust.run1.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/mandelbrot/rust"
+          ],
+          "exit": 0,
+          "stdout": "0.188331 0.188331 0.188331 1.1\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-cpp",
+          "round": 1,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/mandelbrot/cpp.run1.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/mandelbrot/cpp"
+          ],
+          "exit": 0,
+          "stdout": "0.189892 0.189892 0.189892 1.9\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-go",
+          "round": 1,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/mandelbrot/go.run1.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/mandelbrot/go"
+          ],
+          "exit": 0,
+          "stdout": "0.245288 0.245288 0.245288 2.2\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-jwc",
+          "round": 1,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/mandelbrot/jwc.run1.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/mandelbrot/jwc"
+          ],
+          "exit": 0,
+          "stdout": "0.172696 0.172696 0.172696 1.4\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-cpp",
+          "round": 2,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/mandelbrot/cpp.run2.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/mandelbrot/cpp"
+          ],
+          "exit": 0,
+          "stdout": "0.189737 0.189737 0.189737 1.9\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-go",
+          "round": 2,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/mandelbrot/go.run2.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/mandelbrot/go"
+          ],
+          "exit": 0,
+          "stdout": "0.245003 0.245003 0.245003 2.2\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-jwc",
+          "round": 2,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/mandelbrot/jwc.run2.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/mandelbrot/jwc"
+          ],
+          "exit": 0,
+          "stdout": "0.184675 0.184675 0.184675 1.4\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-rust",
+          "round": 2,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/mandelbrot/rust.run2.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/mandelbrot/rust"
+          ],
+          "exit": 0,
+          "stdout": "0.182373 0.182373 0.182373 1.1\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-go",
+          "round": 3,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/mandelbrot/go.run3.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/mandelbrot/go"
+          ],
+          "exit": 0,
+          "stdout": "0.225408 0.225408 0.225408 2.1\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-jwc",
+          "round": 3,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/mandelbrot/jwc.run3.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/mandelbrot/jwc"
+          ],
+          "exit": 0,
+          "stdout": "0.177526 0.177526 0.177526 1.4\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-rust",
+          "round": 3,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/mandelbrot/rust.run3.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/mandelbrot/rust"
+          ],
+          "exit": 0,
+          "stdout": "0.196019 0.196019 0.196019 1.1\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-cpp",
+          "round": 3,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/mandelbrot/cpp.run3.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/mandelbrot/cpp"
+          ],
+          "exit": 0,
+          "stdout": "0.194506 0.194506 0.194506 1.9\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-go",
+          "round": 4,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/mandelbrot/go.run4.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/mandelbrot/go"
+          ],
+          "exit": 0,
+          "stdout": "0.233248 0.233248 0.233248 2.1\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-cpp",
+          "round": 4,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/mandelbrot/cpp.run4.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/mandelbrot/cpp"
+          ],
+          "exit": 0,
+          "stdout": "0.183534 0.183534 0.183534 1.9\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-rust",
+          "round": 4,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/mandelbrot/rust.run4.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/mandelbrot/rust"
+          ],
+          "exit": 0,
+          "stdout": "0.186895 0.186895 0.186895 1.1\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-jwc",
+          "round": 4,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/mandelbrot/jwc.run4.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/mandelbrot/jwc"
+          ],
+          "exit": 0,
+          "stdout": "0.194401 0.194401 0.194401 1.4\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-jwc",
+          "round": 5,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/mandelbrot/jwc.run5.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/mandelbrot/jwc"
+          ],
+          "exit": 0,
+          "stdout": "0.188673 0.188673 0.188673 1.4\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-go",
+          "round": 5,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/mandelbrot/go.run5.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/mandelbrot/go"
+          ],
+          "exit": 0,
+          "stdout": "0.238886 0.238886 0.238886 2.2\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-cpp",
+          "round": 5,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/mandelbrot/cpp.run5.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/mandelbrot/cpp"
+          ],
+          "exit": 0,
+          "stdout": "0.203283 0.203283 0.203283 1.9\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-rust",
+          "round": 5,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/mandelbrot/rust.run5.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/mandelbrot/rust"
+          ],
+          "exit": 0,
+          "stdout": "0.205544 0.205544 0.205544 1.1\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-rust",
+          "round": 6,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/mandelbrot/rust.run6.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/mandelbrot/rust"
+          ],
+          "exit": 0,
+          "stdout": "0.196325 0.196325 0.196325 1.1\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-jwc",
+          "round": 6,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/mandelbrot/jwc.run6.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/mandelbrot/jwc"
+          ],
+          "exit": 0,
+          "stdout": "0.192498 0.192498 0.192498 1.4\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-go",
+          "round": 6,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/mandelbrot/go.run6.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/mandelbrot/go"
+          ],
+          "exit": 0,
+          "stdout": "0.214828 0.214828 0.214828 2.1\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-cpp",
+          "round": 6,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/mandelbrot/cpp.run6.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/mandelbrot/cpp"
+          ],
+          "exit": 0,
+          "stdout": "0.182917 0.182917 0.182917 1.9\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-cpp",
+          "round": 7,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/mandelbrot/cpp.run7.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/mandelbrot/cpp"
+          ],
+          "exit": 0,
+          "stdout": "0.191019 0.191019 0.191019 1.9\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-rust",
+          "round": 7,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/mandelbrot/rust.run7.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/mandelbrot/rust"
+          ],
+          "exit": 0,
+          "stdout": "0.190162 0.190162 0.190162 1.1\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-jwc",
+          "round": 7,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/mandelbrot/jwc.run7.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/mandelbrot/jwc"
+          ],
+          "exit": 0,
+          "stdout": "0.203470 0.203470 0.203470 1.4\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-go",
+          "round": 7,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/mandelbrot/go.run7.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/mandelbrot/go"
+          ],
+          "exit": 0,
+          "stdout": "0.244553 0.244553 0.244553 2.1\n",
+          "stderr": ""
+        }
+      ],
+      "metrics": {
+        "jwc": {
+          "min_s": 0.172696,
+          "median_s": 0.18710949999999998,
+          "max_s": 0.20347,
+          "peak_rss_mb": 1.4,
+          "samples_s": [
+            0.185546,
+            0.172696,
+            0.184675,
+            0.177526,
+            0.194401,
+            0.188673,
+            0.192498,
+            0.20347
+          ]
+        },
+        "rust": {
+          "min_s": 0.182373,
+          "median_s": 0.18924649999999998,
+          "max_s": 0.205544,
+          "peak_rss_mb": 1.1,
+          "samples_s": [
+            0.185922,
+            0.188331,
+            0.182373,
+            0.196019,
+            0.186895,
+            0.205544,
+            0.196325,
+            0.190162
+          ]
+        },
+        "cpp": {
+          "min_s": 0.182917,
+          "median_s": 0.1904555,
+          "max_s": 0.203283,
+          "peak_rss_mb": 1.9,
+          "samples_s": [
+            0.196347,
+            0.189892,
+            0.189737,
+            0.194506,
+            0.183534,
+            0.203283,
+            0.182917,
+            0.191019
+          ]
+        },
+        "go": {
+          "min_s": 0.214828,
+          "median_s": 0.24171949999999998,
+          "max_s": 0.254223,
+          "peak_rss_mb": 2.2,
+          "samples_s": [
+            0.254223,
+            0.245288,
+            0.245003,
+            0.225408,
+            0.233248,
+            0.238886,
+            0.214828,
+            0.244553
+          ]
+        }
+      },
+      "outputs": {
+        "jwc": {
+          "sha256": "79d2abcac2b0385261d58c7aa12201e467b62b8f257b806e4fb7d38d2f17a0c5",
+          "all_repetitions_verified": 8
+        },
+        "rust": {
+          "sha256": "79d2abcac2b0385261d58c7aa12201e467b62b8f257b806e4fb7d38d2f17a0c5",
+          "all_repetitions_verified": 8
+        },
+        "cpp": {
+          "sha256": "79d2abcac2b0385261d58c7aa12201e467b62b8f257b806e4fb7d38d2f17a0c5",
+          "all_repetitions_verified": 8
+        },
+        "go": {
+          "sha256": "79d2abcac2b0385261d58c7aa12201e467b62b8f257b806e4fb7d38d2f17a0c5",
+          "all_repetitions_verified": 8
+        }
+      },
+      "ratios": {
+        "jwc_vs_rust": 0.9887,
+        "jwc_vs_cpp": 0.9824,
+        "jwc_vs_go": 0.7741
+      }
+    },
+    "sort": {
+      "status": "PASS",
+      "commands": [
+        {
+          "stage": "jwc-LLVM",
+          "exit": 0,
+          "cmd": [
+            "/workspace/jabberwock/target/release/jwc-benchmark",
+            "--ll",
+            "/workspace/jabberwock/bench/jabberwock/sort.jw"
+          ],
+          "llvm_bytes": 39101,
+          "stderr": ""
+        },
+        {
+          "stage": "jwc-native",
+          "cmd": [
+            "clang",
+            "-O2",
+            "-flto",
+            "-fuse-ld=lld",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/sort/jwc.ll",
+            "/workspace/jabberwock/runtime/jw_rt.c",
+            "-lm",
+            "-pthread",
+            "-Wno-override-module",
+            "-o",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/sort/jwc"
+          ],
+          "exit": 0,
+          "stdout": "",
+          "stderr": ""
+        },
+        {
+          "stage": "rust",
+          "cmd": [
+            "rustc",
+            "-C",
+            "opt-level=3",
+            "-C",
+            "lto=fat",
+            "--edition",
+            "2021",
+            "-o",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/sort/rust",
+            "/workspace/jabberwock/bench/rust/sort.rs"
+          ],
+          "exit": 0,
+          "stdout": "",
+          "stderr": ""
+        },
+        {
+          "stage": "cpp",
+          "cmd": [
+            "clang++",
+            "-O2",
+            "-flto",
+            "-fuse-ld=lld",
+            "-std=c++17",
+            "-pthread",
+            "-o",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/sort/cpp",
+            "/workspace/jabberwock/bench/cpp/sort.cpp"
+          ],
+          "exit": 0,
+          "stdout": "",
+          "stderr": ""
+        },
+        {
+          "stage": "go",
+          "cmd": [
+            "go",
+            "build",
+            "-o",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/sort/go",
+            "/workspace/jabberwock/bench/go/sort.go"
+          ],
+          "exit": 0,
+          "stdout": "",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-jwc",
+          "round": 0,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/sort/jwc.run0.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/sort/jwc"
+          ],
+          "exit": 0,
+          "stdout": "0.072410 0.072410 0.072410 46.5\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-rust",
+          "round": 0,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/sort/rust.run0.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/sort/rust"
+          ],
+          "exit": 0,
+          "stdout": "0.102120 0.102120 0.102120 35.3\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-cpp",
+          "round": 0,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/sort/cpp.run0.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/sort/cpp"
+          ],
+          "exit": 0,
+          "stdout": "0.221658 0.221658 0.221658 33.6\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-go",
+          "round": 0,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/sort/go.run0.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/sort/go"
+          ],
+          "exit": 0,
+          "stdout": "0.378834 0.378834 0.378834 84.3\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-rust",
+          "round": 1,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/sort/rust.run1.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/sort/rust"
+          ],
+          "exit": 0,
+          "stdout": "0.093514 0.093514 0.093514 35.3\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-cpp",
+          "round": 1,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/sort/cpp.run1.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/sort/cpp"
+          ],
+          "exit": 0,
+          "stdout": "0.213442 0.213442 0.213442 33.6\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-go",
+          "round": 1,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/sort/go.run1.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/sort/go"
+          ],
+          "exit": 0,
+          "stdout": "0.369658 0.369658 0.369658 80.4\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-jwc",
+          "round": 1,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/sort/jwc.run1.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/sort/jwc"
+          ],
+          "exit": 0,
+          "stdout": "0.065776 0.065776 0.065776 46.5\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-cpp",
+          "round": 2,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/sort/cpp.run2.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/sort/cpp"
+          ],
+          "exit": 0,
+          "stdout": "0.219755 0.219755 0.219755 33.6\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-go",
+          "round": 2,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/sort/go.run2.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/sort/go"
+          ],
+          "exit": 0,
+          "stdout": "0.450737 0.450737 0.450737 78.2\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-jwc",
+          "round": 2,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/sort/jwc.run2.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/sort/jwc"
+          ],
+          "exit": 0,
+          "stdout": "0.072944 0.072944 0.072944 46.5\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-rust",
+          "round": 2,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/sort/rust.run2.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/sort/rust"
+          ],
+          "exit": 0,
+          "stdout": "0.100624 0.100624 0.100624 35.3\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-go",
+          "round": 3,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/sort/go.run3.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/sort/go"
+          ],
+          "exit": 0,
+          "stdout": "0.377986 0.377986 0.377986 82.0\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-jwc",
+          "round": 3,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/sort/jwc.run3.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/sort/jwc"
+          ],
+          "exit": 0,
+          "stdout": "0.062542 0.062542 0.062542 46.5\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-rust",
+          "round": 3,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/sort/rust.run3.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/sort/rust"
+          ],
+          "exit": 0,
+          "stdout": "0.092109 0.092109 0.092109 35.3\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-cpp",
+          "round": 3,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/sort/cpp.run3.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/sort/cpp"
+          ],
+          "exit": 0,
+          "stdout": "0.206518 0.206518 0.206518 33.6\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-go",
+          "round": 4,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/sort/go.run4.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/sort/go"
+          ],
+          "exit": 0,
+          "stdout": "0.327411 0.327411 0.327411 83.1\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-cpp",
+          "round": 4,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/sort/cpp.run4.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/sort/cpp"
+          ],
+          "exit": 0,
+          "stdout": "0.214143 0.214143 0.214143 33.6\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-rust",
+          "round": 4,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/sort/rust.run4.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/sort/rust"
+          ],
+          "exit": 0,
+          "stdout": "0.099830 0.099830 0.099830 35.3\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-jwc",
+          "round": 4,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/sort/jwc.run4.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/sort/jwc"
+          ],
+          "exit": 0,
+          "stdout": "0.061090 0.061090 0.061090 46.5\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-jwc",
+          "round": 5,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/sort/jwc.run5.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/sort/jwc"
+          ],
+          "exit": 0,
+          "stdout": "0.069849 0.069849 0.069849 46.5\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-go",
+          "round": 5,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/sort/go.run5.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/sort/go"
+          ],
+          "exit": 0,
+          "stdout": "0.349400 0.349400 0.349400 84.2\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-cpp",
+          "round": 5,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/sort/cpp.run5.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/sort/cpp"
+          ],
+          "exit": 0,
+          "stdout": "0.208741 0.208741 0.208741 33.6\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-rust",
+          "round": 5,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/sort/rust.run5.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/sort/rust"
+          ],
+          "exit": 0,
+          "stdout": "0.101913 0.101913 0.101913 35.3\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-rust",
+          "round": 6,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/sort/rust.run6.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/sort/rust"
+          ],
+          "exit": 0,
+          "stdout": "0.104219 0.104219 0.104219 35.3\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-jwc",
+          "round": 6,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/sort/jwc.run6.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/sort/jwc"
+          ],
+          "exit": 0,
+          "stdout": "0.068679 0.068679 0.068679 46.5\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-go",
+          "round": 6,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/sort/go.run6.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/sort/go"
+          ],
+          "exit": 0,
+          "stdout": "0.321366 0.321366 0.321366 74.5\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-cpp",
+          "round": 6,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/sort/cpp.run6.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/sort/cpp"
+          ],
+          "exit": 0,
+          "stdout": "0.231197 0.231197 0.231197 33.6\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-cpp",
+          "round": 7,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/sort/cpp.run7.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/sort/cpp"
+          ],
+          "exit": 0,
+          "stdout": "0.209296 0.209296 0.209296 33.6\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-rust",
+          "round": 7,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/sort/rust.run7.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/sort/rust"
+          ],
+          "exit": 0,
+          "stdout": "0.107950 0.107950 0.107950 35.3\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-jwc",
+          "round": 7,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/sort/jwc.run7.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/sort/jwc"
+          ],
+          "exit": 0,
+          "stdout": "0.062591 0.062591 0.062591 46.5\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-go",
+          "round": 7,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/sort/go.run7.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/sort/go"
+          ],
+          "exit": 0,
+          "stdout": "0.412050 0.412050 0.412050 89.0\n",
+          "stderr": ""
+        }
+      ],
+      "metrics": {
+        "jwc": {
+          "min_s": 0.06109,
+          "median_s": 0.0672275,
+          "max_s": 0.072944,
+          "peak_rss_mb": 46.5,
+          "samples_s": [
+            0.07241,
+            0.065776,
+            0.072944,
+            0.062542,
+            0.06109,
+            0.069849,
+            0.068679,
+            0.062591
+          ]
+        },
+        "rust": {
+          "min_s": 0.092109,
+          "median_s": 0.10126850000000001,
+          "max_s": 0.10795,
+          "peak_rss_mb": 35.3,
+          "samples_s": [
+            0.10212,
+            0.093514,
+            0.100624,
+            0.092109,
+            0.09983,
+            0.101913,
+            0.104219,
+            0.10795
+          ]
+        },
+        "cpp": {
+          "min_s": 0.206518,
+          "median_s": 0.2137925,
+          "max_s": 0.231197,
+          "peak_rss_mb": 33.6,
+          "samples_s": [
+            0.221658,
+            0.213442,
+            0.219755,
+            0.206518,
+            0.214143,
+            0.208741,
+            0.231197,
+            0.209296
+          ]
+        },
+        "go": {
+          "min_s": 0.321366,
+          "median_s": 0.373822,
+          "max_s": 0.450737,
+          "peak_rss_mb": 89.0,
+          "samples_s": [
+            0.378834,
+            0.369658,
+            0.450737,
+            0.377986,
+            0.327411,
+            0.3494,
+            0.321366,
+            0.41205
+          ]
+        }
+      },
+      "outputs": {
+        "jwc": {
+          "sha256": "ab52ce26337c338645f8e7be481e5afcf24f712772aa191ef532903b435780e5",
+          "all_repetitions_verified": 8
+        },
+        "rust": {
+          "sha256": "ab52ce26337c338645f8e7be481e5afcf24f712772aa191ef532903b435780e5",
+          "all_repetitions_verified": 8
+        },
+        "cpp": {
+          "sha256": "ab52ce26337c338645f8e7be481e5afcf24f712772aa191ef532903b435780e5",
+          "all_repetitions_verified": 8
+        },
+        "go": {
+          "sha256": "ab52ce26337c338645f8e7be481e5afcf24f712772aa191ef532903b435780e5",
+          "all_repetitions_verified": 8
+        }
+      },
+      "ratios": {
+        "jwc_vs_rust": 0.6639,
+        "jwc_vs_cpp": 0.3145,
+        "jwc_vs_go": 0.1798
+      }
+    },
+    "linkedlist": {
+      "status": "PASS",
+      "commands": [
+        {
+          "stage": "jwc-LLVM",
+          "exit": 0,
+          "cmd": [
+            "/workspace/jabberwock/target/release/jwc-benchmark",
+            "--ll",
+            "/workspace/jabberwock/bench/jabberwock/linkedlist.jw"
+          ],
+          "llvm_bytes": 50990,
+          "stderr": ""
+        },
+        {
+          "stage": "jwc-native",
+          "cmd": [
+            "clang",
+            "-O2",
+            "-flto",
+            "-fuse-ld=lld",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/linkedlist/jwc.ll",
+            "/workspace/jabberwock/runtime/jw_rt.c",
+            "-lm",
+            "-pthread",
+            "-Wno-override-module",
+            "-o",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/linkedlist/jwc"
+          ],
+          "exit": 0,
+          "stdout": "",
+          "stderr": ""
+        },
+        {
+          "stage": "rust",
+          "cmd": [
+            "rustc",
+            "-C",
+            "opt-level=3",
+            "-C",
+            "lto=fat",
+            "--edition",
+            "2021",
+            "-o",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/linkedlist/rust",
+            "/workspace/jabberwock/bench/rust/linkedlist.rs"
+          ],
+          "exit": 0,
+          "stdout": "",
+          "stderr": ""
+        },
+        {
+          "stage": "cpp",
+          "cmd": [
+            "clang++",
+            "-O2",
+            "-flto",
+            "-fuse-ld=lld",
+            "-std=c++17",
+            "-pthread",
+            "-o",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/linkedlist/cpp",
+            "/workspace/jabberwock/bench/cpp/linkedlist.cpp"
+          ],
+          "exit": 0,
+          "stdout": "",
+          "stderr": ""
+        },
+        {
+          "stage": "go",
+          "cmd": [
+            "go",
+            "build",
+            "-o",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/linkedlist/go",
+            "/workspace/jabberwock/bench/go/linkedlist.go"
+          ],
+          "exit": 0,
+          "stdout": "",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-jwc",
+          "round": 0,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/linkedlist/jwc.run0.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/linkedlist/jwc"
+          ],
+          "exit": 0,
+          "stdout": "0.170802 0.170802 0.170802 0.9\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-rust",
+          "round": 0,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/linkedlist/rust.run0.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/linkedlist/rust"
+          ],
+          "exit": 0,
+          "stdout": "0.130604 0.130604 0.130604 0.9\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-cpp",
+          "round": 0,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/linkedlist/cpp.run0.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/linkedlist/cpp"
+          ],
+          "exit": 0,
+          "stdout": "0.152127 0.152127 0.152127 1.5\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-go",
+          "round": 0,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/linkedlist/go.run0.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/linkedlist/go"
+          ],
+          "exit": 0,
+          "stdout": "0.134517 0.134517 0.134517 1.9\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-rust",
+          "round": 1,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/linkedlist/rust.run1.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/linkedlist/rust"
+          ],
+          "exit": 0,
+          "stdout": "0.140144 0.140144 0.140144 0.9\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-cpp",
+          "round": 1,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/linkedlist/cpp.run1.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/linkedlist/cpp"
+          ],
+          "exit": 0,
+          "stdout": "0.145296 0.145296 0.145296 1.5\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-go",
+          "round": 1,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/linkedlist/go.run1.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/linkedlist/go"
+          ],
+          "exit": 0,
+          "stdout": "0.122160 0.122160 0.122160 1.9\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-jwc",
+          "round": 1,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/linkedlist/jwc.run1.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/linkedlist/jwc"
+          ],
+          "exit": 0,
+          "stdout": "0.176937 0.176937 0.176937 0.9\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-cpp",
+          "round": 2,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/linkedlist/cpp.run2.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/linkedlist/cpp"
+          ],
+          "exit": 0,
+          "stdout": "0.129843 0.129843 0.129843 1.5\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-go",
+          "round": 2,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/linkedlist/go.run2.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/linkedlist/go"
+          ],
+          "exit": 0,
+          "stdout": "0.119594 0.119594 0.119594 1.8\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-jwc",
+          "round": 2,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/linkedlist/jwc.run2.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/linkedlist/jwc"
+          ],
+          "exit": 0,
+          "stdout": "0.171773 0.171773 0.171773 0.9\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-rust",
+          "round": 2,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/linkedlist/rust.run2.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/linkedlist/rust"
+          ],
+          "exit": 0,
+          "stdout": "0.130184 0.130184 0.130184 0.9\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-go",
+          "round": 3,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/linkedlist/go.run3.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/linkedlist/go"
+          ],
+          "exit": 0,
+          "stdout": "0.122936 0.122936 0.122936 1.9\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-jwc",
+          "round": 3,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/linkedlist/jwc.run3.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/linkedlist/jwc"
+          ],
+          "exit": 0,
+          "stdout": "0.176675 0.176675 0.176675 0.9\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-rust",
+          "round": 3,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/linkedlist/rust.run3.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/linkedlist/rust"
+          ],
+          "exit": 0,
+          "stdout": "0.137900 0.137900 0.137900 0.9\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-cpp",
+          "round": 3,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/linkedlist/cpp.run3.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/linkedlist/cpp"
+          ],
+          "exit": 0,
+          "stdout": "0.138523 0.138523 0.138523 1.5\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-go",
+          "round": 4,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/linkedlist/go.run4.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/linkedlist/go"
+          ],
+          "exit": 0,
+          "stdout": "0.128368 0.128368 0.128368 1.8\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-cpp",
+          "round": 4,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/linkedlist/cpp.run4.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/linkedlist/cpp"
+          ],
+          "exit": 0,
+          "stdout": "0.133734 0.133734 0.133734 1.5\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-rust",
+          "round": 4,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/linkedlist/rust.run4.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/linkedlist/rust"
+          ],
+          "exit": 0,
+          "stdout": "0.137342 0.137342 0.137342 0.9\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-jwc",
+          "round": 4,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/linkedlist/jwc.run4.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/linkedlist/jwc"
+          ],
+          "exit": 0,
+          "stdout": "0.183752 0.183752 0.183752 0.9\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-jwc",
+          "round": 5,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/linkedlist/jwc.run5.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/linkedlist/jwc"
+          ],
+          "exit": 0,
+          "stdout": "0.191501 0.191501 0.191501 0.9\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-go",
+          "round": 5,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/linkedlist/go.run5.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/linkedlist/go"
+          ],
+          "exit": 0,
+          "stdout": "0.122163 0.122163 0.122163 1.8\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-cpp",
+          "round": 5,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/linkedlist/cpp.run5.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/linkedlist/cpp"
+          ],
+          "exit": 0,
+          "stdout": "0.140922 0.140922 0.140922 1.5\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-rust",
+          "round": 5,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/linkedlist/rust.run5.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/linkedlist/rust"
+          ],
+          "exit": 0,
+          "stdout": "0.132588 0.132588 0.132588 0.9\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-rust",
+          "round": 6,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/linkedlist/rust.run6.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/linkedlist/rust"
+          ],
+          "exit": 0,
+          "stdout": "0.134044 0.134044 0.134044 0.9\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-jwc",
+          "round": 6,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/linkedlist/jwc.run6.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/linkedlist/jwc"
+          ],
+          "exit": 0,
+          "stdout": "0.172240 0.172240 0.172240 0.9\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-go",
+          "round": 6,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/linkedlist/go.run6.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/linkedlist/go"
+          ],
+          "exit": 0,
+          "stdout": "0.132504 0.132504 0.132504 1.8\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-cpp",
+          "round": 6,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/linkedlist/cpp.run6.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/linkedlist/cpp"
+          ],
+          "exit": 0,
+          "stdout": "0.140502 0.140502 0.140502 1.5\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-cpp",
+          "round": 7,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/linkedlist/cpp.run7.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/linkedlist/cpp"
+          ],
+          "exit": 0,
+          "stdout": "0.138191 0.138191 0.138191 1.5\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-rust",
+          "round": 7,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/linkedlist/rust.run7.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/linkedlist/rust"
+          ],
+          "exit": 0,
+          "stdout": "0.136410 0.136410 0.136410 0.9\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-jwc",
+          "round": 7,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/linkedlist/jwc.run7.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/linkedlist/jwc"
+          ],
+          "exit": 0,
+          "stdout": "0.192938 0.192938 0.192938 0.9\n",
+          "stderr": ""
+        },
+        {
+          "stage": "measure-go",
+          "round": 7,
+          "cmd": [
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+            "1",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/linkedlist/go.run7.stdout",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/linkedlist/go"
+          ],
+          "exit": 0,
+          "stdout": "0.129071 0.129071 0.129071 1.9\n",
+          "stderr": ""
+        }
+      ],
+      "metrics": {
+        "jwc": {
+          "min_s": 0.170802,
+          "median_s": 0.17680600000000002,
+          "max_s": 0.192938,
+          "peak_rss_mb": 0.9,
+          "samples_s": [
+            0.170802,
+            0.176937,
+            0.171773,
+            0.176675,
+            0.183752,
+            0.191501,
+            0.17224,
+            0.192938
+          ]
+        },
+        "rust": {
+          "min_s": 0.130184,
+          "median_s": 0.13522699999999999,
+          "max_s": 0.140144,
+          "peak_rss_mb": 0.9,
+          "samples_s": [
+            0.130604,
+            0.140144,
+            0.130184,
+            0.1379,
+            0.137342,
+            0.132588,
+            0.134044,
+            0.13641
+          ]
+        },
+        "cpp": {
+          "min_s": 0.129843,
+          "median_s": 0.13951249999999998,
+          "max_s": 0.152127,
+          "peak_rss_mb": 1.5,
+          "samples_s": [
+            0.152127,
+            0.145296,
+            0.129843,
+            0.138523,
+            0.133734,
+            0.140922,
+            0.140502,
+            0.138191
+          ]
+        },
+        "go": {
+          "min_s": 0.119594,
+          "median_s": 0.125652,
+          "max_s": 0.134517,
+          "peak_rss_mb": 1.9,
+          "samples_s": [
+            0.134517,
+            0.12216,
+            0.119594,
+            0.122936,
+            0.128368,
+            0.122163,
+            0.132504,
+            0.129071
+          ]
+        }
+      },
+      "outputs": {
+        "jwc": {
+          "sha256": "6cb7cb92efabf18562614cd07c294ed7d36370c0c2bb60d61237943f2e730adb",
+          "all_repetitions_verified": 8
+        },
+        "rust": {
+          "sha256": "6cb7cb92efabf18562614cd07c294ed7d36370c0c2bb60d61237943f2e730adb",
+          "all_repetitions_verified": 8
+        },
+        "cpp": {
+          "sha256": "6cb7cb92efabf18562614cd07c294ed7d36370c0c2bb60d61237943f2e730adb",
+          "all_repetitions_verified": 8
+        },
+        "go": {
+          "sha256": "6cb7cb92efabf18562614cd07c294ed7d36370c0c2bb60d61237943f2e730adb",
+          "all_repetitions_verified": 8
+        }
+      },
+      "ratios": {
+        "jwc_vs_rust": 1.3075,
+        "jwc_vs_cpp": 1.2673,
+        "jwc_vs_go": 1.4071
+      }
+    }
+  },
+  "baseline_comparison": null,
+  "limitations": "Rust-based Jabberwock compiler is bootstrap only. jwc emits LLVM; clang links shared C runtime. Equivalent outputs required. Differences in libraries and algorithms remain; LTO flags are set for each compiled target but are not identical optimizers.",
+  "updated_utc": "2026-10-29T00:04:15.587734+00:00"
+}
