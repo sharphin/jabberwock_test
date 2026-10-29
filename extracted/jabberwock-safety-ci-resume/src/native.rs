@@ -102,16 +102,11 @@ fn compile_to(ll: &str, dir: &Path, name: &str, exe: &Path, opt: &str) -> Result
     fs::write(&rt, RUNTIME_C).map_err(|e| e.to_string())?;
     let mut args = vec![opt, path_str(&llp)?, path_str(&rt)?, "-o", path_str(exe)?, "-Wno-override-module"];
     link_flags(&mut args);
-    // LTO is needed for the release (-O2/-O3) path, but not for
-    // development (-O0/-O1). A large self-hosted compiler generates
-    // substantial LLVM IR: whole-program LTO at -O1 dominates its build time.
-    // Keep the -O1 runtime and output checks while avoiding unnecessary LTO.
-    if opt == "-O0" || opt == "-O1" {
-        return run_clang(&args);
-    }
+    // 実行時ライブラリの関数（区画の確保・リストへの追加など）を書き出したコードの中に展開させるため、
+    // まず LTO（リンクのときに 2 つをまとめて最適化する）で作る。lld がない環境では LTO なしで作り直す
     let mut lto = args.clone();
     lto.extend(["-flto", "-fuse-ld=lld"]);
-    run_clang(&lto).or_else(|_| run_clang(&args))
+    if opt == "-O0" { run_clang(&args) } else { run_clang(&lto).or_else(|_| run_clang(&args)) }
 }
 
 /// Windows では引数を読むのに shell32 が要る。ほかは数学の関数（libm）
@@ -132,7 +127,7 @@ fn path_str(p: &Path) -> Result<&str, String> {
     p.to_str().ok_or_else(|| format!("パスが UTF-8 ではありません: {}", p.display()))
 }
 
-static RUNTIME_OBJECT: Mutex<Option<(bool, PathBuf)>> = Mutex::new(None);
+static RUNTIME_OBJECT: Mutex<Option<PathBuf>> = Mutex::new(None);
 
 /// テストの突き合わせ用: 実行時ライブラリを一度だけコンパイルしておき、`.ll` だけをコンパイルしてつなぐ。
 /// ふだんは速く作れる `-O1`。`JW_NATIVE=o2` なら `jabberwock build` と同じ `-O2` と LTO で作る（最適化に頼る書き出しの確かめ）
@@ -142,20 +137,16 @@ pub fn compile_with_cached_runtime(ll: &str, dir: &Path, name: &str) -> Result<P
     fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     let obj = {
         let mut g = RUNTIME_OBJECT.lock().unwrap_or_else(|e| e.into_inner());
-        // Callers may delete their own test directories; keep the cached object
-        // outside those directories so subsequent links cannot use a stale path.
-        if g.as_ref().map_or(true, |(cached_o2, path)| *cached_o2 != o2 || !path.exists()) {
-            let cache_dir = std::env::temp_dir().join(format!("jw-runtime-cache-{}", std::process::id()));
-            fs::create_dir_all(&cache_dir).map_err(|e| e.to_string())?;
-            let rt = cache_dir.join("jw_rt.c");
-            let o = cache_dir.join(if o2 { "jw_rt_o2.o" } else { "jw_rt_o1.o" });
+        if g.is_none() {
+            let rt = dir.join("jw_rt.c");
+            let o = dir.join("jw_rt.o");
             fs::write(&rt, RUNTIME_C).map_err(|e| e.to_string())?;
             let mut args = vec!["-c", path_str(&rt)?, "-o", path_str(&o)?];
             args.extend(opt);
             run_clang(&args)?;
-            *g = Some((o2, o));
+            *g = Some(o);
         }
-        g.as_ref().expect("compiled").1.clone()
+        g.clone().expect("compiled")
     };
     let llp = dir.join(format!("{}.ll", name));
     fs::write(&llp, &*instrument(ll)).map_err(|e| e.to_string())?;

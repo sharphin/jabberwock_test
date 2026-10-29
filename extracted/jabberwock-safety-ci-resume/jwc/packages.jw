@@ -1,0 +1,52 @@
+// aliceの既存の依存解決を再利用する、版付きの受渡し形式。
+// マップはアクセス制御の境界ではなくビルド入力。ソースを読み込むのはjwc。
+pub struct Map {
+    str entry;
+    str[str] paths;
+    str[] allows;
+}
+
+pub fn Map empty() { Map { entry: "", paths: [], allows: [] } }
+
+fn bool name(str s) {
+    if s == "" { return false; }
+    let first = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_";
+    for (i, c) in s.chars() {
+        if !first.contains(c) && (i == 0 || !"0123456789".contains(c)) { return false; }
+    }
+    true
+}
+
+fn bool query(str s) {
+    if s.starts_with("*") { return name(s.slice(1, s.len())); }
+    let parts = s.split("/");
+    if parts.len() == 1 { return name(s); }
+    parts.len() == 2 && name(parts[0]) && name(parts[1])
+}
+
+pub fn Result<Map, str> read(str path) {
+    if path == "" { return Ok(empty()); }
+    let text = read_file(path)?;
+    let lines = text.lines();
+    if lines.len() == 0 || lines[0] != "jwc-package-map-v1" {
+        return Err("対応していないパッケージマップです: " + path);
+    }
+    let mut m = empty();
+    for (i, raw) in lines {
+        if i == 0 { continue; }
+        let line = if raw.ends_with("\r") { raw.slice(0, raw.len() - 1) } else { raw };
+        let xs = line.split("\t");
+        if xs.len() == 2 && xs[0] == "entry" && xs[1] != "" && m.entry == "" {
+            m.entry = xs[1];
+        } else if xs.len() == 3 && xs[0] == "module" && query(xs[1]) && xs[2] != "" {
+            if m.paths.contains(xs[1]) { return Err("パッケージマップのモジュールが重複しています: " + xs[1]); }
+            m.paths[xs[1]] = xs[2];
+        } else if xs.len() == 3 && xs[0] == "allow" && (xs[1] == "" || name(xs[1])) && name(xs[2]) {
+            m.allows.push(xs[1] + "*" + xs[2]);
+        } else {
+            return Err("パッケージマップの不正な行: {path}:{i + 1}");
+        }
+    }
+    if m.entry == "" { return Err("パッケージマップにentryがありません: " + path); }
+    Ok(m)
+}

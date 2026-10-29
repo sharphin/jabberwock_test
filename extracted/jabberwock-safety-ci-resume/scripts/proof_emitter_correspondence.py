@@ -59,7 +59,7 @@ def validate(compiler: str) -> dict:
             raise ValueError("missing or duplicate LLVM gate instruction: " + fragment)
     if body.count("b.if_true(") != 1:
         raise ValueError("ambiguous rejecting branch")
-    if 'monotonic, align 8' not in body:
+    if 'unordered, align 8' not in body:
         raise ValueError("generation load lost atomic alignment or ordering")
     if compiler == "jwc":
         required = (

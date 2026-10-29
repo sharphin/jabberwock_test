@@ -38,7 +38,7 @@ class EmittedGateTests(unittest.TestCase):
     def test_removed_atomicity_or_trap_fails(self):
         for compiler in ("jwc", "rust"):
             path, code = bind.emitter_segment(compiler)
-            for altered in (code.replace("monotonic, align 8", "non_atomic, align 8", 1),
+            for altered in (code.replace("unordered, align 8", "non_atomic, align 8", 1),
                             code.replace("jw_fail_dangling", "jw_return_dangling", 1)):
                 with self.subTest(compiler=compiler), mock.patch.object(
                         bind, "emitter_segment", return_value=(path, altered)):

@@ -8,6 +8,9 @@ on:
       - 'extracted/jabberwock-safety-ci-resume/tests/**'
       - 'extracted/jabberwock-safety-ci-resume/scripts/**'
       - 'extracted/jabberwock-safety-ci-resume/formal/**'
+      - 'extracted/jabberwock-safety-ci-resume/jwc/**'
+      - 'extracted/jabberwock-safety-ci-resume/runtime/**'
+      - 'extracted/jabberwock-safety-ci-resume/examples/**'
   workflow_dispatch:
 permissions:
   contents: read
@@ -192,4 +195,65 @@ jobs:
         with:
           name: specification-judgement-evidence
           path: extracted/jabberwock-safety-ci-resume/target/formal-tool/
+          if-no-files-found: warn
+
+  elision-certificate:
+    name: Elided generation checks (jwc IR, Lean checker)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      CARGO_INCREMENTAL: '0'
+    defaults:
+      run:
+        working-directory: extracted/jabberwock-safety-ci-resume
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: extracted/jabberwock-safety-ci-resume
+          key: elision-certificate
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Build jwc with the Rust compiler (system Clang, before Lean is on PATH)
+        timeout-minutes: 20
+        run: |
+          clang --version
+          cargo build --release --locked
+          ./target/release/jabberwock build --release -o target/jwc-bin jwc/main.jw
+      - name: Install pinned Lean 4.24.0
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/lean-4.24.0-linux.tar.zst"
+          lean_root="$RUNNER_TEMP/jw-lean"
+          curl --fail --location --silent --show-error --retry 3 --max-time 300 \
+            -o "$archive" https://github.com/leanprover/lean4/releases/download/v4.24.0/lean-4.24.0-linux.tar.zst
+          printf '%s  %s\n' b14f5e5159219dd1a1956c3b806813319f5e94ccd5bdfd56f54520609a5bb5ec "$archive" | sha256sum -c -
+          mkdir -p "$lean_root"
+          tar --zstd -xf "$archive" -C "$lean_root" --strip-components=1
+          echo "$lean_root/bin" >> "$GITHUB_PATH"
+      - name: Check the proofs and build the checker
+        timeout-minutes: 20
+        working-directory: extracted/jabberwock-safety-ci-resume/formal
+        run: |
+          lake build
+          lake build elision-check
+      - name: Re-check every elided generation check (VERIFIED / NOT_VERIFIED / TOOL_ERROR)
+        timeout-minutes: 20
+        run: |
+          python3 scripts/elision_check.py --jwc target/jwc-bin
+          python3 - <<'PY'
+          import json, os
+          d = json.load(open('target/elision-check/summary.json'))
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as out:
+              out.write(f"Elided checks: **{d['status']}** ({d['checked']} programs checked, {d['skipped']} did not reach IR)\n")
+          PY
+      - name: Upload elision evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: elision-certificate-evidence
+          path: extracted/jabberwock-safety-ci-resume/target/elision-check/summary.json
           if-no-files-found: warn

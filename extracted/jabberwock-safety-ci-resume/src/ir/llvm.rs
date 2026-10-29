@@ -1878,7 +1878,7 @@ fn check_ref(b: &mut B, rt: &str, r: &str, use_site: &str, o: &Opts) -> String {
     let gen = b.val(format!("extractvalue {} {}, 2", rt, r));
     let site = b.val(format!("extractvalue {} {}, 3", rt, r));
     let hp = b.val(format!("getelementptr i8, ptr {}, i64 -8", blk));
-    let g = b.val(format!("load atomic i64, ptr {} monotonic, align 8", hp));
+    let g = b.val(format!("load atomic i64, ptr {} unordered, align 8", hp));
     let bad = b.val(format!("icmp ne i64 {}, {}", g, gen));
     let retired = b.val(format!("icmp eq i64 {}, -1", g));
     let bad = b.val(format!("or i1 {}, {}", bad, retired));
@@ -2734,12 +2734,12 @@ impl<'m, 'p> FnGen<'m, 'p> {
     /// 区画を借りるときの世代。リストの中身の区画なら「借りられた」「借りられたことがある」の印を立てる（jw_rt.c の `LIST_SHARED`）
     fn borrow_gen(&mut self, blk: &str, list_block: bool) -> String {
         let hp = self.b.val(format!("getelementptr i8, ptr {}, i64 -8", blk));
-        let g = self.b.val(format!("load atomic i64, ptr {} monotonic, align 8", hp));
+        let g = self.b.val(format!("load atomic i64, ptr {} unordered, align 8", hp));
         if !list_block {
             return g;
         }
         let g2 = self.b.val(format!("or i64 {}, {}", g, (1u64 << 62) | 2));
-        self.b.op(format!("store atomic i64 {}, ptr {} monotonic, align 8", g2, hp));
+        self.b.op(format!("store atomic i64 {}, ptr {} unordered, align 8", g2, hp));
         g2
     }
 
@@ -2815,7 +2815,7 @@ impl<'m, 'p> FnGen<'m, 'p> {
                         self.b.br(&join);
                         self.b.label(&no);
                         let hp = self.b.val(format!("getelementptr i8, ptr {}, i64 -8", raw));
-                        let g2 = self.b.val(format!("load atomic i64, ptr {} monotonic, align 8", hp));
+                        let g2 = self.b.val(format!("load atomic i64, ptr {} unordered, align 8", hp));
                         self.b.op(format!("store i64 {}, ptr {}", g2, vg));
                         self.b.op(format!("store ptr {}, ptr {}", site, vs));
                         self.b.br(&join);
@@ -3277,7 +3277,7 @@ impl<'m, 'p> FnGen<'m, 'p> {
             let blk = self.b.val(format!("call ptr @jw_alloc(i64 {})", xsize));
             self.b.op(format!("call void {}(ptr {}, ptr {}, ptr {})", view, src, blk, site));
             let hp = self.b.val(format!("getelementptr i8, ptr {}, i64 -8", blk));
-            let g = self.b.val(format!("load atomic i64, ptr {} monotonic, align 8", hp));
+            let g = self.b.val(format!("load atomic i64, ptr {} unordered, align 8", hp));
             let r = self.make_ref(&blk, &blk, &g, &site);
             self.b.op(format!("store %ref {}, ptr {}", r, dst));
         } else {
@@ -4151,7 +4151,7 @@ impl<'m, 'p> FnGen<'m, 'p> {
 }
 
 // u64::div_ceil は Rust 1.73 から（1.65 で動かすため自前）
-#[allow(clippy::manual_div_ceil)]
+#[allow(clippy::manual_div_ceil, clippy::manual_is_multiple_of)]
 fn ceil_div(a: u64, b: u64) -> u64 {
     a / b + u64::from(a % b != 0)
 }

@@ -13,7 +13,7 @@ def catalog(target, scale, work, compilers=COMPILERS):
     preparations = [safety.probe("cargo-build", [], ["cargo", "build", "--release"], timeout=1200),
                     safety.probe("cargo-debug-build", [], ["cargo", "build"], timeout=1200)]
     if "jwc" in compilers:
-        p = safety.probe("jwc-build", [], [str(rust), "build", "-o", str(jwc), "jwc/main.jw"], clang=True)
+        p = safety.probe("jwc-build", [], [str(rust), "build", "--debug-native", "-o", str(jwc), "jwc/main.jw"], clang=True)
         p["dependencies"] = ["cargo-build"]
         preparations.append(p)
     if target == "windows":

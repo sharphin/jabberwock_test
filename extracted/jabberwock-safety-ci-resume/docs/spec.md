@@ -52,6 +52,7 @@ fn main() {
 
 - 1 ファイルが 1 モジュール。`use 名前;` で、最初のファイルと同じフォルダの `名前.jw` を使う。
   パッケージ（alice.toml のあるフォルダ。`alice` コマンド）では、src の `名前.jw` と依存先のライブラリ（依存先の src/lib.jw がパッケージの名前のモジュール）を使う（[docs/packages.md](packages.md)）。
+  jwcは `alice package-map` が出力するローカル依存情報を `--package-map` で読み、同じ規則で名前を解決する。aliceのbuild/run/testからのjwc呼び出しはまだ未対応。
   名前の空間はパッケージごと: 依存先の src のほかのファイルはそのパッケージの中からだけ見え、`use 名前;` は自分のパッケージ → 依存先の順に探す。
   使えるパッケージは alice.toml に直接書いた依存先だけ。
 - ほかのモジュールの名前は、いつも `モジュール名.名前` と書く（関数・構造体・enum・interface・静的メソッド `geom.Point.at(1, 2)`・enum の値 `geom.Shape.Box(1, 2)`・型 `geom.Point[]`）。

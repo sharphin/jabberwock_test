@@ -20,7 +20,7 @@ BRANCH = re.compile(
     r"^br i1 (%[-A-Za-z$._0-9]+), label %([-A-Za-z$._0-9]+), "
     r"label %([-A-Za-z$._0-9]+)(?:,.*)?$")
 TRAP = re.compile(r"^call void @jw_fail_dangling\(.*\)(?:\s+.*)?$")
-LOAD = re.compile(r"^load atomic i64, ptr (%[-A-Za-z$._0-9]+) monotonic, align 8$")
+LOAD = re.compile(r"^load atomic i64, ptr (%[-A-Za-z$._0-9]+) unordered, align 8$")
 NE = re.compile(r"^icmp ne i64 (%[-A-Za-z$._0-9]+), (%[-A-Za-z$._0-9]+)$")
 RETIRED = re.compile(r"^icmp eq i64 (%[-A-Za-z$._0-9]+), -1$")
 OR = re.compile(r"^or i1 (%[-A-Za-z$._0-9]+), (%[-A-Za-z$._0-9]+)$")

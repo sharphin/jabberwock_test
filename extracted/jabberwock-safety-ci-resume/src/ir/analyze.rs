@@ -64,6 +64,22 @@ fn scalar_call(f: &Func) -> bool {
     f.captures == 0 && scalar(&f.ret) && f.locals[..f.params].iter().all(|l| scalar(&l.ty))
 }
 
+/// リストの中身を動かさない組み込み（数と文字列の計算・表示）。名前を 1 つずつ書く。
+/// ここにない組み込みは要素を動かしうるものとして扱う（新しく足した組み込みは、ここに足すまで安全側）。
+/// 足すときは、引数が数・真偽・文字列だけで、呼び出し元のリストに届かないことを確かめる（docs/elision-proof.md の前提 3）。
+/// jwc/analyze.jw の pure_builtin と同じ一覧にする
+fn pure_builtin(name: &str) -> bool {
+    matches!(
+        name,
+        "print" | "eprint" | "concat" | "append" | "assert"
+            | "int.abs" | "int.max" | "int.min"
+            | "f64.abs" | "f64.max" | "f64.min" | "f64.sqrt" | "f64.to_bits"
+            | "str.len" | "str.byte_len" | "str.chars" | "str.bytes" | "str.code" | "str.lines" | "str.split"
+            | "str.trim" | "str.to_upper" | "str.to_lower" | "str.contains" | "str.starts_with" | "str.ends_with"
+            | "str.find" | "str.slice" | "str.replace" | "str.repeat" | "str.to_int" | "str.to_float"
+    )
+}
+
 /// 変数 `x` に入れ直した。古い own は解放されるが、変数の場所はそのまま
 fn kill_value(facts: &mut Facts, x: Local) {
     facts.remove(&x);
@@ -300,23 +316,19 @@ impl<'a> Cx<'a> {
         }
     }
 
-    /// 値を順に読む。呼び出しの引数として安全か（読む前の事実で決める）も返す
+    /// 値を順に読む。呼び出しの引数として安全か（すべて読み終えたあとの事実で決める）も返す
     fn operands(&mut self, os: &mut [Operand], facts: &mut Facts) -> Vec<bool> {
-        let mut fs = Vec::new();
-        for o in os.iter() {
-            fs.push(match o {
-                Operand::Copy(p) if p.proj.is_empty() => facts.get(&p.local).copied(),
-                Operand::Move(l, _) | Operand::Read(l, _) => facts.get(l).copied(),
-                _ => None,
-            });
+        // 読んだ値は、関数へ渡るまで名前のない変数（ここでは変数の数より後の番号）に置いたものとして扱う。
+        // `f(ref a, a)` のように後の引数で a がムーブされると、kill_all が先の引数の事実（RefTo(a)・RefSlot(a)）も消す
+        // （読む前の事実を取っておいて is_live で見るだけだと、RefSlot は消えたことに気づけない）
+        let base = self.locals.len();
+        for (i, o) in os.iter_mut().enumerate() {
+            if let Some(f) = self.operand(o, facts) {
+                facts.insert(base + i, f);
+            }
         }
-        // `f(ref a, a)` のように後の引数でムーブされるものは、前の命令で事実が消えている
-        for o in os.iter_mut() {
-            self.operand(o, facts);
-        }
-        // Evaluate argument liveness only after every argument has been consumed.
-        // A later Move may invalidate the owner borrowed by an earlier argument.
-        fs.iter().map(|f| is_live(facts, *f)).collect()
+        let fs: Vec<Option<Fact>> = (0..os.len()).map(|i| facts.remove(&(base + i))).collect();
+        fs.into_iter().map(|f| is_live(facts, f)).collect()
     }
 
     fn record(&mut self, fi: usize, safe: Vec<bool>) {
@@ -401,9 +413,7 @@ impl<'a> Cx<'a> {
             }
             Rvalue::Builtin(name, ops, _) => {
                 self.operands(ops, facts);
-                // 数と文字列の計算・表示のほかは、何が起きるか個別に見ない（スレッド・入出力など）
-                let pure = matches!(name.as_str(), "print" | "eprint" | "concat" | "append" | "assert");
-                if !(pure || name.starts_with("f64.") || name.starts_with("int.") || name.starts_with("str.")) {
+                if !pure_builtin(name) {
                     kill_elems(facts);
                 }
                 None

@@ -42,6 +42,28 @@ fn manifest() {
 }
 
 #[test]
+fn package_map_exports_existing_resolution() {
+    let d = tmp("package-map");
+    let dep = d.with_extension("dep");
+    write(&d.join("alice.toml"), &format!("[package]\nname = \"app\"\n[dependencies]\nmathx = {{ path = \"../{}\" }}\n", dep.file_name().unwrap().to_str().unwrap()));
+    write(&d.join("src/main.jw"), "use mathx; fn main() { print(mathx.one()); }");
+    write(&dep.join("alice.toml"), "[package]\nname = \"mathx\"\n");
+    write(&dep.join("src/lib.jw"), "pub fn i64 one() { 1 }");
+    let p = Project::load(&d).unwrap();
+    let want = p.package_map(&p.main_file()).unwrap();
+    let (code, out, err) = jw(&d, &["package-map"]);
+    assert_eq!(code, 0, "{}", err);
+    assert_eq!(out, want);
+    assert!(out.contains("allow\t\tmathx\n"));
+    let (code, _, err) = jw(&d, &["package-map", "-o", "deps.map"]);
+    assert_eq!(code, 0, "{}", err);
+    assert_eq!(fs::read_to_string(d.join("deps.map")).unwrap(), want);
+    assert!(p.package_map(&dep.join("src/lib.jw")).is_err());
+    let _ = fs::remove_dir_all(d);
+    let _ = fs::remove_dir_all(dep);
+}
+
+#[test]
 fn modules_come_from_src_and_dependencies() {
     let d = tmp("load");
     write(&d.join("app/alice.toml"), "[package]\nname = \"app\"\n[dependencies]\nshapes = { path = \"../shapes\" }\n");

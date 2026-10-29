@@ -4,3 +4,7 @@ defaultTargets = ["JabberwockFormal"]
 
 [[lean_lib]]
 name = "JabberwockFormal"
+
+[[lean_exe]]
+name = "elision-check"
+root = "JabberwockFormal.CheckerMain"

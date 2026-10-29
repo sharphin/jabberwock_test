@@ -3,6 +3,7 @@
 //         jwc --ast <file.jw>      構文木を出す（Rust 版の `jabberwock --ast` と同じ形）
 //         jwc --typed <file.jw>    型検査の結果つきの構文木を出す（Rust 版の `jabberwock --typed` と同じ形）
 //         jwc --ir-raw / --ir <file.jw>  IR を出す（解析の前 / 後）
+//         jwc --ir-cert <file.jw>  解析のあとの IR を Lean の検査器が読む JSON で出す（jwc/ircert.jw）
 //         jwc --ll <file.jw>       LLVM のテキストを出す（Rust 版の `jabberwock --ll` と同じ形）
 //         jwc build [--release] [-o 出力] [--clang clang] <file.jw>   実行ファイルを作る（Rust 版の `jabberwock build` と同じ）
 use analyze;
@@ -10,11 +11,13 @@ use ast;
 use astdump;
 use diag;
 use ir;
+use ircert;
 use lexer;
 use llvmfn;
 use lower;
 use modules;
 use parser;
+use packages;
 use runtime;
 use ty;
 use typeck;
@@ -116,12 +119,12 @@ fn fail_ll(str text) {
 }
 
 /// LLVM のテキスト（Rust 版の `llvm_build`）。書けないときは表示する文。型の警告は先に標準エラーへ出す
-fn Result<str, str> llvm_build(str path, str src, bool release) {
-    let mut l = modules.new_loader(dir_of(path));
+fn Result<str, str> llvm_build(str path, str src, bool release, ref packages.Map package) {
+    let mut l = modules.new_package_loader(dir_of(path), package);
     let str[] mut ns = [];
     let r = parse_all(ref mut l, src);
     for (i, n) in l.names {
-        if i == 0 { ns.push(path); } else { ns.push(n + ".jw"); }
+        if i == 0 { ns.push(path); } else { ns.push(if package.entry == "" { n + ".jw" } else { l.paths[i] }); }
     }
     let p = match r {
         case Ok(p) -> p;
@@ -176,7 +179,7 @@ fn bool run_clang(str clang, str[] argv) {
 
 /// `jwc build`: LLVM に書き出し、実行時ライブラリと一緒に clang で実行ファイルを作る（Rust 版の `jabberwock build` と同じ手順）。
 /// 途中のファイル（`出力.ll` と `出力.jw_rt.c`）は出力と同じフォルダに残す（jabberwock にはファイルを消す関数がまだないため）
-fn build(ref str[] a) {
+fn build(ref str[] a, ref packages.Map package) {
     let usage = "使い方: jwc build [--release] [-o 出力] [--clang clang] <file.jw>";
     let mut release = false;
     let mut out = "";
@@ -199,6 +202,7 @@ fn build(ref str[] a) {
             eprint("  --release     実行時エラーは使った位置だけ出す（ソースを実行ファイルに入れない）");
             eprint("  -o 出力        実行ファイルの名前（なければファイル名から .jw を除いたもの）");
             eprint("  --clang clang  使う clang（なければ clang）");
+            eprint("  --package-map マップ  alice package-mapで解決した依存と入口を使う（file.jwは不要）");
             exit(0);
         } else if path == "" {
             path = x;
@@ -219,7 +223,7 @@ fn build(ref str[] a) {
             exit(1)
         }
     };
-    let ll = match llvm_build(path, src, release) {
+    let ll = match llvm_build(path, src, release, package) {
         case Ok(t) -> t;
         case Err(e) -> {
             eprint(chop(e));
@@ -264,13 +268,31 @@ fn build(ref str[] a) {
 }
 
 fn main() {
-    let a = args();
+    let raw = args();
+    let str[] mut a = [];
+    let mut package_file = "";
+    let mut pos = 0;
+    while pos < raw.len() {
+        if raw[pos] == "--package-map" {
+            if package_file != "" || pos + 1 >= raw.len() || raw[pos + 1] == "" {
+                eprint("--package-map のあとにマップを1つ指定してください");
+                exit(2);
+            }
+            package_file = raw[pos + 1];
+            pos += 2;
+        } else { a.push(raw[pos]); pos += 1; }
+    }
+    let package = match packages.read(package_file) {
+        case Ok(p) -> p;
+        case Err(e) -> { eprint(e); exit(1) }
+    };
+    if package.entry != "" { a.push(package.entry); }
     if a.len() > 0 && a[0] == "build" {
-        build(a);
+        build(a, package);
         return;
     }
-    if a.len() != 2 || (a[0] != "--tokens" && a[0] != "--ast" && a[0] != "--typed" && a[0] != "--ir-raw" && a[0] != "--ir" && a[0] != "--ll" && a[0] != "--ll-checked") {
-        eprint("使い方: jwc --tokens <file.jw> / jwc --ast <file.jw> / jwc --typed <file.jw> / jwc --ir-raw <file.jw> / jwc --ir <file.jw> / jwc --ll <file.jw> / jwc --ll-checked <file.jw>");
+    if a.len() != 2 || (a[0] != "--tokens" && a[0] != "--ast" && a[0] != "--typed" && a[0] != "--ir-raw" && a[0] != "--ir" && a[0] != "--ir-cert" && a[0] != "--ll" && a[0] != "--ll-checked") {
+        eprint("使い方: jwc --tokens <file.jw> / jwc --ast <file.jw> / jwc --typed <file.jw> / jwc --ir-raw <file.jw> / jwc --ir <file.jw> / jwc --ir-cert <file.jw> / jwc --ll <file.jw> / jwc --ll-checked <file.jw>");
         exit(2);
     }
     let path = a[1];
@@ -284,11 +306,11 @@ fn main() {
     let str[] names = [path];
     let str[] srcs = [src];
     if a[0] != "--tokens" {
-        let mut l = modules.new_loader(dir_of(path));
+        let mut l = modules.new_package_loader(dir_of(path), package);
         let str[] mut ns = [];
         let r = parse_all(ref mut l, src);
         for (i, n) in l.names {
-            if i == 0 { ns.push(path); } else { ns.push(n + ".jw"); }
+            if i == 0 { ns.push(path); } else { ns.push(if package.entry == "" { n + ".jw" } else { l.paths[i] }); }
         }
         match r {
             case Ok(p) -> {
@@ -313,6 +335,17 @@ fn main() {
                             }
                             return;
                         }
+                        if a[0] == "--ir-cert" {
+                            match lower.lower(q, c) {
+                                case Ok(ip) -> {
+                                    let mut prog = ip;
+                                    analyze.analyze(ref mut prog);
+                                    print(ircert.program(prog));
+                                }
+                                case Err(why) -> fail_ll("まだ IR に書き出せない書き方があります: " + why + "\n");
+                            }
+                            return;
+                        }
                         if a[0] == "--ir-raw" || a[0] == "--ir" {
                             match lower.lower(q, c) {
                                 case Ok(ip) -> {
@@ -330,13 +363,13 @@ fn main() {
                         print(out + astdump.dump_typed(q, c));
                     }
                     case Err(d) -> {
-                        if a[0] == "--ll" || a[0] == "--ll-checked" { fail_ll(diag.render(d, ns, l.srcs)); }
+                        if a[0] == "--ll" || a[0] == "--ll-checked" || a[0] == "--ir-cert" { fail_ll(diag.render(d, ns, l.srcs)); }
                         print(err_text(a[0], diag.render(d, ns, l.srcs)));
                     }
                 }
             }
             case Err(d) -> {
-                if a[0] == "--ll" || a[0] == "--ll-checked" { fail_ll(diag.render(d, ns, l.srcs)); }
+                if a[0] == "--ll" || a[0] == "--ll-checked" || a[0] == "--ir-cert" { fail_ll(diag.render(d, ns, l.srcs)); }
                 print(err_text(a[0], diag.render(d, ns, l.srcs)));
             }
         }

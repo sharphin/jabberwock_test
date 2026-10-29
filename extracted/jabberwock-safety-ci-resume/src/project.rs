@@ -247,6 +247,32 @@ impl Project {
         }
     }
 
+    /// jwcへ渡す解決済みローカル依存。ソースではなく、所属と直接依存を渡す。
+    /// 区切りを含むパスは拒否し、OSの正規化は既存のProjectと同じ側で行う。
+    pub fn package_map(&self, entry: &Path) -> Result<String, String> {
+        fn path_text(path: &Path) -> Result<String, String> {
+            let p = path.canonicalize().map_err(|e| format!("{}: {}", path.display(), e))?;
+            let s = p.to_str().ok_or_else(|| format!("UTF-8でないパスです: {}", p.display()))?;
+            if s.chars().any(|c| matches!(c, '\t' | '\n' | '\r' | '\0')) {
+                return Err("パッケージのパスにタブ・改行・NULは使えません".into());
+            }
+            Ok(s.to_string())
+        }
+        let entry = entry.canonicalize().map_err(|e| format!("{}: {}", entry.display(), e))?;
+        let root = self.root.canonicalize().map_err(|e| e.to_string())?;
+        if !entry.starts_with(&root) || entry.extension().and_then(|s| s.to_str()) != Some("jw") || !entry.is_file() {
+            return Err("入口は現在のパッケージ内の .jw ファイルにしてください".into());
+        }
+        let mut out = format!("jwc-package-map-v1\nentry\t{}\n", path_text(&entry)?);
+        for (query, path) in &self.modules {
+            out.push_str(&format!("module\t{}\t{}\n", query, path_text(path)?));
+        }
+        for (space, deps) in &self.direct {
+            for dep in deps { out.push_str(&format!("allow\t{}\t{}\n", space, dep)); }
+        }
+        Ok(out)
+    }
+
     /// 入口のファイル（src/main.jw）
     pub fn main_file(&self) -> PathBuf {
         self.root.join("src").join("main.jw")

@@ -21,11 +21,17 @@ jobs:
   formal-infrastructure:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      JW_CLANG: /usr/bin/clang
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - name: Install system Clang for C source contracts
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq clang
       - name: Install pinned Lean toolchain
         shell: bash
         run: |

@@ -4,7 +4,6 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Mutex;
-use std::time::Instant;
 
 use jabberwock::{llvm_build, native};
 
@@ -54,18 +53,9 @@ fn jwc() -> PathBuf {
         let dir = root().join("jwc");
         let src = std::fs::read_to_string(dir.join("main.jw")).unwrap();
         let read = move |name: &str| std::fs::read_to_string(dir.join(format!("{}.jw", name))).ok();
-        let start = Instant::now();
         let ll = big(move || llvm_build(&src, &read, "jwc/main.jw", false)).expect("jwc を LLVM に書き出せる");
-        eprintln!("JWC_BUILD_PHASE llvm_emission elapsed_ms={} ir_bytes={}", start.elapsed().as_millis(), ll.len());
         let out = std::env::temp_dir().join(format!("jw-jwc-test-{}", std::process::id()));
-        // The parity integration tests exercise compiler behavior, not optimized
-        // code generation. Build the very large self-hosted compiler at -O1 without LTO;
-        // optimized native output remains covered by native/safety tests.
-        let opt = std::env::var("JW_JWC_TEST_OPT").unwrap_or_else(|_| "-O1".to_owned());
-        let start = Instant::now();
-        let exe = native::compile(&ll, &out, "jwc", &opt).expect("jwc を clang でコンパイルできる");
-        eprintln!("JWC_BUILD_PHASE clang_link elapsed_ms={} opt={}", start.elapsed().as_millis(), opt);
-        exe
+        native::compile(&ll, &out, "jwc", "-O1").expect("jwc を clang でコンパイルできる")
     })
     .clone()
 }
@@ -310,6 +300,66 @@ fn ast_with_modules() {
         same_irs(&dir.join(format!("{}.jw", n)));
         same_ll(&dir.join(format!("{}.jw", n)));
     }
+}
+
+/// 解決済みの依存をjwcが読み、空間・pub・直接依存をキャッシュ後も守る。
+#[test]
+fn local_packages_with_jwc() {
+    if !have_clang() { return; }
+    let dir = std::env::temp_dir().join(format!("jw-jwc packages-日本語-{}", std::process::id()));
+    let write = |path: &str, text: &str| {
+        let p = dir.join(path);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, text).unwrap();
+    };
+    write("app/alice.toml", "[package]\nname = \"app\"\n[dependencies]\nshapes = { path = \"../shapes\" }\n");
+    write("shapes/alice.toml", "[package]\nname = \"shapes\"\n[dependencies]\nnums = { path = \"../nums\" }\n");
+    write("nums/alice.toml", "[package]\nname = \"nums\"\n");
+    write("app/src/util.jw", "pub fn str who() { \"app\" }");
+    write("shapes/src/util.jw", "pub fn str who() { \"shapes\" } fn hidden() {}\npub struct Point<T> { T x; }");
+    write("nums/src/lib.jw", "pub fn i64 zero() { 0 }");
+    write("shapes/src/lib.jw", "use util; use nums; pub fn str who() { util.who() }\npub fn i64 value() { let p = util.Point { x: 9 }; p.x + nums.zero() }");
+    write("app/src/main.jw", "use shapes; use util; fn main() { print(util.who(), shapes.who(), shapes.value()); }");
+    let project = jabberwock::project::Project::load(&dir.join("app")).unwrap();
+    let map = dir.join("packages.map");
+    std::fs::write(&map, project.package_map(&project.main_file()).unwrap()).unwrap();
+    let run = |mode: &str| Command::new(jwc()).args([mode, "--package-map"]).arg(&map).output().unwrap();
+    let source = std::fs::read_to_string(project.main_file()).unwrap();
+    let reader = project.reader();
+    let want = big(move || jabberwock::ir_dump(&source, &reader, "main.jw", true));
+    let got = run("--ir");
+    assert!(got.status.success(), "{}", String::from_utf8_lossy(&got.stderr));
+    assert_eq!(String::from_utf8_lossy(&got.stdout).trim_end(), want.trim_end());
+    let exe = dir.join("app-native");
+    let output = Command::new(jwc()).args(["build", "--package-map"]).arg(&map)
+        .args(["--clang", &native::clang(), "-o"]).arg(&exe).output().unwrap();
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    let output = Command::new(exe).output().unwrap();
+    assert!(output.status.success());
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "app shapes 9\n");
+    // shapesを先に読んでnumsがキャッシュにあっても、appからは使えない。
+    write("app/src/main.jw", "use shapes; use nums; fn main() { print(nums.zero()); }");
+    let out = run("--ll");
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("直接依存"));
+    write("app/src/main.jw", "use shapes; fn main() { print(shapes.who()); }");
+    write("shapes/src/lib.jw", "use util; pub fn str who() { util.hidden(); \"x\" }");
+    let out = run("--ll");
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("pub ではありません"));
+    write("shapes/src/lib.jw", "use util; pub fn str who() { util.who() }");
+    write("shapes/src/util.jw", "use shapes; pub fn str who() { \"cycle\" }");
+    // shapesの直接依存へ自分を加えた不正なマップでも、循環を診断する。
+    let text = std::fs::read_to_string(&map).unwrap() + "allow\tshapes\tshapes\n";
+    std::fs::write(&map, text).unwrap();
+    let out = run("--ll");
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("輪"));
+    std::fs::write(&map, "jwc-package-map-v99\n").unwrap();
+    let out = run("--ll");
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("対応していない"));
+    let _ = std::fs::remove_dir_all(dir);
 }
 
 /// `--typed` の出力が Rust 版（`typed_dump`）と同じか

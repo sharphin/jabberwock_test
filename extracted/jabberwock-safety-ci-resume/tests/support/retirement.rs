@@ -14,7 +14,7 @@ pub fn check_retired_marker(ll: &str, name: &str) {
         let next = (i + 1..(i + 12).min(lines.len())).find(|j| lines[*j].contains("load atomic i64, ptr "));
         if let Some(j) = next {
             let hp = lines[j].split("load atomic i64, ptr ").nth(1).unwrap().split_whitespace().next().unwrap();
-            let store = format!("  store atomic i64 -1, ptr {} monotonic, align 8", hp);
+            let store = format!("  store atomic i64 -1, ptr {} unordered, align 8", hp);
             lines[i] = format!("  {} = add i64 0, -1", generation);
             lines.insert(j, store);
             injected = true;

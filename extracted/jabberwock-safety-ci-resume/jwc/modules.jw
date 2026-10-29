@@ -7,6 +7,7 @@ use ast;
 use diag;
 use lexer;
 use parser;
+use packages;
 
 fn bool has(ref str[] xs, str x) {
     for y in xs {
@@ -84,7 +85,7 @@ fn Info info_of(ref ast.Program p) {
 }
 
 /// `モジュール名 . 名前` の 3 つのトークンを、1 つの名前 `モジュール名.名前` にする（文字列の埋め込みの中も）
-fn Result<lexer.Token[], diag.Diag> merge_paths(ref lexer.Token[] toks, ref str[] mods, ref i64[] which, ref Info[] infos) {
+fn Result<lexer.Token[], diag.Diag> merge_paths(ref lexer.Token[] toks, ref str[] mods, ref str[] targets, ref i64[] which, ref Info[] infos) {
     let lexer.Token[] mut out = [];
     let mut i = 0;
     while i < toks.len() {
@@ -116,7 +117,7 @@ fn Result<lexer.Token[], diag.Diag> merge_paths(ref lexer.Token[] toks, ref str[
             return Err(diag.error_note("`{module}.{name}` は pub ではありません", full, "ほかのファイルからは使えない",
                 "使えるようにするなら、{module}.jw の定義の前に `pub` をつけてください"));
         }
-        out.push(lexer.Token { kind: "ident", text: module + "." + name, num: 0, span: full });
+        out.push(lexer.Token { kind: "ident", text: targets[m] + "." + name, num: 0, span: full });
         i += 3;
     }
     Ok(out)
@@ -129,6 +130,11 @@ pub struct Loader {
     // 読んだファイルのモジュール名とソース。番号が位置のファイルの番号。0 番が最初のファイル（名前は空）
     str[] names;
     str[] srcs;
+    str[] paths;
+    bool packaged;
+    str[str] package_paths;
+    str[] allows;
+    str[] libs;
     // 読み終わったモジュール
     str[] done;
     Info[] infos;
@@ -139,11 +145,16 @@ pub struct Loader {
     /// 最初のファイルと、そこから `use` でたどれるモジュールをすべて読み、1 つのプログラムにする
     fn mut Result<ast.Program, diag.Diag> load(str src) {
         names.push("");
+        paths.push("");
         srcs.push(src);
         module("", 0)?;
         let str[] mut mods = [];
         for (i, n) in names {
-            if i > 0 { mods.push(n); }
+            if i > 0 {
+                mods.push(n);
+                let short = n.split("/");
+                if short.len() == 2 && !has(mods, short[1]) { mods.push(short[1]); }
+            }
         }
         let mut all = ast.Program {
             structs: [], enums: [], interfaces: [], fns: [], uses: [], use_spans: [], public: [], modules: mods,
@@ -175,52 +186,80 @@ pub struct Loader {
             k += 1;
         }
         loading.push(name);
+        let split = name.split("/");
+        let space = if split.len() == 2 { split[0] } else { if has(libs, name) { name } else { "" } };
+        let str[] mut keys = [];
         for (i, u) in uses {
-            if has(done, u) { continue; }
-            if has(loading, u) {
+            let local = if space == "" { u } else { space + "/" + u };
+            let mut key = local;
+            let mut path = dir + u + ".jw";
+            if packaged {
+                match package_paths.get(local) {
+                    case Some(p) -> path = p;
+                    case None -> {
+                        // キャッシュ済みでも、この空間からの直接依存を毎回確認する。
+                        if !has(allows, space + "*" + u) {
+                            return Err(diag.error("モジュール `{u}` が見つかりません", use_spans[i], "このパッケージのモジュールでも直接依存でもない"));
+                        }
+                        match package_paths.get("*" + u) {
+                            case Some(p) -> path = p;
+                            case None -> return Err(diag.error("パッケージ `{u}` が見つかりません", use_spans[i], "パッケージマップを作り直してください"));
+                        }
+                        key = u;
+                        if !has(libs, key) { libs.push(key); }
+                    }
+                }
+            }
+            keys.push(key);
+            if has(loading, key) {
                 return Err(diag.error_note("モジュール `{u}` の use が輪になっています", use_spans[i],
                     "ここで使うと、読む順が決まらない", "共通の部分を別のモジュールに分けてください"));
             }
-            let text = match read_file(dir + u + ".jw") {
+            if has(done, key) { continue; }
+            let text = match read_file(path) {
                 case Ok(t) -> t;
-                case Err(e) -> return Err(diag.error("モジュール `{u}` が見つかりません", use_spans[i], "同じフォルダに {u}.jw がない"));
+                case Err(e) -> return Err(diag.error("モジュール `{u}` が見つかりません", use_spans[i],
+                    if packaged { "パッケージのファイルを読めません: " + path + ": " + e } else { "同じフォルダに {u}.jw がない" }));
             };
-            names.push(u);
+            names.push(key);
+            paths.push(path);
             srcs.push(text);
-            let info = module(u, names.len() - 1)?;
-            done.push(u);
+            let info = module(key, names.len() - 1)?;
+            done.push(key);
             infos.push(info);
         }
         loading.pop();
         // 使うモジュール（同じ名前を二回 use してもまとめる）
         let str[] mut mods = [];
+        let str[] mut targets = [];
         let i64[] mut which = [];
         let str[] mut structs = [];
         let str[] mut enums = [];
         let str[str] mut variants = [];
-        for u in uses {
+        for (i, u) in uses {
             if has(mods, u) { continue; }
             for (j, d) in done {
-                if d == u {
+                if d == keys[i] {
                     for x in range(infos[j].names.len()) {
                         let n = infos[j].names[x];
                         if infos[j].pubs[x] && infos[j].find(n) == x {
-                            if infos[j].kinds[x] == "struct" { structs.push(u + "." + n); }
+                            if infos[j].kinds[x] == "struct" { structs.push(d + "." + n); }
                             if infos[j].kinds[x] == "enum" {
-                                enums.push(u + "." + n);
+                                enums.push(d + "." + n);
                                 match infos[j].variants.get(n) {
-                                    case Some(vs) -> variants[u + "." + n] = vs;
+                                    case Some(vs) -> variants[d + "." + n] = vs;
                                     case None -> {}
                                 }
                             }
                         }
                     }
                     mods.push(u);
+                    targets.push(d);
                     which.push(j);
                 }
             }
         }
-        let merged = merge_paths(toks, mods, which, infos)?;
+        let merged = merge_paths(toks, mods, targets, which, infos)?;
         let mut prog = parser.parse_with(merged, structs, enums, variants)?;
         let info = info_of(prog);
         if name != "" {
@@ -234,7 +273,14 @@ pub struct Loader {
 }
 
 pub fn Loader new_loader(str dir) {
-    Loader { dir: dir, names: [], srcs: [], done: [], infos: [], loading: [], parts: [] }
+    new_package_loader(dir, packages.empty())
+}
+
+pub fn Loader new_package_loader(str dir, ref packages.Map package) {
+    let str[str] mut paths = [];
+    for (k, v) in package.paths { paths[k] = v; }
+    Loader { dir: dir, names: [], srcs: [], paths: [], packaged: package.entry != "", package_paths: paths,
+        allows: strs(package.allows), libs: [], done: [], infos: [], loading: [], parts: [] }
 }
 
 // ---------------------------------------------------------------- モジュールの中の名前の書き換え

@@ -853,10 +853,10 @@ struct FnGen {
     /// 区画を借りるときの世代。リストの中身の区画なら「借りられた」「借りられたことがある」の印を立てる
     fn mut str borrow_gen(str blk, bool list_block) {
         let hp = b.val("getelementptr i8, ptr " + blk + ", i64 -8");
-        let g = b.val("load atomic i64, ptr " + hp + " monotonic, align 8");
+        let g = b.val("load atomic i64, ptr " + hp + " unordered, align 8");
         if !list_block { return g; }
         let g2 = b.val("or i64 " + g + ", 4611686018427387906");
-        b.op("store atomic i64 " + g2 + ", ptr " + hp + " monotonic, align 8");
+        b.op("store atomic i64 " + g2 + ", ptr " + hp + " unordered, align 8");
         g2
     }
 
@@ -944,7 +944,7 @@ struct FnGen {
                     b.br(join);
                     b.label(no);
                     let hp = b.val("getelementptr i8, ptr " + raw + ", i64 -8");
-                    let g2 = b.val("load atomic i64, ptr " + hp + " monotonic, align 8");
+                    let g2 = b.val("load atomic i64, ptr " + hp + " unordered, align 8");
                     b.op("store i64 " + g2 + ", ptr " + vg);
                     b.op("store ptr " + site + ", ptr " + vs);
                     b.br(join);
@@ -1383,7 +1383,7 @@ struct FnGen {
             let blk = b.val("call ptr @jw_alloc(i64 " + xsize + ")");
             b.op("call void " + view + "(ptr " + src + ", ptr " + blk + ", ptr " + site + ")");
             let hp = b.val("getelementptr i8, ptr " + blk + ", i64 -8");
-            let g = b.val("load atomic i64, ptr " + hp + " monotonic, align 8");
+            let g = b.val("load atomic i64, ptr " + hp + " unordered, align 8");
             let r = make_ref(blk, blk, g, site);
             b.op("store %ref " + r + ", ptr " + dst);
         } else {

@@ -33,7 +33,7 @@ markerは正規の生きたrefの世代として発行しない。通常の世�
 | `jw_view_target` | ownの写しも同じく退役markerを拒否 |
 | `freed_at` | markerと一致する壊れたrefで加算を周回させず、退役payloadを診断の値として読まない |
 
-世代ヘッダーは引き続きatomicのrelaxed/LLVM monotonicで読み書きする。
+世代ヘッダーは atomic で読み書きする（C は relaxed、書き出した LLVM は unordered。unordered も値が裂けずに読めるので安全の性質は同じで、ループの外へ読みを出すなどの最適化を妨げない。monotonic では linkedlist が約 3 割遅かった）。
 退役したC区画はプロセス終了まで保持する表へ登録する。
 既に無効化されたpayloadの先頭語を保持表のリンクに転用し、他のスレッドの退役もatomic CASで公開する。
 保持表の削除や識別子の再割当ては行わず、古いrefが参照し得るアドレスをOSへ返さない。

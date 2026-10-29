@@ -134,6 +134,7 @@ fn real_main() {
 fn build(args: Vec<String>) {
     let usage = "使い方: jabberwock build [--release] [-o 出力] [測定用の切り替え] <file.jw>";
     let mut release = false;
+    let mut debug_native = false;
     // 測定用（ベンチマークで検査の費用を分ける）。--no-gen-checks / --no-bounds-checks / --unchecked は安全でない
     let mut elide = true;
     let mut stats = false;
@@ -144,6 +145,7 @@ fn build(args: Vec<String>) {
     while let Some(a) = it.next() {
         match a.as_str() {
             "--release" => release = true,
+            "--debug-native" => debug_native = true,
             "--no-elide" => elide = false,
             "--no-gen-checks" => opts.gen = false,
             "--no-bounds-checks" => opts.bounds = false,
@@ -163,6 +165,7 @@ fn build(args: Vec<String>) {
             "-h" | "--help" => {
                 eprintln!("{}", usage);
                 eprintln!("  --release  実行時エラーは使った位置だけ出す（ソースを実行ファイルに入れない）");
+                eprintln!("  --debug-native  初回ブートストラップ用に -O0 / LTOなしでネイティブ生成");
                 eprintln!("  -o 出力     実行ファイルの名前（なければファイル名から .jw を除いたもの）");
                 eprintln!("測定用（ベンチマークで検査の費用を分けるため）:");
                 eprintln!("  --no-elide          検査を消す解析をしない（世代の検査を全部残す）");
@@ -213,7 +216,7 @@ fn build(args: Vec<String>) {
         let stem = std::path::Path::new(&path).file_stem().and_then(|s| s.to_str()).unwrap_or("a");
         stem.to_string()
     });
-    match jabberwock::native::build(&ll, std::path::Path::new(&out), "-O2") {
+    match jabberwock::native::build(&ll, std::path::Path::new(&out), if debug_native { "-O0" } else { "-O2" }) {
         Ok(exe) => eprintln!("作りました: {}", exe.display()),
         Err(e) => {
             eprintln!("{}", e);

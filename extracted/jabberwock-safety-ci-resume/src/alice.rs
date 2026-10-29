@@ -4,6 +4,7 @@ use std::{env, fs, process};
 const USAGE: &str = "使い方: alice <コマンド>
   new <名前> [--lib]              新しいパッケージを作る（--lib はライブラリ）
   build [--release]               target/debug（release）に実行ファイルを作る（clang が要る）
+  package-map [-o ファイル] [入口.jw]  jwc用のローカル依存情報を書き出す
   run [--native] [-- 引数...]      src/main.jw を動かす（--native は実行ファイルを作って動かす）
   test [名前の一部]                tests/*.jw を動かす（main のないファイルは fn test_名前() を 1 本ずつ。tests/名前.out があれば出力と比べる）";
 
@@ -18,12 +19,37 @@ fn real_main() {
         Some("build") => project_build(rest),
         Some("run") => project_run(rest),
         Some("test") => project_test(rest),
+        Some("package-map") => project_package_map(rest),
         Some("-h") | Some("--help") => eprintln!("{}", USAGE),
         _ => {
             eprintln!("{}", USAGE);
             process::exit(2);
         }
     }
+}
+
+fn project_package_map(args: Vec<String>) {
+    let p = current_project();
+    let mut output = None;
+    let mut entry = None;
+    let mut it = args.into_iter();
+    while let Some(a) = it.next() {
+        if a == "-o" && output.is_none() {
+            output = it.next();
+            if output.is_some() { continue; }
+        } else if !a.starts_with('-') && entry.is_none() {
+            entry = Some(std::path::PathBuf::from(a));
+            continue;
+        }
+        eprintln!("使い方: alice package-map [-o ファイル] [入口.jw]");
+        process::exit(2);
+    }
+    let entry = entry.unwrap_or_else(|| p.main_file());
+    let result = p.package_map(&entry).and_then(|text| match output {
+        Some(path) => fs::write(&path, text).map_err(|e| format!("{}: {}", path, e)),
+        None => { print!("{}", text); Ok(()) }
+    });
+    if let Err(e) = result { eprintln!("{}", e); process::exit(1); }
 }
 
 /// 今のフォルダから上へたどってパッケージを読む（なければ終わる）
@@ -121,7 +147,7 @@ fn project_exe(p: &jabberwock::project::Project, release: bool) -> std::path::Pa
     if let Some(d) = exe.parent() {
         let _ = fs::create_dir_all(d);
     }
-    match jabberwock::native::build(&ll, &exe, "-O2") {
+    match jabberwock::native::build(&ll, &exe, if release { "-O2" } else { "-O0" }) {
         Ok(e) => {
             eprintln!("作りました: {}", shown(p, &e));
             e

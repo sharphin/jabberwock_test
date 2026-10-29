@@ -415,7 +415,7 @@ pub fn str check_ref(ref mut B b, str rt, str r, str use_site) {
     let g = b.val("extractvalue " + rt + " " + r + ", 2");
     let st = b.val("extractvalue " + rt + " " + r + ", 3");
     let hp = b.val("getelementptr i8, ptr " + blk + ", i64 -8");
-    let cur = b.val("load atomic i64, ptr " + hp + " monotonic, align 8");
+    let cur = b.val("load atomic i64, ptr " + hp + " unordered, align 8");
     let different = b.val("icmp ne i64 " + cur + ", " + g);
     let retired = b.val("icmp eq i64 " + cur + ", -1");
     let bad = b.val("or i1 " + different + ", " + retired);

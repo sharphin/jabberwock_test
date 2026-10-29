@@ -19,4 +19,8 @@ import JabberwockFormal.MeetChangeCount
 import JabberwockFormal.WorklistExecution
 import JabberwockFormal.WorklistScheduling
 import JabberwockFormal.SafetyComposition
+import JabberwockFormal.ElisionSoundness
+import JabberwockFormal.OwnershipFrame
+import JabberwockFormal.ElisionCheck
+import JabberwockFormal.ElisionCheckFast
 import JabberwockFormal.TypedPipeline

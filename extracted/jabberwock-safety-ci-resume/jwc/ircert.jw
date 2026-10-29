@@ -1,0 +1,135 @@
+// 解析のあとの IR を、Lean の検査器（formal/JabberwockFormal/ElisionCheck）が読む JSON で書き出す（`jwc --ir-cert`）。
+//
+// 検査器は、検査を消した `*` がどれも本当に安全かを、この IR だけから確かめ直す。
+// だから、検査を消すかどうかの判断に要るもの（変数の型の種類・命令・どこで検査を消したか）は落とさずに書く。
+// 位置・説明の文・定数の中身（関数の番号に使う整数のほか）は要らないので書かない。
+use ir;
+use ty;
+
+fn str q(str s) {
+    let mut out = "\"";
+    for c in s.chars() {
+        if c == "\"" || c == "\\" { out += "\\"; }
+        out += c;
+    }
+    out + "\""
+}
+
+fn str arr(ref str[] xs) { "[" + xs.join(",") + "]" }
+
+fn str ints(ref i64[] xs) {
+    let str[] mut out = [];
+    for x in xs { out.push("{x}"); }
+    arr(out)
+}
+
+fn str place(ref ir.Place p) {
+    let str[] mut ps = [];
+    for pr in p.proj {
+        ps.push(match ref pr {
+            case Deref(req, s) -> if req { "{{\"k\":\"deref\",\"req\":true}}" } else { "{{\"k\":\"deref\",\"req\":false}}" };
+            case Field(i, s) -> "{{\"k\":\"field\",\"i\":{i}}}";
+            case Variant(v, i) -> "{{\"k\":\"variant\",\"i\":{i}}}";
+            case Index(k, s, a) -> "{{\"k\":\"index\",\"o\":" + operand(k) + "}}";
+        });
+    }
+    "{{\"l\":{p.local},\"p\":" + arr(ps) + "}}"
+}
+
+fn str operand(ref ir.Operand o) {
+    match ref o {
+        case Copy(p) -> "{{\"k\":\"copy\",\"p\":" + place(p) + "}}";
+        case Move(l, s) -> "{{\"k\":\"move\",\"l\":{l}}}";
+        case Read(l, s) -> "{{\"k\":\"read\",\"l\":{l}}}";
+        case Const(c) -> match c {
+            case Int(neg, mag, t) -> if neg { "{{\"k\":\"const\"}}" } else { "{{\"k\":\"const\",\"i\":{mag}}}" };
+            default -> "{{\"k\":\"const\"}}";
+        };
+    }
+}
+
+fn str operands(ref ir.Operand[] os) {
+    let str[] mut out = [];
+    for o in os { out.push(operand(o)); }
+    arr(out)
+}
+
+fn str rv(str k, str rest) { "{{\"k\":" + q(k) + rest + "}}" }
+
+fn str rvalue(ref ir.Rvalue r) {
+    match ref r {
+        case Use(o) -> rv("use", ",\"o\":" + operand(o));
+        case Bin(op, a, b, s) -> rv("scalar", ",\"os\":[" + operand(a) + "," + operand(b) + "]");
+        case Un(op, a, s) -> rv("scalar", ",\"os\":[" + operand(a) + "]");
+        case Cast(a, t) -> rv("scalar", ",\"os\":[" + operand(a) + "]");
+        case Ref(p, m, f, w, s) -> rv("ref", ",\"p\":" + place(p) + ",\"follows\":" + (if f { "true" } else { "false" }));
+        case Own(a) -> rv("own", ",\"o\":" + operand(a));
+        case Struct(n, fs) -> rv("agg", ",\"os\":" + operands(fs));
+        case Enum(v, fs, c) -> rv("agg", ",\"os\":" + operands(fs));
+        case Take(p) -> rv("take", ",\"p\":" + place(p));
+        case Array(items, list) -> rv("agg", ",\"os\":" + operands(items));
+        case Repeat(x, n, list) -> rv("ops", ",\"os\":[" + operand(x) + "]");
+        case Map(ks, vs, s) -> {
+            let str[] mut os = [];
+            for (i, k) in ks {
+                os.push(operand(k));
+                os.push(operand(vs[i]));
+            }
+            rv("ops", ",\"os\":" + arr(os))
+        }
+        case SeqOp(n, p, a, s, x) -> rv("seq", ",\"name\":" + q(n) + ",\"p\":" + place(p) + ",\"os\":" + operands(a));
+        case Items(p, w, s) -> rv("read_place", ",\"p\":" + place(p));
+        case Keys(p) -> rv("read_place", ",\"p\":" + place(p));
+        case Call(f, a, s) -> rv("call", ",\"f\":{f},\"os\":" + operands(a));
+        case CallDyn(sn, fs, this, m, w, a, s) -> rv("dyn", ",\"fns\":" + ints(fs) + ",\"this\":" + place(this) + ",\"os\":" + operands(a));
+        case Closure(f, caps) -> rv("closure", ",\"f\":{f},\"os\":" + operands(caps));
+        case CallValue(f, a, s) -> rv("callvalue", ",\"fv\":" + operand(f) + ",\"os\":" + operands(a));
+        case CopyOut(p, w, s) -> rv("copy_out", ",\"p\":" + place(p));
+        case Show(o, temp, s) -> rv("scalar", ",\"os\":[" + operand(o) + "]");
+        case Builtin(n, a, s) -> rv("builtin", ",\"name\":" + q(n) + ",\"os\":" + operands(a));
+    }
+}
+
+fn str inst(ref ir.Inst i) {
+    match ref i {
+        case Assign(p, v, s, w) -> "{{\"k\":\"assign\",\"p\":" + place(p) + ",\"v\":" + rvalue(v) + "}}";
+        case Drop(l, s, w) -> "{{\"k\":\"drop\",\"l\":{l}}}";
+        case Discard(v, s, w) -> "{{\"k\":\"discard\",\"o\":" + operand(v) + "}}";
+    }
+}
+
+fn str term(ref ir.Term t) {
+    match ref t {
+        case Goto(b) -> "{{\"k\":\"goto\",\"succ\":[{b}]}}";
+        case Branch(c, a, b) -> "{{\"k\":\"operand\",\"o\":" + operand(c) + ",\"succ\":[{a},{b}]}}";
+        case Return(o) -> "{{\"k\":\"operand\",\"o\":" + operand(o) + ",\"succ\":[]}}";
+        case Switch(p, vs, bbs, d) -> {
+            let i64[] mut s = [];
+            for b in bbs { s.push(b); }
+            s.push(d);
+            "{{\"k\":\"switch\",\"p\":" + place(p) + ",\"succ\":" + ints(s) + "}}"
+        }
+        case Step(c, s, n, d) -> "{{\"k\":\"operand\",\"o\":" + operand(s) + ",\"succ\":[{n},{d}]}}";
+        case Fail(title, s, l) -> "{{\"k\":\"goto\",\"succ\":[]}}";
+        case Unreachable -> "{{\"k\":\"goto\",\"succ\":[]}}";
+    }
+}
+
+fn str func(ref ir.Func f) {
+    let str[] mut ls = [];
+    for l in f.locals { ls.push(q(ty.tag(l.t))); }
+    let str[] mut bs = [];
+    for b in f.blocks {
+        let str[] mut is = [];
+        for i in b.insts { is.push(inst(i)); }
+        bs.push("{{\"insts\":" + arr(is) + ",\"term\":" + term(b.term) + "}}");
+    }
+    "{{\"name\":" + q(f.name) + ",\"params\":{f.params},\"captures\":{f.captures},\"ret\":" + q(ty.tag(f.ret))
+        + ",\"locals\":" + arr(ls) + ",\"blocks\":" + arr(bs) + "}}"
+}
+
+pub fn str program(ref ir.Program p) {
+    let str[] mut fs = [];
+    for f in p.fns { fs.push(func(f)); }
+    "{{\"fns\":" + arr(fs) + "}}"
+}
