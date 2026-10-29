@@ -1,6 +1,9 @@
 import Lean.Data.Json
 import JabberwockFormal.ElisionCheckFast
 
+set_option autoImplicit false
+set_option warningAsError true
+
 /-!
 # 検査器の実行ファイル（`lake exe elision-check 入力.json ...`）
 

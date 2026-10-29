@@ -693,3 +693,6 @@ let x = pick(true, 1, 2);
   jwc が書き出した IR（`--ir-cert`）を Lean の検査器（`elision-check`）が確かめ直す形にした。検査器の正しさは Lean で証明し、
   証明の外に残るのは IR から模型への読み替え表だけ。検査器は事実も Pinned の表も自分で計算するので、analyze の結果は信じない。
   大きな関数（jwc 自身）のため、事実を配列で持つ速い版を書き、証明済みの版と同じ結果になることも証明した（`verifyFast_sound`）。
+- jabberwock_test にだけあった CI 向けの修正を取り込んだ（2026-10-29）: -O0/-O1 では LTO を使わない（大きな jwc の -O1 ビルドで LTO が時間の大半を占め、
+  CI では SIGSEGV の回避にもなっていた。オーナーの判断で LTO なし）、実行時ライブラリのオブジェクトのキャッシュをテストのフォルダの外に置く、
+  formal_report の `--kernel-only`。jabberwock_test の extracted/ はこのブランチの写しとし、向こうだけで直さない。

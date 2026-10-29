@@ -4,6 +4,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Mutex;
+use std::time::Instant;
 
 use jabberwock::{llvm_build, native};
 
@@ -53,9 +54,18 @@ fn jwc() -> PathBuf {
         let dir = root().join("jwc");
         let src = std::fs::read_to_string(dir.join("main.jw")).unwrap();
         let read = move |name: &str| std::fs::read_to_string(dir.join(format!("{}.jw", name))).ok();
+        let start = Instant::now();
         let ll = big(move || llvm_build(&src, &read, "jwc/main.jw", false)).expect("jwc を LLVM に書き出せる");
+        eprintln!("JWC_BUILD_PHASE llvm_emission elapsed_ms={} ir_bytes={}", start.elapsed().as_millis(), ll.len());
         let out = std::env::temp_dir().join(format!("jw-jwc-test-{}", std::process::id()));
-        native::compile(&ll, &out, "jwc", "-O1").expect("jwc を clang でコンパイルできる")
+        // The parity integration tests exercise compiler behavior, not optimized
+        // code generation. Build the very large self-hosted compiler at -O1 without LTO;
+        // optimized native output remains covered by native/safety tests.
+        let opt = std::env::var("JW_JWC_TEST_OPT").unwrap_or_else(|_| "-O1".to_owned());
+        let start = Instant::now();
+        let exe = native::compile(&ll, &out, "jwc", &opt).expect("jwc を clang でコンパイルできる");
+        eprintln!("JWC_BUILD_PHASE clang_link elapsed_ms={} opt={}", start.elapsed().as_millis(), opt);
+        exe
     })
     .clone()
 }
