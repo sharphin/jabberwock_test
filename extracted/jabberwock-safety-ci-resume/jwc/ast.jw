@@ -179,6 +179,9 @@ pub struct Program {
     i64[] borrow_lambdas;
     // 式の数（`number` が書く。番号は 1〜nodes）
     i64 nodes;
+    // 資源の型（`resource File;`。標準ライブラリの中だけで書ける）と、その位置
+    str[] resources;
+    i64[] resource_spans;
 }
 
 // ---------------------------------------------------------------- 作る

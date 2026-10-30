@@ -16,6 +16,28 @@ const TBAA = "!9000 = !{{!\"jabberwock\"}}\n!9001 = !{{!\"jabberwock list header
 const TBAA_HEADER = ", !tbaa !9003";
 const TBAA_ELEMENT = ", !tbaa !9004";
 
+// 資源（std.fs）の操作。使うプログラムだけに書く（使わないプログラムの出力は Rust 版と同じにする）
+const RES_DECLS = "declare i32 @jw_fs_open(ptr, i64, ptr, ptr)\n" +
+    "declare i32 @jw_file_read(ptr, i64, ptr, ptr, ptr)\n" +
+    "declare i32 @jw_file_read_text(ptr, ptr, ptr, ptr)\n" +
+    "declare i32 @jw_file_write(ptr, ptr, ptr, ptr)\n" +
+    "declare i32 @jw_file_write_text(ptr, ptr, ptr, ptr)\n" +
+    "declare i32 @jw_res_close(ptr, ptr, ptr)\n" +
+    "declare void @jw_res_drop(ptr, ptr)\n" +
+    "declare ptr @jw_res_view(ptr)\n" +
+    "declare i32 @jw_fs_exists(ptr)\n" +
+    "declare i32 @jw_fs_list(ptr, ptr, ptr)\n" +
+    "declare i32 @jw_fs_make_dir(ptr, ptr)\n" +
+    "declare i32 @jw_fs_remove(ptr, ptr)\n" +
+    "declare i32 @jw_net_connect(ptr, i64, ptr, ptr)\n" +
+    "declare i32 @jw_net_listen(ptr, i64, ptr, ptr)\n" +
+    "declare i32 @jw_tcp_read(ptr, i64, ptr, ptr, ptr)\n" +
+    "declare i32 @jw_tcp_write(ptr, ptr, ptr, ptr)\n" +
+    "declare i32 @jw_tcp_write_text(ptr, ptr, ptr, ptr)\n" +
+    "declare i32 @jw_tcp_set_timeout(ptr, i64, ptr, ptr)\n" +
+    "declare i32 @jw_listener_accept(ptr, ptr, ptr, ptr)\n" +
+    "declare i64 @jw_listener_port(ptr, ptr)\n";
+
 const PRELUDE = "; jabberwock が書き出した LLVM IR\n" +
     "%ref = type {{ ptr, ptr, i64, ptr }}\n" +
     "%iref = type {{ ptr, ptr, i64, ptr, i64 }}\n" +
@@ -161,6 +183,7 @@ pub fn str tkey(ref ty.Ty t) {
         case Map(k, v) -> "M(" + tkey(k) + "," + tkey(v) + ")";
         case Task(x) -> "T(" + tkey(x) + ")";
         case Chan(x) -> "C(" + tkey(x) + ")";
+        case Res(n) -> "X(" + n + ")";
         case Fn(ps, r) -> "F(" + keys(ps) + "->" + tkey(r) + ")";
         default -> ty.show(t);
     }
@@ -201,6 +224,7 @@ pub fn str type_name(ref ty.Ty t) {
     if k == "Map" { return "辞書"; }
     if k == "Task" { return "task"; }
     if k == "Chan" { return "chan"; }
+    if k == "Res" { return "資源"; }
     "?"
 }
 
@@ -449,7 +473,10 @@ pub struct Module {
     i64 n;
 
     fn str output() {
-        PRELUDE + types.join("") + "\n" + globals.join("") + "\n" + code.join("") + TBAA
+        let body = code.join("");
+        let res = if body.contains("@jw_res_") || body.contains("@jw_fs_") || body.contains("@jw_file_") || body.contains("@jw_net_")
+            || body.contains("@jw_tcp_") || body.contains("@jw_listener_") { RES_DECLS } else { "" };
+        PRELUDE + res + types.join("") + "\n" + globals.join("") + "\n" + body + TBAA
     }
 
     fn mut i64 fresh() {
@@ -464,7 +491,7 @@ pub struct Module {
         if k == "Int" { return Ok("i{ty.bits(ty.int_of(t))}"); }
         if k == "Float" { return Ok("double"); }
         if k == "Bool" { return Ok("i1"); }
-        if k == "Str" || k == "Map" || k == "Task" || k == "Chan" { return Ok("ptr"); }
+        if k == "Str" || k == "Map" || k == "Task" || k == "Chan" || k == "Res" { return Ok("ptr"); }
         if k == "Unit" || k == "Never" { return Ok("i8"); }
         if k == "Own" { return Ok(if is_iface_ptr(t) { "%iown" } else { "ptr" }); }
         if k == "Ref" { return Ok(if is_iface_ptr(t) { "%iref" } else { "%ref" }); }
@@ -570,7 +597,7 @@ pub struct Module {
             let s = ty.bits(ty.int_of(t)) / 8;
             return Ok([s, s]);
         }
-        if k == "Float" || k == "Str" || k == "Map" || k == "Task" || k == "Chan" { return Ok([8, 8]); }
+        if k == "Float" || k == "Str" || k == "Map" || k == "Task" || k == "Chan" || k == "Res" { return Ok([8, 8]); }
         if k == "Bool" || k == "Unit" || k == "Never" { return Ok([1, 1]); }
         if k == "Own" { return Ok(if is_iface_ptr(t) { [16, 8] } else { [8, 8] }); }
         if k == "Ref" { return Ok(if is_iface_ptr(t) { [40, 8] } else { [32, 8] }); }
@@ -618,7 +645,7 @@ pub struct Module {
     /// 中に解放するもの（own・文字列・リスト・辞書）があるか
     fn Result<bool, str> needs_drop(ref ty.Ty t) {
         let k = ty.tag(t);
-        if k == "Str" || k == "Own" || k == "List" || k == "Map" || k == "Fn" || k == "Task" || k == "Chan" { return Ok(true); }
+        if k == "Str" || k == "Own" || k == "List" || k == "Map" || k == "Fn" || k == "Task" || k == "Chan" || k == "Res" { return Ok(true); }
         if k == "Array" { return needs_drop(ty.inner(t)); }
         if k == "Struct" {
             for f in struct_fields(t)? {
@@ -730,7 +757,7 @@ pub struct Module {
     /// 値として読むとムーブになる型か（lower の `moves` と同じ）
     fn mut Result<bool, str> moves(ref ty.Ty t) {
         let k = ty.tag(t);
-        if k == "Own" || k == "Struct" || k == "List" || k == "Map" || k == "Fn" || k == "Task" { return Ok(true); }
+        if k == "Own" || k == "Struct" || k == "List" || k == "Map" || k == "Fn" || k == "Task" || k == "Res" { return Ok(true); }
         if k == "Array" { return moves(ty.inner(t)); }
         if k == "Enum" { return enum_moves(t); }
         Ok(false)
@@ -819,6 +846,9 @@ pub struct Module {
         } else if k == "Task" {
             let v = b.val("load ptr, ptr %p");
             b.op("call void @jw_task_drop(ptr " + v + ", ptr %site)");
+        } else if k == "Res" {
+            let v = b.val("load ptr, ptr %p");
+            b.op("call void @jw_res_drop(ptr " + v + ", ptr %site)");
         } else if k == "Str" {
             let v = b.val("load ptr, ptr %p");
             b.op("call void @jw_str_release(ptr " + v + ")");
@@ -1123,6 +1153,11 @@ pub struct Module {
             let v = b.val("load ptr, ptr %p");
             let w = b.val("call ptr @jw_task_view(ptr " + v + ")");
             b.op("store ptr " + w + ", ptr %dst");
+        } else if k == "Res" {
+            // 資源の写しも、閉じない印（下の 1 ビット）をつけた札
+            let v = b.val("load ptr, ptr %p");
+            let w = b.val("call ptr @jw_res_view(ptr " + v + ")");
+            b.op("store ptr " + w + ", ptr %dst");
         } else if k == "Own" {
             let iface = is_iface_ptr(t);
             let mut p = "";
@@ -1271,7 +1306,7 @@ pub struct Module {
     fn mut Result<str, str> gen_hazard(ref mut B b, ref ty.Ty t) {
         let k = ty.tag(t);
         // 読むだけの写し（下の 1 ビット）でも取り出せない（Rust 版と同じ）
-        if k == "Own" || k == "Struct" || k == "List" || k == "Map" || k == "Task" { return Ok("true"); }
+        if k == "Own" || k == "Struct" || k == "List" || k == "Map" || k == "Task" || k == "Res" { return Ok("true"); }
         if k == "Fn" { return Ok(env_flag(b, "%p", 3)); }
         if k == "Enum" {
             if trivial(t)? || !enum_moves(t)? { return Ok("false"); }
@@ -1299,7 +1334,7 @@ pub struct Module {
     /// 値として取り出すとエラーになりうる型か
     fn mut Result<bool, str> can_hazard(ref ty.Ty t) {
         let k = ty.tag(t);
-        if k == "Own" || k == "Struct" || k == "List" || k == "Map" || k == "Fn" || k == "Task" { return Ok(true); }
+        if k == "Own" || k == "Struct" || k == "List" || k == "Map" || k == "Fn" || k == "Task" || k == "Res" { return Ok(true); }
         if k == "Enum" { return enum_moves(t); }
         if k == "Array" { return Ok(ty.arr_len(t) > 0 && can_hazard(ty.inner(t))?); }
         Ok(false)
@@ -1343,6 +1378,8 @@ pub struct Module {
             lit(b, "<task>");
         } else if k == "Chan" {
             lit(b, "<chan>");
+        } else if k == "Res" {
+            lit(b, "<" + ty.show(t) + ">");
         } else if k == "Int" {
             let it = ty.int_of(t);
             let v = b.val("load i{ty.bits(it)}, ptr %p");
@@ -1537,8 +1574,8 @@ pub struct Module {
             return Ok(b.val("icmp eq i64 " + tg + ", 0"));
         }
         if k == "Fn" { return Ok(env_flag(b, "%p", if mv { 1 } else { 2 })); }
-        if mv && (k == "Struct" || k == "List" || k == "Map" || k == "Task") { return Ok("true"); }
-        if k == "Task" || k == "Chan" { return Ok("false"); }
+        if mv && (k == "Struct" || k == "List" || k == "Map" || k == "Task" || k == "Res") { return Ok("true"); }
+        if k == "Task" || k == "Chan" || k == "Res" { return Ok("false"); }
         if k == "Enum" && mv { return Ok(if enum_moves(t)? { "true" } else { "false" }); }
         if k == "Struct" {
             let st = lt(t)?;

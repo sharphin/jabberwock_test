@@ -470,6 +470,214 @@ fn runtime_is_up_to_date() {
     assert!(got == want, "jwc/runtime.jw が runtime/jw_rt.c と合っていません。`python3 scripts/sync_runtime.py` で作り直してください");
 }
 
+/// scripts/sync_stdlib.py と同じ形で std/*.jw を埋め込んだ jwc/stdlib.jw
+fn stdlib_jw() -> String {
+    let mut paths: Vec<PathBuf> = std::fs::read_dir(root().join("std")).unwrap().map(|e| e.unwrap().path())
+        .filter(|p| p.extension() == Some(std::ffi::OsStr::new("jw"))).collect();
+    paths.sort();
+    let mut names = String::new();
+    let mut bodies = String::new();
+    for p in &paths {
+        let name = p.file_stem().unwrap().to_str().unwrap();
+        let src = std::fs::read_to_string(p).unwrap().replace("\r\n", "\n");
+        let body = src.replace('\\', "\\\\").replace('{', "{{").replace('}', "}}");
+        names += &format!("    out.push(\"{}\");\n", name);
+        bodies += &format!("    if name == \"{}\" {{\n        return Some(\"\"\"\n{}\"\"\");\n    }}\n", name, body);
+    }
+    format!(
+        "// 標準ライブラリ（std/*.jw）を文字列にしたもの。`use std.名前;` で modules.jw が読む。\n\
+         // 手で書き換えない: std/ を直したら `python3 scripts/sync_stdlib.py` で作り直す。\n\
+         pub fn str[] names() {{\n    let str[] mut out = [];\n{}    out\n}}\n\npub fn Option<str> source(str name) {{\n{}    None\n}}\n",
+        names, bodies
+    )
+}
+
+#[test]
+fn stdlib_is_up_to_date() {
+    let path = root().join("jwc/stdlib.jw");
+    let want = stdlib_jw();
+    if std::env::var("JWC_REGEN").is_ok() {
+        std::fs::write(&path, &want).unwrap();
+    }
+    let got = std::fs::read_to_string(&path).unwrap_or_default();
+    assert!(got == want, "jwc/stdlib.jw が std/ と合っていません。`python3 scripts/sync_stdlib.py` で作り直してください");
+}
+
+/// `use std.名前;` の標準ライブラリ（jwc だけの機能なので、期待する出力を書いて確かめる）
+#[test]
+fn jwc_standard_library() {
+    if !have_clang() { return; }
+    let dir = std::env::temp_dir().join(format!("jw-jwc-std-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let build = |name: &str, src: &str| {
+        let path = dir.join(format!("{}.jw", name));
+        std::fs::write(&path, src).unwrap();
+        let exe = dir.join(name);
+        let out = Command::new(jwc()).args(["build", "--clang", &native::clang(), "-o"]).arg(&exe).arg(&path).output().unwrap();
+        (out, exe)
+    };
+    let (out, exe) = build("main", "use std.math;\nuse std.text;\nfn main() {\n    \
+        print(math.gcd(12, -18), math.lcm(4, 6), math.pow(2, 10), math.clamp(15, 0, 10));\n    \
+        print(math.floor(-2.5), math.ceil(2.1), math.round(2.5), math.round(-2.5), math.round(0.49999999999999994));\n    \
+        print(text.pad_left(\"7\", 3, \"0\"), text.pad_right(\"ab\", 4, \".\"), text.reverse(\"日本語\"), text.count(\"abababa\", \"aba\"), text.is_digits(\"12\"), text.is_digits(\"\"));\n}\n");
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let got = Command::new(&exe).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&got.stdout), "6 12 1024 10\n-3.0 3.0 3.0 -3.0 0.0\n007 ab.. 語本日 2 true false\n");
+    // 同じフォルダの math.jw は標準の math を置き換えない（両方を use するとエラー）
+    std::fs::write(dir.join("math.jw"), "pub fn i64 gcd(i64 a, i64 b) { 0 }\n").unwrap();
+    let (out, _) = build("both", "use math;\nuse std.math;\nfn main() {}\n");
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("`math` という名前のモジュールを二つ使っています"));
+    let (out, _) = build("nope", "use std.nope;\nfn main() {}\n");
+    assert!(String::from_utf8_lossy(&out.stderr).contains("標準ライブラリに `nope` はありません"));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// std.fs の File（資源）。正しい使い方、わざと失敗させたとき、誤用がはじかれること
+#[test]
+fn jwc_std_fs() {
+    if !have_clang() { return; }
+    let dir = std::env::temp_dir().join(format!("jw-jwc-fs-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let build = |name: &str, src: &str| {
+        let path = dir.join(format!("{}.jw", name));
+        std::fs::write(&path, src).unwrap();
+        let exe = dir.join(name);
+        let out = Command::new(jwc()).args(["build", "--clang", &native::clang(), "-o"]).arg(&exe).arg(&path).output().unwrap();
+        (out, exe)
+    };
+    let (out, exe) = build("main", "use std.fs;\n\
+        fn Result<(), str> run() {\n    \
+            let mut f = fs.create(\"t.txt\")?;\n    f.write_text(\"日本\\n\")?;\n    f.write([65, 66])?;\n    fs.close(f)?;\n    \
+            let mut a = fs.append(\"t.txt\")?;\n    a.write_text(\"!\")?;\n    fs.close(a)?;\n    \
+            let mut r = fs.open(\"t.txt\")?;\n    print(r.read(3)?);\n    print(r.read_text()?, r.read(8)?.len(), r);\n    \
+            match fs.open(\"nai.txt\") { case Ok(x) -> print(\"?\"); case Err(e) -> print(e); }\n    \
+            fs.make_dir(\"d\")?;\n    fs.create(\"d/b\")?;\n    fs.create(\"d/a\")?;\n    print(fs.list_dir(\"d\")?, fs.exists(\"d/a\"));\n    \
+            for n in fs.list_dir(\"d\")? { fs.remove(\"d/\" + n)?; }\n    fs.remove(\"d\")?;\n    print(fs.exists(\"d\"));\n    Ok(())\n}\n\
+        fn main() { match run() { case Ok(u) -> print(\"ok\"); case Err(e) -> print(\"err\", e); } }\n");
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let run = |fail: &str| {
+        let got = Command::new(&exe).current_dir(&dir).env("JW_RES_FAIL", fail).output().unwrap();
+        String::from_utf8_lossy(&got.stdout).to_string()
+    };
+    assert_eq!(run(""), "[230, 151, 165]\n本\nAB! 0 <fs.File>\nファイルを開けません: nai.txt\n[a, b] true\nfalse\nok\n");
+    assert_eq!(run("write"), "err ファイルに書けません\n");
+    assert_eq!(run("close"), "err ファイルを閉じられません（書いた内容が残っていないかもしれません）\n");
+    for (name, src, want) in [
+        ("inner", "fn main() { __fs_open(\"a\", 0); }", "`__fs_open` は標準ライブラリの中だけで使えます"),
+        ("decl", "resource X;\nfn main() {}", "`resource` は標準ライブラリの中だけで書けます"),
+        ("send", "use std.fs;\nfn main() { match fs.open(\"a\") { case Ok(f) -> { let t = spawn(() -> { let g = f; }); } case Err(e) -> {} } }",
+            "ほかのスレッドへ渡せません"),
+        ("readonly", "use std.fs;\nfn main() { match fs.open(\"a\") { case Ok(f) -> { f.read(1); } case Err(e) -> {} } }", "mut ではない"),
+    ] {
+        let (out, _) = build(name, src);
+        assert!(!out.status.success(), "{}", name);
+        assert!(String::from_utf8_lossy(&out.stderr).contains(want), "{}: {}", name, String::from_utf8_lossy(&out.stderr));
+    }
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// std.net の TCP（Windows はまだ）。待ち受け・接続・送受信・時間切れ
+#[cfg(unix)]
+#[test]
+fn jwc_std_net() {
+    if !have_clang() { return; }
+    let dir = std::env::temp_dir().join(format!("jw-jwc-net-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("main.jw");
+    std::fs::write(&path, "use std.net;\n\
+        fn Result<str, str> client(i64 port) {\n    let mut c = net.connect(\"127.0.0.1\", port)?;\n    c.write_text(\"ping\")?;\n    \
+            let mut s = \"\";\n    for b in c.read(100)? { s += chr(b as i64); }\n    net.close(c)?;\n    Ok(s)\n}\n\
+        fn Result<(), str> run() {\n    let mut l = net.listen(\"127.0.0.1\", 0)?;\n    let port = l.port();\n    \
+            let t = spawn(() -> client(port));\n    let mut c = l.accept()?;\n    print(c.read(100)?.len());\n    c.write([112, 111, 110, 103])?;\n    \
+            print(c.read(10)?.len(), t.join());\n    let q = net.connect(\"127.0.0.1\", port)?;\n    let mut d = l.accept()?;\n    d.set_timeout(100)?;\n    \
+            match d.read(1) { case Ok(x) -> print(\"?\", x); case Err(e) -> print(e); }\n    net.stop(l)?;\n    Ok(())\n}\n\
+        fn main() { match run() { case Ok(u) -> print(\"ok\"); case Err(e) -> print(\"err\", e); } }\n").unwrap();
+    let exe = dir.join("main");
+    let out = Command::new(jwc()).args(["build", "--clang", &native::clang(), "-o"]).arg(&exe).arg(&path).output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let got = Command::new(&exe).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&got.stdout), "4\n0 Ok(pong)\n時間切れです\nok\n");
+    let got = Command::new(&exe).env("JW_RES_FAIL", "listen").output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&got.stdout), "err 待ち受けられません: 127.0.0.1\n");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// std.http（std.net の上の HTTP/1.1 クライアント）。同じプログラムの中に小さなサーバーを立てて試す
+#[cfg(unix)]
+#[test]
+fn jwc_std_http() {
+    if !have_clang() { return; }
+    let dir = std::env::temp_dir().join(format!("jw-jwc-http-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("main.jw");
+    std::fs::write(&path, HTTP_SRC).unwrap();
+    let exe = dir.join("main");
+    let out = Command::new(jwc()).args(["build", "--clang", &native::clang(), "-o"]).arg(&exe).arg(&path).output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let got = Command::new(&exe).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&got.stdout), "200 text/plain 1, 2 こんに\n404 abcde\n\
+        Ok(GET /a?b=1 HTTP/1.1|POST /p HTTP/1.1|)\nNone None None\nhttps はまだ使えません: https://x\nok\n");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[cfg(unix)]
+const HTTP_SRC: &str = r#"use std.net;
+use std.http;
+use std.text;
+
+fn Result<str, str> serve(i64 port, i64 n) {
+    let mut l = net.listen("127.0.0.1", port)?;
+    let mut seen = "";
+    for i in range(n) {
+        let mut c = l.accept()?;
+        let got = c.read(4096)?;
+        match text.from_utf8(ref got) {
+            case Some(s) -> seen += s.lines()[0] + "|";
+            case None -> {}
+        }
+        if i == 0 {
+            c.write_text("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 9\r\nX-A: 1\r\nx-a: 2\r\n\r\nこんにちはxx")?;
+        } else {
+            c.write_text("HTTP/1.1 404 Not Found\r\nTransfer-Encoding: chunked\r\n\r\n3\r\nabc\r\n2;x=y\r\nde\r\n0\r\n\r\n")?;
+        }
+        net.close(c)?;
+    }
+    Ok(seen)
+}
+
+fn Result<(), str> run() {
+    let mut probe = net.listen("127.0.0.1", 0)?;
+    let port = probe.port();
+    net.stop(probe)?;
+    let t = spawn(() -> serve(port, 2));
+    let mut tries = 0;
+    loop {
+        match http.get("http://127.0.0.1:{port}/a?b=1") {
+            case Ok(a) -> {
+                print(a.status, a.headers["content-type"], a.headers["x-a"], a.text()?);
+                break;
+            }
+            case Err(e) -> {
+                tries += 1;
+                if tries > 1000 { return Err(e); }
+            }
+        }
+    }
+    let b = http.post("http://127.0.0.1:{port}/p", "text/plain", "日本")?;
+    print(b.status, b.text()?);
+    print(t.join());
+    let u8[] x1 = [237, 160, 128];
+    let u8[] x2 = [192, 128];
+    let u8[] x3 = [230, 151];
+    print(text.from_utf8(ref x1), text.from_utf8(ref x2), text.from_utf8(ref x3));
+    match http.get("https://x") { case Ok(x) -> print("?"); case Err(e) -> print(e); }
+    Ok(())
+}
+
+fn main() { match run() { case Ok(u) -> print("ok"); case Err(e) -> print("err", e); } }
+"#;
+
 /// `jwc build` で作った実行ファイルが、interp と同じものを出す
 #[test]
 fn jwc_build_makes_an_executable() {

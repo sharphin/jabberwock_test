@@ -30,6 +30,8 @@ pub enum Ty {
     Map(own Ty k, own Ty v);
     Task(own Ty t);
     Chan(own Ty t);
+    // 資源（`resource File;` で標準ライブラリが決めたもの。名前は `std:fs.File`）。ムーブだけでき、写しは読むだけ
+    Res(str n);
 }
 
 // ---------------------------------------------------------------- 整数の型
@@ -161,6 +163,7 @@ pub fn Ty cl(ref Ty t) {
         case Map(k, v) -> Ty.Map(own cl(k), own cl(v));
         case Task(x) -> Ty.Task(own cl(x));
         case Chan(x) -> Ty.Chan(own cl(x));
+        case Res(n) -> Ty.Res(n);
     }
 }
 
@@ -191,6 +194,7 @@ pub fn str tag(ref Ty t) {
         case Map(k, v) -> "Map";
         case Task(x) -> "Task";
         case Chan(x) -> "Chan";
+        case Res(n) -> "Res";
     }
 }
 
@@ -211,6 +215,7 @@ pub fn str name_of(ref Ty t) {
         case Enum(n, xs) -> n;
         case Param(n) -> n;
         case Iface(n) -> n;
+        case Res(n) -> n;
         default -> "";
     }
 }
@@ -295,6 +300,7 @@ pub fn bool eq(ref Ty a, ref Ty b) {
         }
         case Param(n) -> is(b, "Param") && name_of(b) == n;
         case Iface(n) -> is(b, "Iface") && name_of(b) == n;
+        case Res(n) -> is(b, "Res") && name_of(b) == n;
         case Own(x) -> {
             match ref b {
                 case Own(y) -> eq(x, y);
@@ -372,6 +378,7 @@ pub fn str show(ref Ty t) {
         case Map(k, v) -> show(v) + "[" + show(k) + "]";
         case Task(x) -> "task<" + show(x) + ">";
         case Chan(x) -> "chan<" + show(x) + ">";
+        case Res(n) -> if n.starts_with("std:") { n.slice(4, n.len()) } else { n };
         case Fn(ps, r) -> if is(r, "Unit") { "fn(" + shows(ps) + ")" } else { "fn " + show(r) + "(" + shows(ps) + ")" };
     }
 }

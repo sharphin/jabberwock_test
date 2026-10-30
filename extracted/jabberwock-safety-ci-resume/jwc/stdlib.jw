@@ -1,0 +1,455 @@
+// 標準ライブラリ（std/*.jw）を文字列にしたもの。`use std.名前;` で modules.jw が読む。
+// 手で書き換えない: std/ を直したら `python3 scripts/sync_stdlib.py` で作り直す。
+pub fn str[] names() {
+    let str[] mut out = [];
+    out.push("fs");
+    out.push("http");
+    out.push("math");
+    out.push("net");
+    out.push("text");
+    out
+}
+
+pub fn Option<str> source(str name) {
+    if name == "fs" {
+        return Some("""
+// 標準ライブラリ std.fs: ファイル。`use std.fs;` と書いて使う
+//
+// File は資源（ムーブだけできる。ほかのスレッドへは渡せない）。持ち主がいなくなると黙って閉じるので、
+// 書いた内容が残ったか確かめたいときは `fs.close(f)` の結果を見る。
+//   let mut f = fs.create("out.txt")?;
+//   f.write_text("こんにちは\\n")?;
+//   fs.close(f)?;
+// メソッドは `read(n)`（最大 n バイト。終わりなら空のリスト）・`read_text()`（残り全部。UTF-8 でなければ Err）・
+// `write(bytes)`（u8[] をムーブして全部書く）・`write_text(s)`。どれも Result で、持ち主が mut であること。
+
+pub resource File;
+
+/// 読むために開く
+pub fn Result<File, str> open(str path) {{ __fs_open(path, 0) }}
+
+/// 書くために開く（なければ作る。あれば空にする）
+pub fn Result<File, str> create(str path) {{ __fs_open(path, 1) }}
+
+/// 後ろに足すために開く（なければ作る）
+pub fn Result<File, str> append(str path) {{ __fs_open(path, 2) }}
+
+/// 閉じる。失敗しても File はもう使えない（Err は書いた内容が残っていないかもしれないという知らせ）
+pub fn Result<(), str> close(File f) {{ __res_close(f) }}
+
+/// ファイルかディレクトリがあるか
+pub fn bool exists(str path) {{ __fs_exists(path) }}
+
+/// ディレクトリの中の名前（`.` と `..` は除く。名前の順）
+pub fn Result<str[], str> list_dir(str path) {{ __fs_list(path) }}
+
+/// ディレクトリを作る（親はあること。もうあれば Err）
+pub fn Result<(), str> make_dir(str path) {{ __fs_make_dir(path) }}
+
+/// ファイルか、空のディレクトリを消す
+pub fn Result<(), str> remove(str path) {{ __fs_remove(path) }}
+""");
+    }
+    if name == "http" {
+        return Some("""
+// 標準ライブラリ std.http: HTTP/1.1 のクライアント。`use std.http;` と書いて使う
+//   let r = http.get("http://example.com/")?;
+//   print(r.status, r.headers["content-type"], r.text()?);
+// http:// だけ（https はまだ）。std.net の上に .jw だけで書いている（std.net と同じく、今は Linux・macOS だけ）。
+// 1 回ごとにつなぎ、`Connection: close` で相手が閉じるまで読む。chunked の本文は読み解く。リダイレクトはたどらない。
+
+use std.net;
+use std.text;
+
+pub struct Response {{
+    i64 status;
+    // 名前は小文字にする（同じ名前が二つ以上あれば ", " でつなぐ）
+    str[str] headers;
+    u8[] body;
+
+    /// 本文を文字列にする（UTF-8 でなければ Err）
+    fn Result<str, str> text() {{
+        match text.from_utf8(ref body) {{
+            case Some(s) -> Ok(s);
+            case None -> Err("本文が UTF-8 ではありません");
+        }}
+    }}
+}}
+
+/// GET する
+pub fn Result<Response, str> get(str url) {{ request("GET", url, "", "") }}
+
+/// POST する（content_type は `application/json` など）
+pub fn Result<Response, str> post(str url, str content_type, str body) {{ request("POST", url, content_type, body) }}
+
+struct Url {{
+    str host;
+    i64 port;
+    str path;
+}}
+
+fn Result<Url, str> parse_url(str url) {{
+    if url.starts_with("https://") {{ return Err("https はまだ使えません: " + url); }}
+    if !url.starts_with("http://") {{ return Err("http:// で始まる URL ではありません: " + url); }}
+    let rest = url.slice(7, url.len());
+    let mut hostport = rest;
+    let mut path = "/";
+    match rest.find("/") {{
+        case Some(i) -> {{
+            hostport = rest.slice(0, i);
+            path = rest.slice(i, rest.len());
+        }}
+        case None -> {{}}
+    }}
+    let mut host = hostport;
+    let mut port = 80;
+    match hostport.find(":") {{
+        case Some(i) -> {{
+            host = hostport.slice(0, i);
+            match hostport.slice(i + 1, hostport.len()).to_int() {{
+                case Some(p) -> port = p;
+                case None -> return Err("ポートの番号が読めません: " + url);
+            }}
+        }}
+        case None -> {{}}
+    }}
+    if host == "" {{ return Err("ホストの名前がありません: " + url); }}
+    // 改行を入れて、ほかのヘッダーを足せないようにする
+    if url.contains("\\r") || url.contains("\\n") || url.contains(" ") {{ return Err("URL に空白や改行があります"); }}
+    Ok(Url {{ host: host, port: port, path: path }})
+}}
+
+fn Result<Response, str> request(str method, str url, str content_type, str body) {{
+    let u = parse_url(url)?;
+    if content_type.contains("\\r") || content_type.contains("\\n") {{ return Err("content_type に改行があります"); }}
+    let host = if u.port == 80 {{ u.host }} else {{ u.host + ":{{u.port}}" }};
+    let mut req = "{{method}} {{u.path}} HTTP/1.1\\r\\nHost: {{host}}\\r\\nConnection: close\\r\\nUser-Agent: jabberwock\\r\\n";
+    if method == "POST" {{ req += "Content-Type: {{content_type}}\\r\\nContent-Length: {{body.byte_len()}}\\r\\n"; }}
+    req += "\\r\\n" + body;
+    let mut c = net.connect(u.host, u.port)?;
+    c.write_text(req)?;
+    let u8[] mut all = [];
+    loop {{
+        let got = c.read(65536)?;
+        if got.len() == 0 {{ break; }}
+        for x in got {{ all.push(x); }}
+    }}
+    net.close(c)?;
+    parse_response(ref all)
+}}
+
+/// `\\r\\n\\r\\n` の位置（なければ -1）
+fn i64 header_end(ref u8[] b) {{
+    let mut i = 0;
+    while i + 3 < b.len() {{
+        if b[i] == 13 && b[i + 1] == 10 && b[i + 2] == 13 && b[i + 3] == 10 {{ return i; }}
+        i += 1;
+    }}
+    -1
+}}
+
+fn u8[] part(ref u8[] b, i64 from, i64 to) {{
+    let u8[] mut out = [];
+    for i in range(from, to) {{ out.push(b[i]); }}
+    out
+}}
+
+/// 16 進の数（読めなければ -1）
+fn i64 hex(str s) {{
+    let digits = "0123456789abcdef";
+    let t = s.trim().to_lower();
+    if t == "" || t.len() > 15 {{ return -1; }}
+    let mut n = 0;
+    for ch in t.chars() {{
+        match digits.find(ch) {{
+            case Some(d) -> n = n * 16 + d;
+            case None -> return -1;
+        }}
+    }}
+    n
+}}
+
+/// chunked の本文を読み解く
+fn Result<u8[], str> unchunk(ref u8[] b) {{
+    let u8[] mut out = [];
+    let mut i = 0;
+    loop {{
+        // 大きさの行（`;` のあとの拡張は読み飛ばす）
+        let mut j = i;
+        while j + 1 < b.len() && !(b[j] == 13 && b[j + 1] == 10) {{ j += 1; }}
+        if j + 1 >= b.len() {{ return Err("chunked の本文が途中で切れています"); }}
+        let raw = part(ref b, i, j);
+        let line = match text.from_utf8(ref raw) {{
+            case Some(s) -> s;
+            case None -> return Err("chunked の大きさが読めません");
+        }};
+        let size_text = match line.find(";") {{
+            case Some(k) -> line.slice(0, k);
+            case None -> line;
+        }};
+        let size = hex(size_text);
+        if size < 0 {{ return Err("chunked の大きさが読めません"); }}
+        i = j + 2;
+        if size == 0 {{ return Ok(out); }}
+        if i + size + 2 > b.len() {{ return Err("chunked の本文が途中で切れています"); }}
+        for k in range(i, i + size) {{ out.push(b[k]); }}
+        i += size + 2;
+    }}
+}}
+
+fn Result<Response, str> parse_response(ref u8[] all) {{
+    let end = header_end(all);
+    if end < 0 {{ return Err("HTTP の応答が読めません（ヘッダーの終わりがない）"); }}
+    let raw = part(ref all, 0, end);
+    let head = match text.from_utf8(ref raw) {{
+        case Some(s) -> s;
+        case None -> return Err("HTTP の応答のヘッダーが読めません");
+    }};
+    let lines = head.split("\\r\\n");
+    let first = lines[0].split(" ");
+    if first.len() < 2 || !first[0].starts_with("HTTP/1.") {{ return Err("HTTP の応答ではありません: " + lines[0]); }}
+    let status = match first[1].to_int() {{
+        case Some(s) -> s;
+        case None -> return Err("状態の番号が読めません: " + lines[0]);
+    }};
+    let str[str] mut headers = [];
+    for (i, line) in lines {{
+        if i == 0 {{ continue; }}
+        match line.find(":") {{
+            case Some(k) -> {{
+                let name = line.slice(0, k).trim().to_lower();
+                let value = line.slice(k + 1, line.len()).trim();
+                match headers.get(name) {{
+                    case Some(old) -> headers[name] = old + ", " + value;
+                    case None -> headers[name] = value;
+                }}
+            }}
+            case None -> return Err("ヘッダーの行が読めません: " + line);
+        }}
+    }}
+    let mut body = part(ref all, end + 4, all.len());
+    let chunked = match headers.get("transfer-encoding") {{
+        case Some(v) -> v.to_lower().contains("chunked");
+        case None -> false;
+    }};
+    if chunked {{
+        body = unchunk(ref body)?;
+    }} else {{
+        match headers.get("content-length") {{
+            case Some(v) -> {{
+                match v.to_int() {{
+                    case Some(n) -> {{
+                        if n < 0 || n > body.len() {{ return Err("本文が途中で切れています"); }}
+                        if n < body.len() {{ body = part(ref body, 0, n); }}
+                    }}
+                    case None -> return Err("content-length が読めません: " + v);
+                }}
+            }}
+            case None -> {{}}
+        }}
+    }}
+    Ok(Response {{ status: status, headers: headers, body: body }})
+}}
+""");
+    }
+    if name == "math" {
+        return Some("""
+// 標準ライブラリ std.math: 数の計算の補助。`use std.math;` と書いて `math.gcd(12, 18)` のように使う
+
+/// 最大公約数（どちらも 0 なら 0）。結果は 0 以上（i64 の最小の値だけは abs が一周するのでそのまま）
+pub fn i64 gcd(i64 a, i64 b) {{
+    let mut x = a.abs();
+    let mut y = b.abs();
+    while y != 0 {{
+        let t = x % y;
+        x = y;
+        y = t;
+    }}
+    x
+}}
+
+/// 最小公倍数（どちらかが 0 なら 0）。型の幅を超えると一周する
+pub fn i64 lcm(i64 a, i64 b) {{
+    if a == 0 || b == 0 {{ return 0; }}
+    (a / gcd(a, b) * b).abs()
+}}
+
+/// base の exp 乗（exp は 0 以上。負なら実行時エラー）。型の幅を超えると一周する
+pub fn i64 pow(i64 base, i64 exp) {{
+    assert(exp >= 0);
+    let mut result = 1;
+    let mut b = base;
+    let mut e = exp;
+    while e > 0 {{
+        if e % 2 == 1 {{ result = result * b; }}
+        b = b * b;
+        e = e / 2;
+    }}
+    result
+}}
+
+/// x を lo 以上 hi 以下に収める（lo が hi より大きければ実行時エラー）
+pub fn i64 clamp(i64 x, i64 lo, i64 hi) {{
+    assert(lo <= hi);
+    x.max(lo).min(hi)
+}}
+
+/// 円周率
+pub fn f64 pi() {{ 3.141592653589793 }}
+
+/// 0 の方へ切り捨てた整数の値（小数のまま）。NaN・inf と、2^52 以上（もう整数）はそのまま
+fn f64 trunc(f64 x) {{
+    if !(x.abs() < 4503599627370496.0) {{ return x; }}
+    (x as i64) as f64
+}}
+
+/// x 以下でいちばん大きい整数（小数のまま）
+pub fn f64 floor(f64 x) {{
+    let t = trunc(x);
+    if t > x {{ t - 1.0 }} else {{ t }}
+}}
+
+/// x 以上でいちばん小さい整数（小数のまま）
+pub fn f64 ceil(f64 x) {{
+    let t = trunc(x);
+    if t < x {{ t + 1.0 }} else {{ t }}
+}}
+
+/// いちばん近い整数（小数のまま）。ちょうど半分なら 0 から遠い方（`round(2.5)` は 3.0、`round(-2.5)` は -3.0）
+pub fn f64 round(f64 x) {{
+    let t = trunc(x);
+    if (x - t).abs() < 0.5 {{ return t; }}
+    if x < 0.0 {{ t - 1.0 }} else {{ t + 1.0 }}
+}}
+""");
+    }
+    if name == "net" {
+        return Some("""
+// 標準ライブラリ std.net: TCP（同期だけ）。`use std.net;` と書いて使う。今は Linux・macOS だけ（Windows はまだ）
+//
+// TcpStream と TcpListener は資源（ムーブだけできる。ほかのスレッドへは渡せない）。持ち主がいなくなると黙って閉じる。
+//   let mut c = net.connect("localhost", 8080)?;
+//   c.write_text("hello\\n")?;
+//   let got = c.read(4096)?;      // 最大 4096 バイト。相手が閉じたら空のリスト
+//   net.close(c)?;
+// TcpStream のメソッド: `read(n)`・`write(bytes)`・`write_text(s)`・`set_timeout(ms)`（受け取り・送りの待ち時間。0 なら待ち続ける。
+// 時間切れは Err("時間切れです")）。TcpListener のメソッド: `accept()`・`port()`。
+
+pub resource TcpStream;
+pub resource TcpListener;
+
+/// host（名前か番号）の port につなぐ
+pub fn Result<TcpStream, str> connect(str host, i64 port) {{ __net_connect(host, port) }}
+
+/// host の port で待ち受ける（port が 0 なら OS が空いている番号を選ぶ。番号は `port()`）
+pub fn Result<TcpListener, str> listen(str host, i64 port) {{ __net_listen(host, port) }}
+
+/// 閉じる。失敗してももう使えない
+pub fn Result<(), str> close(TcpStream s) {{ __res_close(s) }}
+
+/// 待ち受けをやめる
+pub fn Result<(), str> stop(TcpListener l) {{ __res_close(l) }}
+""");
+    }
+    if name == "text" {
+        return Some("""
+// 標準ライブラリ std.text: 文字列の補助。`use std.text;` と書いて `text.pad_left("7", 3, "0")` のように使う
+// 長さと位置は文字単位（str のメソッドと同じ）
+
+/// 左を fill（1 文字）で埋めて width 文字にする。もとから width 文字以上ならそのまま
+pub fn str pad_left(str s, i64 width, str fill) {{
+    assert(fill.len() == 1);
+    if s.len() >= width {{ return s; }}
+    fill.repeat(width - s.len()) + s
+}}
+
+/// 右を fill（1 文字）で埋めて width 文字にする。もとから width 文字以上ならそのまま
+pub fn str pad_right(str s, i64 width, str fill) {{
+    assert(fill.len() == 1);
+    if s.len() >= width {{ return s; }}
+    s + fill.repeat(width - s.len())
+}}
+
+/// 文字を逆の順に並べる
+pub fn str reverse(str s) {{
+    let cs = s.chars();
+    let mut out = "";
+    let mut i = cs.len();
+    while i > 0 {{
+        i -= 1;
+        out += cs[i];
+    }}
+    out
+}}
+
+/// sub が重ならずに何回出てくるか（sub が空なら実行時エラー）
+pub fn i64 count(str s, str sub) {{
+    assert(sub != "");
+    let mut n = 0;
+    let mut rest = s;
+    loop {{
+        match rest.find(sub) {{
+            case Some(i) -> {{
+                n += 1;
+                rest = rest.slice(i + sub.len(), rest.len());
+            }}
+            case None -> break;
+        }}
+    }}
+    n
+}}
+
+/// 空でなく、すべて 0〜9 の文字か
+pub fn bool is_digits(str s) {{
+    if s == "" {{ return false; }}
+    for c in s.chars() {{
+        if !"0123456789".contains(c) {{ return false; }}
+    }}
+    true
+}}
+
+/// UTF-8 のバイトを文字列にする。正しい UTF-8 でなければ None（長すぎる形・サロゲート・0x10FFFF より上は不正）
+pub fn Option<str> from_utf8(ref u8[] b) {{
+    let mut out = "";
+    let mut i = 0;
+    let n = b.len();
+    while i < n {{
+        let c = b[i] as i64;
+        let mut k = 0;
+        let mut cp = 0;
+        let mut low = 0;
+        if c < 128 {{
+            out += chr(c);
+            i += 1;
+            continue;
+        }} else if c >= 194 && c <= 223 {{
+            k = 1;
+            cp = c - 192;
+            low = 128;
+        }} else if c >= 224 && c <= 239 {{
+            k = 2;
+            cp = c - 224;
+            low = 2048;
+        }} else if c >= 240 && c <= 244 {{
+            k = 3;
+            cp = c - 240;
+            low = 65536;
+        }} else {{
+            return None;
+        }}
+        if i + k >= n {{ return None; }}
+        for j in range(1, k + 1) {{
+            let d = b[i + j] as i64;
+            if d < 128 || d > 191 {{ return None; }}
+            cp = cp * 64 + (d - 128);
+        }}
+        if cp < low || cp > 1114111 || (cp >= 55296 && cp <= 57343) {{ return None; }}
+        out += chr(cp);
+        i += k + 1;
+    }}
+    Some(out)
+}}
+""");
+    }
+    None
+}

@@ -124,7 +124,7 @@ fn Result<str, str> llvm_build(str path, str src, bool release, ref packages.Map
     let str[] mut ns = [];
     let r = parse_all(ref mut l, src);
     for (i, n) in l.names {
-        if i == 0 { ns.push(path); } else { ns.push(if package.entry == "" { n + ".jw" } else { l.paths[i] }); }
+        if i == 0 { ns.push(path); } else { ns.push(if package.entry == "" && !n.starts_with("std:") { n + ".jw" } else { l.paths[i] }); }
     }
     let p = match r {
         case Ok(p) -> p;
@@ -310,7 +310,7 @@ fn main() {
         let str[] mut ns = [];
         let r = parse_all(ref mut l, src);
         for (i, n) in l.names {
-            if i == 0 { ns.push(path); } else { ns.push(if package.entry == "" { n + ".jw" } else { l.paths[i] }); }
+            if i == 0 { ns.push(path); } else { ns.push(if package.entry == "" && !n.starts_with("std:") { n + ".jw" } else { l.paths[i] }); }
         }
         match r {
             case Ok(p) -> {

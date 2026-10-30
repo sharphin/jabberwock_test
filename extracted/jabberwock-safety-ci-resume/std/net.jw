@@ -1,0 +1,24 @@
+// 標準ライブラリ std.net: TCP（同期だけ）。`use std.net;` と書いて使う。今は Linux・macOS だけ（Windows はまだ）
+//
+// TcpStream と TcpListener は資源（ムーブだけできる。ほかのスレッドへは渡せない）。持ち主がいなくなると黙って閉じる。
+//   let mut c = net.connect("localhost", 8080)?;
+//   c.write_text("hello\n")?;
+//   let got = c.read(4096)?;      // 最大 4096 バイト。相手が閉じたら空のリスト
+//   net.close(c)?;
+// TcpStream のメソッド: `read(n)`・`write(bytes)`・`write_text(s)`・`set_timeout(ms)`（受け取り・送りの待ち時間。0 なら待ち続ける。
+// 時間切れは Err("時間切れです")）。TcpListener のメソッド: `accept()`・`port()`。
+
+pub resource TcpStream;
+pub resource TcpListener;
+
+/// host（名前か番号）の port につなぐ
+pub fn Result<TcpStream, str> connect(str host, i64 port) { __net_connect(host, port) }
+
+/// host の port で待ち受ける（port が 0 なら OS が空いている番号を選ぶ。番号は `port()`）
+pub fn Result<TcpListener, str> listen(str host, i64 port) { __net_listen(host, port) }
+
+/// 閉じる。失敗してももう使えない
+pub fn Result<(), str> close(TcpStream s) { __res_close(s) }
+
+/// 待ち受けをやめる
+pub fn Result<(), str> stop(TcpListener l) { __res_close(l) }

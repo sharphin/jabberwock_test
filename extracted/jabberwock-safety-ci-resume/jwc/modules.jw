@@ -3,11 +3,14 @@
 // `use geom;` で同じフォルダの geom.jw を読む（使われる側が先。輪はエラー）。使う側の `geom . area` は
 // 1 つの名前 `geom.area` にまとめ（merge_paths）、モジュールの中の名前は `geom.area` に書き換える（Qualify）。
 // 全部を 1 つのプログラムにまとめる。
+// `use std.math;` は jwc に埋め込んだ標準ライブラリ（stdlib.jw）の math を読み、使う側では `math.f` と書く。
+// 中の名前は `std:math.f`（パッケージの名前や同じフォルダの math.jw とぶつからない）。
 use ast;
 use diag;
 use lexer;
 use parser;
 use packages;
+use stdlib;
 
 fn bool has(ref str[] xs, str x) {
     for y in xs {
@@ -81,6 +84,11 @@ fn Info info_of(ref ast.Program p) {
         info.kinds.push("interface");
         info.pubs.push(has(p.public, i.name));
     }
+    for r in p.resources {
+        info.names.push(r);
+        info.kinds.push("resource");
+        info.pubs.push(has(p.public, r));
+    }
     info
 }
 
@@ -112,6 +120,9 @@ fn Result<lexer.Token[], diag.Diag> merge_paths(ref lexer.Token[] toks, ref str[
         let at = infos[which[m]].find(name);
         if at < 0 {
             return Err(diag.error("モジュール `{module}` に `{name}` はありません", full, "この名前は定義されていない"));
+        }
+        if !infos[which[m]].pubs[at] && targets[m].starts_with("std:") {
+            return Err(diag.error("`{module}.{name}` は pub ではありません", full, "標準ライブラリの中だけで使う定義"));
         }
         if !infos[which[m]].pubs[at] {
             return Err(diag.error_note("`{module}.{name}` は pub ではありません", full, "ほかのファイルからは使えない",
@@ -154,11 +165,12 @@ pub struct Loader {
                 mods.push(n);
                 let short = n.split("/");
                 if short.len() == 2 && !has(mods, short[1]) { mods.push(short[1]); }
+                if n.starts_with("std:") && !has(mods, n.slice(4, n.len())) { mods.push(n.slice(4, n.len())); }
             }
         }
         let mut all = ast.Program {
             structs: [], enums: [], interfaces: [], fns: [], uses: [], use_spans: [], public: [], modules: mods,
-            consts: [], borrow_lambdas: [], nodes: 0,
+            consts: [], borrow_lambdas: [], nodes: 0, resources: [], resource_spans: [],
         };
         for p in parts.drain() {
             let mut q = p;
@@ -168,6 +180,8 @@ pub struct Loader {
             for x in q.fns.drain() { all.fns.push(x); }
             for x in q.consts.drain() { all.consts.push(x); }
             for x in q.borrow_lambdas.drain() { all.borrow_lambdas.push(x); }
+            for x in q.resources.drain() { all.resources.push(x); }
+            for x in q.resource_spans.drain() { all.resource_spans.push(x); }
         }
         Ok(all)
     }
@@ -177,13 +191,30 @@ pub struct Loader {
         let toks = lexer.lex_file(srcs[file], file)?;
         let str[] mut uses = [];
         let i64[] mut use_spans = [];
+        // `use std.名前;` か
+        let bool[] mut stds = [];
         let mut k = 0;
         while k + 1 < toks.len() {
             if toks[k].kind == "use" && toks[k + 1].kind == "ident" {
-                uses.push(toks[k + 1].text);
-                use_spans.push(toks[k + 1].span);
+                let std = toks[k + 1].text == "std" && k + 3 < toks.len() && toks[k + 2].kind == "." && toks[k + 3].kind == "ident";
+                if std {
+                    uses.push(toks[k + 3].text);
+                    use_spans.push(diag.join(toks[k + 1].span, toks[k + 3].span));
+                } else {
+                    uses.push(toks[k + 1].text);
+                    use_spans.push(toks[k + 1].span);
+                }
+                stds.push(std);
             }
             k += 1;
+        }
+        for (i, u) in uses {
+            for j in range(i) {
+                if uses[j] == u && stds[j] != stds[i] {
+                    return Err(diag.error_note("`{u}` という名前のモジュールを二つ使っています", use_spans[i],
+                        "標準の {u} と、同じフォルダ（またはパッケージ）の {u} の両方を use している", "どちらか一つにしてください"));
+                }
+            }
         }
         loading.push(name);
         let split = name.split("/");
@@ -193,7 +224,12 @@ pub struct Loader {
             let local = if space == "" { u } else { space + "/" + u };
             let mut key = local;
             let mut path = dir + u + ".jw";
-            if packaged {
+            if stds[i] {
+                key = "std:" + u;
+                path = "std/" + u + ".jw";
+            } else if name.starts_with("std:") {
+                return Err(diag.error("標準ライブラリの中で `use {u};` は使えません", use_spans[i], "`use std.名前;` だけ使える"));
+            } else if packaged {
                 match package_paths.get(local) {
                     case Some(p) -> path = p;
                     case None -> {
@@ -216,11 +252,16 @@ pub struct Loader {
                     "ここで使うと、読む順が決まらない", "共通の部分を別のモジュールに分けてください"));
             }
             if has(done, key) { continue; }
-            let text = match read_file(path) {
+            let text = if stds[i] {
+                match stdlib.source(u) {
+                    case Some(t) -> t;
+                    case None -> return Err(diag.error("標準ライブラリに `{u}` はありません", use_spans[i], "使えるのは " + stdlib.names().join("・")));
+                }
+            } else { match read_file(path) {
                 case Ok(t) -> t;
                 case Err(e) -> return Err(diag.error("モジュール `{u}` が見つかりません", use_spans[i],
                     if packaged { "パッケージのファイルを読めません: " + path + ": " + e } else { "同じフォルダに {u}.jw がない" }));
-            };
+            } };
             names.push(key);
             paths.push(path);
             srcs.push(text);
@@ -261,6 +302,9 @@ pub struct Loader {
         }
         let merged = merge_paths(toks, mods, targets, which, infos)?;
         let mut prog = parser.parse_with(merged, structs, enums, variants)?;
+        if prog.resources.len() > 0 && !name.starts_with("std:") {
+            return Err(diag.error("`resource` は標準ライブラリの中だけで書けます", prog.resource_spans[0], "資源の型は std.fs などが用意する"));
+        }
         let info = info_of(prog);
         if name != "" {
             prog = qualify(prog, name, info);
@@ -321,9 +365,11 @@ fn ast.Program qualify(ast.Program p, str module, ref Info info) {
     for c in p.consts { consts.push(module + "." + c); }
     let i64[] mut bl = [];
     for x in p.borrow_lambdas { bl.push(x); }
+    let str[] mut res = [];
+    for r in p.resources { res.push(module + "." + r); }
     ast.Program {
         structs: structs, enums: enums, interfaces: ifaces, fns: fns, uses: [], use_spans: [], public: strs(p.public),
-        modules: [], consts: consts, borrow_lambdas: bl, nodes: 0,
+        modules: [], consts: consts, borrow_lambdas: bl, nodes: 0, resources: res, resource_spans: ints(p.resource_spans),
     }
 }
 

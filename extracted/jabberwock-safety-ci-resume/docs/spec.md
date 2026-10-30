@@ -64,6 +64,98 @@ fn main() {
 - 構造体の値を print すると、型の名前はモジュール名つきで出る（`geom.Point { x: 3, y: 4 }`）。
 - エラーの位置は、そのモジュールのファイルの中で示す。
 
+### 1.2 標準ライブラリ（jwc だけ）
+
+```
+use std.math;
+use std.text;
+fn main() {
+    print(math.gcd(12, 18), text.pad_left("7", 3, "0"));   // 6 007
+}
+```
+
+- `use std.名前;` で標準ライブラリのモジュールを使う。使う側では末尾の名前で `math.gcd(...)` と書く（ほかのモジュールと同じ規則）。
+- 標準ライブラリは jwc に埋め込まれている（ソースはリポジトリの `std/*.jw`）。ファイルを探さないので、jwc の置き場所によらず使える。
+- 同じフォルダやパッケージの `math.jw` は標準の math を置き換えない。`use math;` と `use std.math;` を同じファイルに書くとエラー（別名の `as` はまだない）。
+  `use std;` は今までどおり同じフォルダの std.jw を使う。
+- 標準ライブラリの中では `use std.名前;` だけ使える。ない名前はエラー（使える名前を示す）。エラーの位置は `std/math.jw` のように示す。
+- Rust 版（`jabberwock`）は対応しない（凍結。[design-decisions.md](design-decisions.md)）。
+
+| モジュール | 関数 |
+|---|---|
+| `std.math` | `gcd(a, b)`・`lcm(a, b)`・`pow(base, exp)`（exp は 0 以上）・`clamp(x, lo, hi)`（どれも i64）、`pi()`・`floor(x)`・`ceil(x)`・`round(x)`（f64。round はちょうど半分なら 0 から遠い方） |
+| `std.text` | `pad_left(s, width, fill)`・`pad_right(s, width, fill)`（fill は 1 文字）・`reverse(s)`・`count(s, sub)`（重ならずに数える。sub が空なら実行時エラー）・`is_digits(s)`（空でなく全部 0〜9）・`from_utf8(ref bytes)`（`Option<str>`。正しい UTF-8 でなければ None） |
+| `std.fs` | `open(path)`・`create(path)`・`append(path)`・`close(f)` と資源の型 `File`、`exists(path)`・`list_dir(path)`・`make_dir(path)`・`remove(path)`（[1.3](#13-資源と-stdfsjwc-だけ)） |
+| `std.http` | `get(url)`・`post(url, content_type, body)` と `Response`（[1.5](#15-stdhttpjwc-だけ)） |
+| `std.net` | `connect(host, port)`・`listen(host, port)`・`close(s)`・`stop(l)` と資源の型 `TcpStream`・`TcpListener`（[1.4](#14-stdnetjwc-だけ)） |
+
+- 詳しい動き（一周・実行時エラーになる条件）は `std/*.jw` の各関数の説明に書いてある。
+
+### 1.3 資源と std.fs（jwc だけ）
+
+```
+use std.fs;
+fn Result<(), str> save() {
+    let mut f = fs.create("out.txt")?;   // fs.File
+    f.write_text("こんにちは\n")?;
+    f.write([65, 66])?;                  // u8[]（ムーブ）
+    fs.close(f)?;                        // 閉じた結果を受け取る
+    let mut r = fs.open("out.txt")?;
+    print(r.read(3)?, r.read_text()?);  // 最大 3 バイト（終わりなら []）、残り全部
+    Ok(())
+}
+```
+
+- **資源**は外のもの（今は開いたファイルだけ）を持つ値。`resource 名前;` で決めるが、書けるのは標準ライブラリの中だけで、
+  コンパイラが知っている種類（`std.fs` の `File`）に限る。数や文字列から作る方法はない（作るのは `fs.open` などだけ）。
+- 値として読むといつもムーブ（2 つ目の持ち主はできない）。`ref` / `ref mut` で借りられる。`for x in` の x などの読むだけの写しは、閉じない。
+- 持ち主がいなくなると黙って閉じる（構造体・リストの中でも）。閉じたときの失敗を知りたいときは `fs.close(f)`（`Result<(), str>`。失敗しても f はもう使えない）。
+  `exit` と実行時エラーでは閉じない（ほかの後片づけと同じ。書いた内容は close で確かめる）。
+- ほかのスレッドへは渡せない（構造体などに包んでも）。`==` などで比べられない。print すると `<fs.File>`。
+- メソッド（どれも `Result<_, str>` を返し、持ち主が mut であること）: `read(n)`（`u8[]`。n が負なら実行時エラー）・`read_text()`（`str`。UTF-8 でなければ Err）・
+  `write(bytes)`（`u8[]` をムーブして全部書く）・`write_text(s)`。
+- 開く: `fs.open(path)`（読む）・`fs.create(path)`（書く。なければ作り、あれば空にする）・`fs.append(path)`（後ろに足す）。パスに NUL 文字があれば Err。
+- 書いた内容は、close するか持ち主がいなくなるまで、ほかの開き方からは見えないことがある（まとめて書くため）。
+- ディレクトリ: `fs.exists(path)`（`bool`。ファイルでもディレクトリでも）・`fs.list_dir(path)`（`Result<str[], str>`。`.` と `..` を除き、名前の順。UTF-8 でない名前があれば Err）・
+  `fs.make_dir(path)`（親はあること。もうあれば Err）・`fs.remove(path)`（ファイルか空のディレクトリ）。
+- 実行時ライブラリは資源を表で持ち、値は「札」（場所の番号と世代）。閉じた札を使うと実行時エラー（型検査を通ったプログラムでは起きないはずの、念のための検査）。
+  場所を使い回すときは世代を進め、世代が上限に達した場所は退役させる。
+- テスト用: 環境変数 `JW_RES_FAIL=open` / `read` / `write` / `close` / `list` / `make_dir` / `remove`（std.net は `connect` / `listen` / `accept` も）で、
+  その操作をわざと失敗させる（`--release` で作った実行ファイルでは効かない）。
+
+### 1.4 std.net（jwc だけ）
+
+```
+use std.net;
+let mut l = net.listen("127.0.0.1", 0)?;   // 0 なら OS が番号を選ぶ（l.port()）
+let mut c = l.accept()?;                   // TcpStream
+c.set_timeout(2000)?;                      // ミリ秒（0 なら待ち続ける）
+let got = c.read(4096)?;                   // 最大 4096 バイト。相手が閉じたら []
+c.write_text("ok\n")?;
+net.close(c)?;
+```
+
+- TCP だけ（同期。HTTP・TLS・UDP はまだ）。`TcpStream`・`TcpListener` は資源で、規則は 1.3 と同じ（ムーブだけ・送れない・持ち主がいなくなると閉じる）。
+- `net.connect(host, port)`・`net.listen(host, port)`（`Result`）。host は名前か番号。port が 0〜65535 の外なら Err。
+- TcpStream: `read(n)`（`u8[]`）・`write(bytes)`・`write_text(s)`・`set_timeout(ms)`。時間切れは `Err("時間切れです")`。相手が閉じた接続へ書くと Err（プログラムは止まらない）。
+- TcpListener: `accept()`（`Result<TcpStream, str>`）・`port()`（`i64`）。やめるのは `net.stop(l)`。
+- **今は Linux・macOS だけ。** Windows では connect / listen が `Err("std.net はまだ Windows で使えません: ...")` を返す。
+
+### 1.5 std.http（jwc だけ）
+
+```
+use std.http;
+let r = http.get("http://127.0.0.1:8080/a?b=1")?;          // http.Response
+print(r.status, r.headers["content-type"], r.text()?);
+let p = http.post("http://127.0.0.1:8080/p", "application/json", "{{}}")?;
+```
+
+- HTTP/1.1 のクライアント。std.net の上に .jw だけで書いている（`std/http.jw`）。**http:// だけ**（https は Err）。std.net と同じく今は Linux・macOS だけ。
+- 1 回ごとにつなぎ、`Connection: close` を送って、相手が閉じるまで読む。本文は chunked なら読み解き、`Content-Length` があればその長さにする（足りなければ Err）。
+  リダイレクトはたどらない。状態の番号が 404 などでも Ok（`status` を見る）。
+- `Response`: `status`（`i64`）・`headers`（`str[str]`。名前は小文字。同じ名前が二つ以上なら `", "` でつなぐ）・`body`（`u8[]`）・`text()`（本文を `str` に。UTF-8 でなければ Err）。
+- URL に空白・改行、content_type に改行があれば Err（ヘッダーを足されないように）。
+
 ## 2. 字句
 
 | 種類 | 書き方 |
@@ -104,6 +196,7 @@ fn main() {
 | `task<R>` | `spawn` で動かしたスレッド。`join()` で R を受け取る（[9.1](#91-スレッド)）。値を返さないスレッドは `task<()>` |
 | `()` | 値なし。型の引数に書くときに使う（`task<()>`・`Result<(), str>`）。値も `()` と書く（`Ok(())`）。値なしの変数は作れない |
 | `chan<T>` | スレッドのあいだで T を送るチャンネル（[9.1](#91-スレッド)） |
+| 資源（`fs.File`） | 開いたファイルなど、外のものを持つ値。標準ライブラリだけが作れる（[1.3](#13-資源と-stdfsjwc-だけ)） |
 
 - `own` / `ref` は右側の型全体にかかる（`ref i64[5]` は配列を借りた ref、`own i64[]` はリストの own）。
   要素にかけるときはかっこでまとめる（`(own Node)[]` は own を要素に持つリスト）。
@@ -435,6 +528,8 @@ let w = ref mut a;      // 書き換えてよい
 - 辞書の値の中は借りられない（キーを取り除くと値の場所が詰まるため）。値を借りたいときは、値を own にする（`(own T)[K]`）。
 - 変数を借りた ref は、その変数がスコープを抜けるか、ムーブされると無効になる。
 - ref の型に寿命は書かない。借りた先が解放されたあとに ref を使うと、**必ず**実行時エラーになる。エラーは「借りた → 解放された → 使った」の時系列で出る。
+  - エラーは捕まえられず、プログラムはその場で止まる（終了コード 1。[10](#10-エラーと警告)）。`--release` で作った実行ファイルは、使った位置だけを出す。
+  - 実行ファイルは「解放された」の位置を、区画を使い回したあとも直近 4096 回分だけ覚えている。それより古いと「解放された」の行は出ない（止まり方と残りの表示は同じ。[native.md](native.md)）。
 - 安全と証明できた箇所の検査は、静的解析が実行前に消す（速さのため）。
 - `ref mut` はいくつ同時にあってもよい。同じ場所を指す `ref` と `ref mut` も共存できる。
   `ref mut` は書き換えの許可であり、その場所をほかの参照が指していないという保証ではない。
@@ -923,9 +1018,10 @@ loop {
 |---|---|
 | 実行前のエラー（構文・型） | `;` がない、型が合わない、mut でない変数への代入、match の書き忘れ、入らない数、入れ子が深すぎる（式・ブロック・型・形と、演算子や `.` の鎖を合わせて 256 段まで） |
 | 実行前の警告（実行は続く） | 数だけの計算のあふれ、数だけの計算での 0 割り、else のある for の本体の break |
-| 実行時のエラー | ダングリングした ref の使用、ムーブ済みの変数の使用、0 割り、assert の失敗、呼び出しが深すぎる、デッドロック |
+| 実行時のエラー | ダングリングした ref の使用、ムーブ済みの変数の使用、0 割り、assert の失敗、呼び出しが深すぎる、デッドロック、世代番号の上限（[7.2](#72-ref世代つき参照)） |
 
 - 型や mut のエラーがあるプログラムは、1 行も実行されない。
+- 実行時のエラーは捕まえられない。エラーを出してプログラム全体が止まり、終了コードは 1（ほかのスレッドも止まる。[9.1](#91-スレッド)）。
 
 ## 11. 未実装（決定済みのもの）
 
@@ -934,7 +1030,7 @@ loop {
 | あふれの確認 | `checked_add` のような明示的な関数 |
 | interface の値から元の構造体を取り出す（型で分岐） | これから |
 | `f32`・文字型 | これから |
-| フォルダを分けたモジュール（`use a.b;`）・メソッドやフィールドごとの `pub` | これから |
+| フォルダを分けたモジュール（`use a.b;`。`use std.名前;` は 1.2）・メソッドやフィールドごとの `pub`・`use ... as 別名` | これから |
 | 辞書のキーに構造体を使う | これから |
 | 写しの中の own を取り出すのを、実行前（型検査）のエラーにする | これから（今は実行時エラー。7.1） |
 | 構造体のフィールドに関数の値を置く・メソッドを値にする | これから |

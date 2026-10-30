@@ -11,6 +11,7 @@ on:
       - 'extracted/jabberwock-safety-ci-resume/jwc/**'
       - 'extracted/jabberwock-safety-ci-resume/runtime/**'
       - 'extracted/jabberwock-safety-ci-resume/examples/**'
+      - 'extracted/jabberwock-safety-ci-resume/std/**'
   workflow_dispatch:
 permissions:
   contents: read

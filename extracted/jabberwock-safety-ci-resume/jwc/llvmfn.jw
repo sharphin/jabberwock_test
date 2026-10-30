@@ -1480,6 +1480,12 @@ struct FnGen {
         let mut v = llvm.vt("0", ty.Ty.Unit);
         if kind == "str" { v = llvm.vt(b.val("load ptr, ptr " + from), ty.Ty.Str); }
         if kind == "int" { v = llvm.vt(b.val("load i64, ptr " + from), ty.i64t()); }
+        if kind == "res" {
+            let oks = ty.args_of(want);
+            v = llvm.vt(b.val("load ptr, ptr " + from), ty.cl(oks[0]));
+        }
+        if kind == "strs" { v = llvm.vt(b.val("load %list, ptr " + from), ty.Ty.List(own ty.Ty.Str)); }
+        if kind == "bytes" { v = llvm.vt(b.val("load %list, ptr " + from), ty.Ty.List(own ty.Ty.Int("u8"))); }
         let ov = make_enum(m, want, "Ok", [v])?;
         b.op("store " + lt + " " + ov + ", ptr " + res);
         b.br(done);
@@ -1839,6 +1845,96 @@ struct FnGen {
             let ok = b.val("call i32 @jw_read_file(ptr " + vals[0].v + ", ptr " + out + ")");
             release(vals, all);
             return result_of(m, want, ok, out, "str", out);
+        }
+        // 資源（std.fs の File）。札は実行時ライブラリが確かめる
+        if name == "__fs_open" {
+            let out = b.alloca("ptr");
+            let err = b.alloca("ptr");
+            let ok = b.val("call i32 @jw_fs_open(ptr " + vals[0].v + ", i64 " + vals[1].v + ", ptr " + out + ", ptr " + err + ")");
+            release(vals, all);
+            return result_of(m, want, ok, err, "res", out);
+        }
+        if name == "__net_connect" || name == "__net_listen" {
+            let out = b.alloca("ptr");
+            let err = b.alloca("ptr");
+            let f = if name == "__net_connect" { "@jw_net_connect" } else { "@jw_net_listen" };
+            let ok = b.val("call i32 " + f + "(ptr " + vals[0].v + ", i64 " + vals[1].v + ", ptr " + out + ", ptr " + err + ")");
+            release(vals, all);
+            return result_of(m, want, ok, err, "res", out);
+        }
+        if name == "listener.accept" {
+            let out = b.alloca("ptr");
+            let err = b.alloca("ptr");
+            let site = m.site(span, "");
+            let ok = b.val("call i32 @jw_listener_accept(ptr " + vals[0].v + ", ptr " + out + ", ptr " + err + ", ptr " + site + ")");
+            return result_of(m, want, ok, err, "res", out);
+        }
+        if name == "listener.port" {
+            let site = m.site(span, "");
+            return Ok(llvm.vt(b.val("call i64 @jw_listener_port(ptr " + vals[0].v + ", ptr " + site + ")"), ty.i64t()));
+        }
+        if name == "tcp.set_timeout" {
+            let err = b.alloca("ptr");
+            let site = m.site(span, "");
+            let ok = b.val("call i32 @jw_tcp_set_timeout(ptr " + vals[0].v + ", i64 " + vals[1].v + ", ptr " + err + ", ptr " + site + ")");
+            return result_of(m, want, ok, err, "unit", "");
+        }
+        if name == "__fs_exists" {
+            let ok = b.val("call i32 @jw_fs_exists(ptr " + vals[0].v + ")");
+            release(vals, all);
+            return Ok(llvm.vt(b.val("icmp ne i32 " + ok + ", 0"), ty.Ty.Bool));
+        }
+        if name == "__fs_list" {
+            let out = b.alloca("%list");
+            b.op("store %list zeroinitializer, ptr " + out);
+            let err = b.alloca("ptr");
+            let ok = b.val("call i32 @jw_fs_list(ptr " + vals[0].v + ", ptr " + out + ", ptr " + err + ")");
+            release(vals, all);
+            return result_of(m, want, ok, err, "strs", out);
+        }
+        if name == "__fs_make_dir" || name == "__fs_remove" {
+            let err = b.alloca("ptr");
+            let f = if name == "__fs_make_dir" { "@jw_fs_make_dir" } else { "@jw_fs_remove" };
+            let ok = b.val("call i32 " + f + "(ptr " + vals[0].v + ", ptr " + err + ")");
+            release(vals, all);
+            return result_of(m, want, ok, err, "unit", "");
+        }
+        if name == "__res_close" {
+            let err = b.alloca("ptr");
+            let site = m.site(span, "");
+            let ok = b.val("call i32 @jw_res_close(ptr " + vals[0].v + ", ptr " + err + ", ptr " + site + ")");
+            return result_of(m, want, ok, err, "unit", "");
+        }
+        if name == "file.read" || name == "tcp.read" {
+            let out = b.alloca("%list");
+            b.op("store %list zeroinitializer, ptr " + out);
+            let err = b.alloca("ptr");
+            let site = m.site(span, "");
+            let ok = b.val("call i32 @jw_" + (if name.starts_with("tcp.") { "tcp" } else { "file" }) + "_read(ptr " + vals[0].v + ", i64 " + vals[1].v + ", ptr " + out + ", ptr " + err + ", ptr " + site + ")");
+            return result_of(m, want, ok, err, "bytes", out);
+        }
+        if name == "file.read_text" {
+            let out = b.alloca("ptr");
+            let err = b.alloca("ptr");
+            let site = m.site(span, "");
+            let ok = b.val("call i32 @jw_file_read_text(ptr " + vals[0].v + ", ptr " + out + ", ptr " + err + ", ptr " + site + ")");
+            return result_of(m, want, ok, err, "str", out);
+        }
+        // 書くリストはムーブされてきたので、jw_file_write が解放する
+        if name == "file.write" || name == "tcp.write" {
+            let lst = b.alloca("%list");
+            b.op("store %list " + vals[1].v + ", ptr " + lst);
+            let err = b.alloca("ptr");
+            let site = m.site(span, "");
+            let ok = b.val("call i32 @jw_" + (if name.starts_with("tcp.") { "tcp" } else { "file" }) + "_write(ptr " + vals[0].v + ", ptr " + lst + ", ptr " + err + ", ptr " + site + ")");
+            return result_of(m, want, ok, err, "unit", "");
+        }
+        if name == "file.write_text" || name == "tcp.write_text" {
+            let err = b.alloca("ptr");
+            let site = m.site(span, "");
+            let ok = b.val("call i32 @jw_" + (if name.starts_with("tcp.") { "tcp" } else { "file" }) + "_write_text(ptr " + vals[0].v + ", ptr " + vals[1].v + ", ptr " + err + ", ptr " + site + ")");
+            release(vals, all);
+            return result_of(m, want, ok, err, "unit", "");
         }
         if name == "write_file" {
             let out = b.alloca("ptr");

@@ -1,0 +1,198 @@
+// 標準ライブラリ std.http: HTTP/1.1 のクライアント。`use std.http;` と書いて使う
+//   let r = http.get("http://example.com/")?;
+//   print(r.status, r.headers["content-type"], r.text()?);
+// http:// だけ（https はまだ）。std.net の上に .jw だけで書いている（std.net と同じく、今は Linux・macOS だけ）。
+// 1 回ごとにつなぎ、`Connection: close` で相手が閉じるまで読む。chunked の本文は読み解く。リダイレクトはたどらない。
+
+use std.net;
+use std.text;
+
+pub struct Response {
+    i64 status;
+    // 名前は小文字にする（同じ名前が二つ以上あれば ", " でつなぐ）
+    str[str] headers;
+    u8[] body;
+
+    /// 本文を文字列にする（UTF-8 でなければ Err）
+    fn Result<str, str> text() {
+        match text.from_utf8(ref body) {
+            case Some(s) -> Ok(s);
+            case None -> Err("本文が UTF-8 ではありません");
+        }
+    }
+}
+
+/// GET する
+pub fn Result<Response, str> get(str url) { request("GET", url, "", "") }
+
+/// POST する（content_type は `application/json` など）
+pub fn Result<Response, str> post(str url, str content_type, str body) { request("POST", url, content_type, body) }
+
+struct Url {
+    str host;
+    i64 port;
+    str path;
+}
+
+fn Result<Url, str> parse_url(str url) {
+    if url.starts_with("https://") { return Err("https はまだ使えません: " + url); }
+    if !url.starts_with("http://") { return Err("http:// で始まる URL ではありません: " + url); }
+    let rest = url.slice(7, url.len());
+    let mut hostport = rest;
+    let mut path = "/";
+    match rest.find("/") {
+        case Some(i) -> {
+            hostport = rest.slice(0, i);
+            path = rest.slice(i, rest.len());
+        }
+        case None -> {}
+    }
+    let mut host = hostport;
+    let mut port = 80;
+    match hostport.find(":") {
+        case Some(i) -> {
+            host = hostport.slice(0, i);
+            match hostport.slice(i + 1, hostport.len()).to_int() {
+                case Some(p) -> port = p;
+                case None -> return Err("ポートの番号が読めません: " + url);
+            }
+        }
+        case None -> {}
+    }
+    if host == "" { return Err("ホストの名前がありません: " + url); }
+    // 改行を入れて、ほかのヘッダーを足せないようにする
+    if url.contains("\r") || url.contains("\n") || url.contains(" ") { return Err("URL に空白や改行があります"); }
+    Ok(Url { host: host, port: port, path: path })
+}
+
+fn Result<Response, str> request(str method, str url, str content_type, str body) {
+    let u = parse_url(url)?;
+    if content_type.contains("\r") || content_type.contains("\n") { return Err("content_type に改行があります"); }
+    let host = if u.port == 80 { u.host } else { u.host + ":{u.port}" };
+    let mut req = "{method} {u.path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\nUser-Agent: jabberwock\r\n";
+    if method == "POST" { req += "Content-Type: {content_type}\r\nContent-Length: {body.byte_len()}\r\n"; }
+    req += "\r\n" + body;
+    let mut c = net.connect(u.host, u.port)?;
+    c.write_text(req)?;
+    let u8[] mut all = [];
+    loop {
+        let got = c.read(65536)?;
+        if got.len() == 0 { break; }
+        for x in got { all.push(x); }
+    }
+    net.close(c)?;
+    parse_response(ref all)
+}
+
+/// `\r\n\r\n` の位置（なければ -1）
+fn i64 header_end(ref u8[] b) {
+    let mut i = 0;
+    while i + 3 < b.len() {
+        if b[i] == 13 && b[i + 1] == 10 && b[i + 2] == 13 && b[i + 3] == 10 { return i; }
+        i += 1;
+    }
+    -1
+}
+
+fn u8[] part(ref u8[] b, i64 from, i64 to) {
+    let u8[] mut out = [];
+    for i in range(from, to) { out.push(b[i]); }
+    out
+}
+
+/// 16 進の数（読めなければ -1）
+fn i64 hex(str s) {
+    let digits = "0123456789abcdef";
+    let t = s.trim().to_lower();
+    if t == "" || t.len() > 15 { return -1; }
+    let mut n = 0;
+    for ch in t.chars() {
+        match digits.find(ch) {
+            case Some(d) -> n = n * 16 + d;
+            case None -> return -1;
+        }
+    }
+    n
+}
+
+/// chunked の本文を読み解く
+fn Result<u8[], str> unchunk(ref u8[] b) {
+    let u8[] mut out = [];
+    let mut i = 0;
+    loop {
+        // 大きさの行（`;` のあとの拡張は読み飛ばす）
+        let mut j = i;
+        while j + 1 < b.len() && !(b[j] == 13 && b[j + 1] == 10) { j += 1; }
+        if j + 1 >= b.len() { return Err("chunked の本文が途中で切れています"); }
+        let raw = part(ref b, i, j);
+        let line = match text.from_utf8(ref raw) {
+            case Some(s) -> s;
+            case None -> return Err("chunked の大きさが読めません");
+        };
+        let size_text = match line.find(";") {
+            case Some(k) -> line.slice(0, k);
+            case None -> line;
+        };
+        let size = hex(size_text);
+        if size < 0 { return Err("chunked の大きさが読めません"); }
+        i = j + 2;
+        if size == 0 { return Ok(out); }
+        if i + size + 2 > b.len() { return Err("chunked の本文が途中で切れています"); }
+        for k in range(i, i + size) { out.push(b[k]); }
+        i += size + 2;
+    }
+}
+
+fn Result<Response, str> parse_response(ref u8[] all) {
+    let end = header_end(all);
+    if end < 0 { return Err("HTTP の応答が読めません（ヘッダーの終わりがない）"); }
+    let raw = part(ref all, 0, end);
+    let head = match text.from_utf8(ref raw) {
+        case Some(s) -> s;
+        case None -> return Err("HTTP の応答のヘッダーが読めません");
+    };
+    let lines = head.split("\r\n");
+    let first = lines[0].split(" ");
+    if first.len() < 2 || !first[0].starts_with("HTTP/1.") { return Err("HTTP の応答ではありません: " + lines[0]); }
+    let status = match first[1].to_int() {
+        case Some(s) -> s;
+        case None -> return Err("状態の番号が読めません: " + lines[0]);
+    };
+    let str[str] mut headers = [];
+    for (i, line) in lines {
+        if i == 0 { continue; }
+        match line.find(":") {
+            case Some(k) -> {
+                let name = line.slice(0, k).trim().to_lower();
+                let value = line.slice(k + 1, line.len()).trim();
+                match headers.get(name) {
+                    case Some(old) -> headers[name] = old + ", " + value;
+                    case None -> headers[name] = value;
+                }
+            }
+            case None -> return Err("ヘッダーの行が読めません: " + line);
+        }
+    }
+    let mut body = part(ref all, end + 4, all.len());
+    let chunked = match headers.get("transfer-encoding") {
+        case Some(v) -> v.to_lower().contains("chunked");
+        case None -> false;
+    };
+    if chunked {
+        body = unchunk(ref body)?;
+    } else {
+        match headers.get("content-length") {
+            case Some(v) -> {
+                match v.to_int() {
+                    case Some(n) -> {
+                        if n < 0 || n > body.len() { return Err("本文が途中で切れています"); }
+                        if n < body.len() { body = part(ref body, 0, n); }
+                    }
+                    case None -> return Err("content-length が読めません: " + v);
+                }
+            }
+            case None -> {}
+        }
+    }
+    Ok(Response { status: status, headers: headers, body: body })
+}

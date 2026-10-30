@@ -1,0 +1,67 @@
+// 標準ライブラリ std.math: 数の計算の補助。`use std.math;` と書いて `math.gcd(12, 18)` のように使う
+
+/// 最大公約数（どちらも 0 なら 0）。結果は 0 以上（i64 の最小の値だけは abs が一周するのでそのまま）
+pub fn i64 gcd(i64 a, i64 b) {
+    let mut x = a.abs();
+    let mut y = b.abs();
+    while y != 0 {
+        let t = x % y;
+        x = y;
+        y = t;
+    }
+    x
+}
+
+/// 最小公倍数（どちらかが 0 なら 0）。型の幅を超えると一周する
+pub fn i64 lcm(i64 a, i64 b) {
+    if a == 0 || b == 0 { return 0; }
+    (a / gcd(a, b) * b).abs()
+}
+
+/// base の exp 乗（exp は 0 以上。負なら実行時エラー）。型の幅を超えると一周する
+pub fn i64 pow(i64 base, i64 exp) {
+    assert(exp >= 0);
+    let mut result = 1;
+    let mut b = base;
+    let mut e = exp;
+    while e > 0 {
+        if e % 2 == 1 { result = result * b; }
+        b = b * b;
+        e = e / 2;
+    }
+    result
+}
+
+/// x を lo 以上 hi 以下に収める（lo が hi より大きければ実行時エラー）
+pub fn i64 clamp(i64 x, i64 lo, i64 hi) {
+    assert(lo <= hi);
+    x.max(lo).min(hi)
+}
+
+/// 円周率
+pub fn f64 pi() { 3.141592653589793 }
+
+/// 0 の方へ切り捨てた整数の値（小数のまま）。NaN・inf と、2^52 以上（もう整数）はそのまま
+fn f64 trunc(f64 x) {
+    if !(x.abs() < 4503599627370496.0) { return x; }
+    (x as i64) as f64
+}
+
+/// x 以下でいちばん大きい整数（小数のまま）
+pub fn f64 floor(f64 x) {
+    let t = trunc(x);
+    if t > x { t - 1.0 } else { t }
+}
+
+/// x 以上でいちばん小さい整数（小数のまま）
+pub fn f64 ceil(f64 x) {
+    let t = trunc(x);
+    if t < x { t + 1.0 } else { t }
+}
+
+/// いちばん近い整数（小数のまま）。ちょうど半分なら 0 から遠い方（`round(2.5)` は 3.0、`round(-2.5)` は -3.0）
+pub fn f64 round(f64 x) {
+    let t = trunc(x);
+    if (x - t).abs() < 0.5 { return t; }
+    if x < 0.0 { t - 1.0 } else { t + 1.0 }
+}

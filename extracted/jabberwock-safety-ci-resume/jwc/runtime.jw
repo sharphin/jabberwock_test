@@ -12,6 +12,10 @@ pub fn str source() {
 // - 文字列は書き換えない。数を数えて共有する（rc が負なら消えない定数）。
 // - 実行時エラーは、出力をすべて書き出してから標準エラーに出し、終了コード 1 で終わる。
 
+// -std=c11 でも getaddrinfo などの POSIX の宣言が見えるように（glibc。macOS は何もしなくても見える）
+#if !defined(_WIN32) && !defined(_DEFAULT_SOURCE)
+#define _DEFAULT_SOURCE
+#endif
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -2466,6 +2470,592 @@ int32_t jw_run_command(WStr *cmd, WList *args, int64_t *code, WStr **err) {{
     if (!ok) *err = message("コマンドを起動できません: ", cmd);
     for (int64_t i = 0; i < n; i++) jw_str_release(items[i]);
     jw_list_free(args, sizeof(WStr *), NULL);
+    return ok;
+}}
+
+// ---------------------------------------------------------------- 資源（std.fs の File など）
+//
+// 資源の値は「札」（64 ビット）: 世代 << 21 | 番号 << 1 | 写しの印。OS の番号やポインタは言語の値に出さない。
+// 表の場所（番号）を使い回すときは世代を進め、古い札は種類・世代・状態で必ず見つける。
+// 世代が上限に達した場所は退役させ、使い回さない（ref の区画と同じ考え方）。
+// 資源はほかのスレッドへ渡せない（型検査で止める）ので、中身に触るのは持ち主のスレッドだけ。
+// 表の確保と解放だけを g_lock で守り、読み書きの間は錠を持たない。場所は動かない（塊ごとに確保して公開する）。
+
+#define RES_CHUNK 1024
+#define RES_CHUNKS 1024
+#define RES_GEN_MAX (((uint64_t)1 << 43) - 1)
+#define RES_FILE 1
+#define RES_TCP 2
+#define RES_LISTENER 3
+
+typedef struct WRes {{
+    uint64_t gen;
+    uint32_t kind;
+    // 0: 空き、1: 開いている、2: 退役（使い回さない）
+    uint32_t state;
+    FILE *fp;
+    // ソケット（TCP）
+    int64_t fd;
+    // 空きの場所のつながり（0 で終わり）
+    int64_t next_free;
+}} WRes;
+
+static WRes *g_res[RES_CHUNKS];
+static int64_t g_res_next = 1;
+static int64_t g_res_free = 0;
+
+static WRes *res_at(int64_t slot) {{
+    if (slot <= 0 || slot >= (int64_t)RES_CHUNK * RES_CHUNKS) return NULL;
+    WRes *c = __atomic_load_n(&g_res[slot / RES_CHUNK], __ATOMIC_ACQUIRE);
+    return c ? &c[slot % RES_CHUNK] : NULL;
+}}
+
+// テスト用: JW_RES_FAIL=open / read / write / close / list / make_dir / remove / connect / listen / accept でその操作をわざと失敗させる（--release では効かない）
+static int res_fail(const char *op) {{
+    const char *s = jw_nfiles > 0 ? getenv("JW_RES_FAIL") : NULL;
+    return s && strcmp(s, op) == 0;
+}}
+
+// 新しい場所を取って札を返す。場所が尽きたら 0
+static uint64_t res_new(uint32_t kind, FILE *fp, int64_t fd) {{
+    lock(&g_lock);
+    int64_t slot = 0;
+    if (g_res_free > 0) {{
+        slot = g_res_free;
+        g_res_free = res_at(slot)->next_free;
+    }} else if (g_res_next < (int64_t)RES_CHUNK * RES_CHUNKS) {{
+        slot = g_res_next++;
+        if (!g_res[slot / RES_CHUNK]) {{
+            WRes *c = jw_checked_calloc(RES_CHUNK, sizeof(WRes));
+            __atomic_store_n(&g_res[slot / RES_CHUNK], c, __ATOMIC_RELEASE);
+        }}
+    }}
+    uint64_t tok = 0;
+    if (slot > 0) {{
+        WRes *r = res_at(slot);
+        r->kind = kind;
+        r->state = 1;
+        r->fp = fp;
+        r->fd = fd;
+        tok = (r->gen << 21) | ((uint64_t)slot << 1);
+    }}
+    unlock(&g_lock);
+    return tok;
+}}
+
+// 札の指す開いた資源。古い札・違う種類なら実行時エラー（型検査を通ったプログラムでは起きない）。kind が 0 ならどの種類でもよい
+static WRes *res_get(uint64_t tok, uint32_t kind, const WSite *at) {{
+    WRes *r = res_at((int64_t)((tok >> 1) & (((uint64_t)1 << 20) - 1)));
+    if (!r || r->gen != (tok >> 21) || (kind && r->kind != kind) || r->state != 1) {{
+        begin_error("閉じた資源を使いました");
+        finish_error(at, "この資源はもう閉じている", NULL);
+    }}
+    return r;
+}}
+
+// 場所を空ける。世代を進め、上限なら退役させる
+static void res_release(WRes *r, int64_t slot) {{
+    lock(&g_lock);
+    r->fp = NULL;
+    if (r->gen >= RES_GEN_MAX) {{
+        r->state = 2;
+    }} else {{
+        r->gen++;
+        r->state = 0;
+        r->next_free = g_res_free;
+        g_res_free = slot;
+    }}
+    unlock(&g_lock);
+}}
+
+static int64_t res_slot(uint64_t tok) {{ return (int64_t)((tok >> 1) & (((uint64_t)1 << 20) - 1)); }}
+
+// mode: 0 読む、1 書く（作る・空にする）、2 後ろに足す
+int32_t jw_fs_open(WStr *path, int64_t mode, void **out, WStr **err) {{
+    if (memchr(path->data, 0, (size_t)path->len)) {{
+        *err = message("パスに NUL 文字があります: ", path);
+        return 0;
+    }}
+    char *cp = c_str(path);
+#ifdef _WIN32
+    const wchar_t *m = mode == 0 ? L"rb" : mode == 1 ? L"wb" : L"ab";
+#else
+    const char *m = mode == 0 ? "rb" : mode == 1 ? "wb" : "ab";
+#endif
+    FILE *f = res_fail("open") ? NULL : open_file(cp, m);
+    free(cp);
+    if (!f) {{
+        *err = message(mode == 0 ? "ファイルを開けません: " : "ファイルを書くために開けません: ", path);
+        return 0;
+    }}
+    uint64_t tok = res_new(RES_FILE, f, -1);
+    if (!tok) {{
+        fclose(f);
+        *err = message("開いている資源が多すぎます: ", path);
+        return 0;
+    }}
+    *out = (void *)(uintptr_t)tok;
+    return 1;
+}}
+
+static WStr *err_text(const char *s) {{
+    WSb *b = jw_sb_new();
+    jw_sb_push(b, s, (int64_t)strlen(s));
+    return jw_sb_finish(b);
+}}
+
+// 最大 n バイト読む（終わりなら空のリスト）
+int32_t jw_file_read(void *h, int64_t n, WList *out, WStr **err, const WSite *at) {{
+    WRes *r = res_get((uint64_t)(uintptr_t)h, RES_FILE, at);
+    if (n < 0) {{
+        begin_error("読む大きさが負です");
+        finish_error(at, "read(n) の n は 0 以上", NULL);
+    }}
+    if (n == 0) return 1;
+    int64_t want = n < 65536 ? n : 65536;
+    jw_list_reserve(out, 1, want);
+    size_t got = res_fail("read") ? 0 : fread(out->data, 1, (size_t)want, r->fp);
+    if (got == 0 && (res_fail("read") || ferror(r->fp))) {{
+        clearerr(r->fp);
+        jw_list_free(out, 1, NULL);
+        *err = err_text("ファイルを読めません");
+        return 0;
+    }}
+    out->len = (int64_t)got;
+    return 1;
+}}
+
+// 残りをすべて読む（UTF-8 でなければ Err）
+int32_t jw_file_read_text(void *h, WStr **out, WStr **err, const WSite *at) {{
+    WRes *r = res_get((uint64_t)(uintptr_t)h, RES_FILE, at);
+    WSb *b = jw_sb_new();
+    char buf[65536];
+    size_t n;
+    while (!res_fail("read") && (n = fread(buf, 1, sizeof buf, r->fp)) > 0) jw_sb_push(b, buf, (int64_t)n);
+    if (res_fail("read") || ferror(r->fp)) {{
+        clearerr(r->fp);
+        sb_drop(b);
+        *err = err_text("ファイルを読めません");
+        return 0;
+    }}
+    if (!valid_utf8((const unsigned char *)b->p, b->len)) {{
+        sb_drop(b);
+        *err = err_text("ファイルが UTF-8 ではありません");
+        return 0;
+    }}
+    *out = jw_sb_finish(b);
+    return 1;
+}}
+
+static int32_t file_write(WRes *r, const char *p, int64_t n, WStr **err) {{
+    if (res_fail("write") || fwrite(p, 1, (size_t)n, r->fp) != (size_t)n) {{
+        clearerr(r->fp);
+        *err = err_text("ファイルに書けません");
+        return 0;
+    }}
+    return 1;
+}}
+
+// 全部書く。リストはムーブされてきたので解放する
+int32_t jw_file_write(void *h, WList *data, WStr **err, const WSite *at) {{
+    WRes *r = res_get((uint64_t)(uintptr_t)h, RES_FILE, at);
+    int32_t ok = file_write(r, data->data, data->len, err);
+    jw_list_free(data, 1, NULL);
+    return ok;
+}}
+
+int32_t jw_file_write_text(void *h, WStr *text, WStr **err, const WSite *at) {{
+    WRes *r = res_get((uint64_t)(uintptr_t)h, RES_FILE, at);
+    return file_write(r, text->data, text->len, err);
+}}
+
+// 閉じる（資源はムーブされてきた）。失敗しても場所は空ける（もう使えない）
+static int sock_close(int64_t fd);
+
+// 種類ごとに OS の資源を手放す。失敗したら 0（それでも手放したとみなす。同じ番号をもう一度閉じない）
+static int res_free_os(WRes *r) {{
+    if (r->kind == RES_FILE) return fclose(r->fp) == 0;
+    return sock_close(r->fd);
+}}
+
+int32_t jw_res_close(void *h, WStr **err, const WSite *at) {{
+    uint64_t tok = (uint64_t)(uintptr_t)h;
+    WRes *r = res_get(tok, 0, at);
+    uint32_t kind = r->kind;
+    int bad = !res_free_os(r) || res_fail("close");
+    res_release(r, res_slot(tok));
+    if (bad) {{
+        *err = err_text(kind == RES_FILE ? "ファイルを閉じられません（書いた内容が残っていないかもしれません）" : "接続を閉じられません");
+        return 0;
+    }}
+    return 1;
+}}
+
+// 持ち主がいなくなった: 黙って閉じる（写しなら何もしない）。結果が要るなら close を使う
+void jw_res_drop(void *h, const WSite *site) {{
+    uint64_t tok = (uint64_t)(uintptr_t)h;
+    if (tok & 1 || tok == 0) return;
+    WRes *r = res_get(tok, 0, site);
+    res_free_os(r);
+    res_release(r, res_slot(tok));
+}}
+
+void *jw_res_view(void *h) {{ return (void *)((uintptr_t)h | 1); }}
+
+// ---------------------------------------------------------------- TCP（std.net）
+// 同期だけ。名前の解決は getaddrinfo。Windows はまだ（Winsock の初期化を含めて後で足す）
+
+#ifdef _WIN32
+static int sock_close(int64_t fd) {{ (void)fd; return 1; }}
+
+int32_t jw_net_connect(WStr *host, int64_t port, void **out, WStr **err) {{
+    (void)port; (void)out;
+    *err = message("std.net はまだ Windows で使えません: ", host);
+    return 0;
+}}
+
+int32_t jw_net_listen(WStr *host, int64_t port, void **out, WStr **err) {{
+    (void)port; (void)out;
+    *err = message("std.net はまだ Windows で使えません: ", host);
+    return 0;
+}}
+
+int32_t jw_tcp_read(void *h, int64_t n, WList *out, WStr **err, const WSite *at) {{
+    (void)h; (void)n; (void)out; (void)err; (void)at;
+    return 0;
+}}
+
+int32_t jw_tcp_write(void *h, WList *data, WStr **err, const WSite *at) {{
+    (void)h; (void)err; (void)at;
+    jw_list_free(data, 1, NULL);
+    return 0;
+}}
+
+int32_t jw_tcp_write_text(void *h, WStr *text, WStr **err, const WSite *at) {{
+    (void)h; (void)text; (void)err; (void)at;
+    return 0;
+}}
+
+int32_t jw_tcp_set_timeout(void *h, int64_t ms, WStr **err, const WSite *at) {{
+    (void)h; (void)ms; (void)err; (void)at;
+    return 0;
+}}
+
+int32_t jw_listener_accept(void *h, void **out, WStr **err, const WSite *at) {{
+    (void)h; (void)out; (void)err; (void)at;
+    return 0;
+}}
+
+int64_t jw_listener_port(void *h, const WSite *at) {{
+    (void)h; (void)at;
+    return 0;
+}}
+#else
+#include <errno.h>
+#include <netdb.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <sys/time.h>
+#include <unistd.h>
+
+#ifndef MSG_NOSIGNAL
+#define MSG_NOSIGNAL 0
+#endif
+
+static int sock_close(int64_t fd) {{ return close((int)fd) == 0; }}
+
+static void sock_quiet(int fd) {{
+#ifdef SO_NOSIGPIPE
+    int one = 1;
+    setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof one);
+#else
+    (void)fd;
+#endif
+}}
+
+// 名前を解決して、つなぐ（listen なら待ち受ける）。できたらソケット、だめなら -1
+static int net_open(WStr *host, int64_t port, int listening) {{
+    if (port < 0 || port > 65535 || memchr(host->data, 0, (size_t)host->len)) return -1;
+    char *hc = c_str(host);
+    char ps[16];
+    snprintf(ps, sizeof ps, "%d", (int)port);
+    struct addrinfo hints, *res = NULL;
+    memset(&hints, 0, sizeof hints);
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    if (listening) hints.ai_flags = AI_PASSIVE;
+    int fd = -1;
+    if (getaddrinfo(hc, ps, &hints, &res) == 0) {{
+        for (struct addrinfo *a = res; a && fd < 0; a = a->ai_next) {{
+            fd = socket(a->ai_family, a->ai_socktype, a->ai_protocol);
+            if (fd < 0) continue;
+            int ok;
+            if (listening) {{
+                int one = 1;
+                setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
+                ok = bind(fd, a->ai_addr, a->ai_addrlen) == 0 && listen(fd, 64) == 0;
+            }} else {{
+                ok = connect(fd, a->ai_addr, a->ai_addrlen) == 0;
+            }}
+            if (!ok) {{
+                close(fd);
+                fd = -1;
+            }}
+        }}
+        freeaddrinfo(res);
+    }}
+    free(hc);
+    if (fd >= 0) sock_quiet(fd);
+    return fd;
+}}
+
+static int32_t net_start(WStr *host, int64_t port, int listening, void **out, WStr **err) {{
+    int fd = res_fail(listening ? "listen" : "connect") ? -1 : net_open(host, port, listening);
+    if (fd < 0) {{
+        *err = message(listening ? "待ち受けられません: " : "接続できません: ", host);
+        return 0;
+    }}
+    uint64_t tok = res_new(listening ? RES_LISTENER : RES_TCP, NULL, fd);
+    if (!tok) {{
+        close(fd);
+        *err = message("開いている資源が多すぎます: ", host);
+        return 0;
+    }}
+    *out = (void *)(uintptr_t)tok;
+    return 1;
+}}
+
+int32_t jw_net_connect(WStr *host, int64_t port, void **out, WStr **err) {{ return net_start(host, port, 0, out, err); }}
+
+int32_t jw_net_listen(WStr *host, int64_t port, void **out, WStr **err) {{ return net_start(host, port, 1, out, err); }}
+
+static WStr *sock_error(const char *what) {{
+    return err_text(errno == EAGAIN || errno == EWOULDBLOCK ? "時間切れです" : what);
+}}
+
+// 最大 n バイト受け取る（相手が閉じたら空のリスト）
+int32_t jw_tcp_read(void *h, int64_t n, WList *out, WStr **err, const WSite *at) {{
+    WRes *r = res_get((uint64_t)(uintptr_t)h, RES_TCP, at);
+    if (n < 0) {{
+        begin_error("読む大きさが負です");
+        finish_error(at, "read(n) の n は 0 以上", NULL);
+    }}
+    if (n == 0) return 1;
+    int64_t want = n < 65536 ? n : 65536;
+    jw_list_reserve(out, 1, want);
+    ssize_t got;
+    do {{
+        got = res_fail("read") ? -1 : recv((int)r->fd, out->data, (size_t)want, 0);
+    }} while (got < 0 && errno == EINTR && !res_fail("read"));
+    if (got < 0) {{
+        jw_list_free(out, 1, NULL);
+        *err = sock_error("受け取れません");
+        return 0;
+    }}
+    out->len = (int64_t)got;
+    return 1;
+}}
+
+static int32_t sock_write(WRes *r, const char *p, int64_t n, WStr **err) {{
+    while (n > 0) {{
+        ssize_t k = res_fail("write") ? -1 : send((int)r->fd, p, (size_t)n, MSG_NOSIGNAL);
+        if (k < 0 && errno == EINTR && !res_fail("write")) continue;
+        if (k <= 0) {{
+            *err = sock_error("送れません");
+            return 0;
+        }}
+        p += k;
+        n -= k;
+    }}
+    return 1;
+}}
+
+int32_t jw_tcp_write(void *h, WList *data, WStr **err, const WSite *at) {{
+    WRes *r = res_get((uint64_t)(uintptr_t)h, RES_TCP, at);
+    int32_t ok = sock_write(r, data->data, data->len, err);
+    jw_list_free(data, 1, NULL);
+    return ok;
+}}
+
+int32_t jw_tcp_write_text(void *h, WStr *text, WStr **err, const WSite *at) {{
+    WRes *r = res_get((uint64_t)(uintptr_t)h, RES_TCP, at);
+    return sock_write(r, text->data, text->len, err);
+}}
+
+// 受け取り・送りの待ち時間（ミリ秒。0 なら待ち続ける）
+int32_t jw_tcp_set_timeout(void *h, int64_t ms, WStr **err, const WSite *at) {{
+    WRes *r = res_get((uint64_t)(uintptr_t)h, RES_TCP, at);
+    if (ms < 0) {{
+        begin_error("待ち時間が負です");
+        finish_error(at, "set_timeout(ms) の ms は 0 以上", NULL);
+    }}
+    struct timeval tv;
+    tv.tv_sec = (time_t)(ms / 1000);
+    tv.tv_usec = (suseconds_t)((ms % 1000) * 1000);
+    if (setsockopt((int)r->fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv) != 0 ||
+        setsockopt((int)r->fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv) != 0) {{
+        *err = err_text("待ち時間を決められません");
+        return 0;
+    }}
+    return 1;
+}}
+
+int32_t jw_listener_accept(void *h, void **out, WStr **err, const WSite *at) {{
+    WRes *r = res_get((uint64_t)(uintptr_t)h, RES_LISTENER, at);
+    int fd;
+    do {{
+        fd = res_fail("accept") ? -1 : accept((int)r->fd, NULL, NULL);
+    }} while (fd < 0 && errno == EINTR && !res_fail("accept"));
+    if (fd < 0) {{
+        *err = err_text("接続を受けられません");
+        return 0;
+    }}
+    sock_quiet(fd);
+    uint64_t tok = res_new(RES_TCP, NULL, fd);
+    if (!tok) {{
+        close(fd);
+        *err = err_text("開いている資源が多すぎます");
+        return 0;
+    }}
+    *out = (void *)(uintptr_t)tok;
+    return 1;
+}}
+
+// 待ち受けている番号（listen で 0 を渡したときに OS が選んだもの）
+int64_t jw_listener_port(void *h, const WSite *at) {{
+    WRes *r = res_get((uint64_t)(uintptr_t)h, RES_LISTENER, at);
+    struct sockaddr_storage ss;
+    socklen_t n = sizeof ss;
+    if (getsockname((int)r->fd, (struct sockaddr *)&ss, &n) != 0) return -1;
+    if (ss.ss_family == AF_INET) return ntohs(((struct sockaddr_in *)&ss)->sin_port);
+    if (ss.ss_family == AF_INET6) return ntohs(((struct sockaddr_in6 *)&ss)->sin6_port);
+    return -1;
+}}
+#endif
+
+// ---------------------------------------------------------------- ディレクトリ（std.fs）
+
+#ifdef _WIN32
+#include <io.h>
+#include <direct.h>
+__declspec(dllimport) int __stdcall WideCharToMultiByte(unsigned, unsigned long, const wchar_t *, int, char *, int, const char *, int *);
+#else
+#include <dirent.h>
+#include <sys/stat.h>
+#endif
+
+static int path_ok(WStr *path, WStr **err) {{
+    if (memchr(path->data, 0, (size_t)path->len)) {{
+        *err = message("パスに NUL 文字があります: ", path);
+        return 0;
+    }}
+    return 1;
+}}
+
+// あるか（ファイルでもディレクトリでも）
+int32_t jw_fs_exists(WStr *path) {{
+    if (memchr(path->data, 0, (size_t)path->len)) return 0;
+    char *cp = c_str(path);
+#ifdef _WIN32
+    wchar_t *w = to_wide(cp);
+    int ok = _waccess(w, 0) == 0;
+    free(w);
+#else
+    struct stat st;
+    int ok = stat(cp, &st) == 0;
+#endif
+    free(cp);
+    return ok;
+}}
+
+static int name_cmp(const void *a, const void *b) {{ return jw_str_cmp(*(WStr *const *)a, *(WStr *const *)b); }}
+
+// 中の名前のリスト（`.` と `..` は除き、名前の順に並べる）
+int32_t jw_fs_list(WStr *path, WList *out, WStr **err) {{
+    if (!path_ok(path, err)) return 0;
+    char *cp = c_str(path);
+    int ok = 1;
+#ifdef _WIN32
+    WSb *pat = jw_sb_new();
+    jw_sb_push(pat, cp, (int64_t)strlen(cp));
+    jw_sb_push(pat, "\\\\*", 2);
+    WStr *ps = jw_sb_finish(pat);
+    char *pc = c_str(ps);
+    jw_str_release(ps);
+    wchar_t *w = to_wide(pc);
+    free(pc);
+    struct _wfinddata64_t fd;
+    intptr_t h = _wfindfirst64(w, &fd);
+    free(w);
+    if (h == -1) {{
+        ok = 0;
+    }} else {{
+        do {{
+            if (wcscmp(fd.name, L".") == 0 || wcscmp(fd.name, L"..") == 0) continue;
+            int n = WideCharToMultiByte(65001, 0, fd.name, -1, NULL, 0, NULL, NULL);
+            char *u = jw_checked_malloc((size_t)(n > 0 ? n : 1));
+            if (n <= 0) u[0] = 0;
+            else WideCharToMultiByte(65001, 0, fd.name, -1, u, n, NULL, NULL);
+            push_str(out, jw_str_new(u, (int64_t)strlen(u)));
+            free(u);
+        }} while (_wfindnext64(h, &fd) == 0);
+        _findclose(h);
+    }}
+#else
+    DIR *d = res_fail("list") ? NULL : opendir(cp);
+    if (!d) {{
+        ok = 0;
+    }} else {{
+        struct dirent *e;
+        while ((e = readdir(d)) != NULL) {{
+            if (strcmp(e->d_name, ".") == 0 || strcmp(e->d_name, "..") == 0) continue;
+            int64_t n = (int64_t)strlen(e->d_name);
+            // UTF-8 でない名前は str にできないので、読めないとする
+            if (!valid_utf8((const unsigned char *)e->d_name, n)) {{ ok = 0; break; }}
+            push_str(out, jw_str_new(e->d_name, n));
+        }}
+        closedir(d);
+    }}
+#endif
+    free(cp);
+    if (!ok) {{
+        for (int64_t i = 0; i < out->len; i++) jw_str_release(((WStr **)out->data)[i]);
+        if (out->data) jw_list_free(out, sizeof(WStr *), NULL);
+        *err = message("ディレクトリを読めません: ", path);
+        return 0;
+    }}
+    if (out->len > 1) qsort(out->data, (size_t)out->len, sizeof(WStr *), name_cmp);
+    return 1;
+}}
+
+int32_t jw_fs_make_dir(WStr *path, WStr **err) {{
+    if (!path_ok(path, err)) return 0;
+    char *cp = c_str(path);
+#ifdef _WIN32
+    wchar_t *w = to_wide(cp);
+    int ok = !res_fail("make_dir") && _wmkdir(w) == 0;
+    free(w);
+#else
+    int ok = !res_fail("make_dir") && mkdir(cp, 0777) == 0;
+#endif
+    free(cp);
+    if (!ok) *err = message("ディレクトリを作れません: ", path);
+    return ok;
+}}
+
+// ファイルか、空のディレクトリを消す
+int32_t jw_fs_remove(WStr *path, WStr **err) {{
+    if (!path_ok(path, err)) return 0;
+    char *cp = c_str(path);
+#ifdef _WIN32
+    wchar_t *w = to_wide(cp);
+    int ok = !res_fail("remove") && (_wremove(w) == 0 || _wrmdir(w) == 0);
+    free(w);
+#else
+    int ok = !res_fail("remove") && remove(cp) == 0;
+#endif
+    free(cp);
+    if (!ok) *err = message("消せません: ", path);
     return ok;
 }}
 

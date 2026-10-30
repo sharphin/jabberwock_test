@@ -42,7 +42,12 @@ fn bool has(ref str[] xs, str x) {
 fn bool is_builtin(str n) {
     n == "print" || n == "eprint" || n == "drop" || n == "assert" || n == "read_line" || n == "args" || n == "spawn"
         || n == "chan" || n == "exit" || n == "read_file" || n == "write_file" || n == "run_command" || n == "chr"
+        || n == "__fs_open" || n == "__res_close" || n == "__fs_exists" || n == "__fs_list" || n == "__fs_make_dir" || n == "__fs_remove"
+        || n == "__net_connect" || n == "__net_listen"
 }
+
+/// コンパイラが知っている資源の型（`resource` で書けるのはこれだけ）
+fn bool known_resource(str n) { n == "std:fs.File" || n == "std:net.TcpStream" || n == "std:net.TcpListener" }
 
 /// 最後の `.` の位置（なければ -1）
 fn i64 last_dot(str s) {
@@ -548,6 +553,8 @@ pub struct Checker {
     // 引数にその場で書いたクロージャの位置
     i64[] borrow_spans;
     Info info;
+    // 資源の型（`std:fs.File`）
+    str[] resources;
 
     // ------------------------------------------------ 表を引く
 
@@ -693,6 +700,7 @@ pub struct Checker {
                         .at(t.span, "今使える数の型は整数（i8〜i64、u8〜u64、usize）と f64 だけです"));
                 }
                 if tp_has(n) { return Ok(ty.Ty.Param(n)); }
+                if has(resources, n) { return Ok(ty.Ty.Res(n)); }
                 if is_iface(n) {
                     return Err(diag.make("interface `{n}` は own か ref を通して使います")
                         .at(t.span, "`own {n}` か `ref {n}` と書いてください")
@@ -759,6 +767,7 @@ pub struct Checker {
         if k == "Fn" { return Err("関数の値は、ほかのスレッドへは渡せません"); }
         if k == "Param" { return Err("型の引数 `{ty.name_of(t)}` は ref かもしれないので、ほかのスレッドへは渡せません"); }
         if k == "Iface" { return Err("interface `{ty.name_of(t)}` の中身は分からないので、ほかのスレッドへは渡せません"); }
+        if k == "Res" { return Err("資源 `{ty.show(t)}` は、ほかのスレッドへは渡せません（作ったスレッドで使う）"); }
         if k == "Own" || k == "Array" || k == "List" || k == "Task" {
             let x = ty.inner(t);
             return sendable(x, seen);
@@ -2486,6 +2495,47 @@ pub struct Checker {
         Ok(ty.cl(r))
     }
 
+    /// 資源のメソッド（今は std.fs の File だけ）。外の状態を変えるので、どれも書き換えてよい持ち主から呼ぶ
+    fn mut Result<ty.Ty, diag.Diag> res_method(ref ast.Expr recv, ref ty.Ty rt, ref ty.Ty r, str name, ref ast.Expr[] argv, i64 span) {
+        let ty.Ty[] mut params = [];
+        let mut ret = ty.Ty.Unit;
+        let n = ty.name_of(r);
+        if n == "std:net.TcpListener" {
+            if name == "port" {
+                if argv.len() > 0 { return Err(arity_error(name, 0, argv.len(), span)); }
+                return Ok(ty.i64t());
+            }
+            if name != "accept" {
+                return Err(diag.make("`{ty.show(r)}` にメソッド `{name}` はありません").at(span, "`accept()`・`port()` です"));
+            }
+            if argv.len() > 0 { return Err(arity_error(name, 0, argv.len(), span)); }
+            require_mut(recv, rt, span, "資源を `{name}` で使おうとした")?;
+            return Ok(ty.Ty.Enum("Result", own [ty.Ty.Res("std:net.TcpStream"), ty.Ty.Str]));
+        }
+        if n == "std:net.TcpStream" && name == "set_timeout" {
+            params.push(ty.i64t());
+        } else if n == "std:net.TcpStream" && name == "read_text" {
+            return Err(diag.make("`{ty.show(r)}` にメソッド `{name}` はありません").at(span, "`read(n)`・`write(bytes)`・`write_text(s)`・`set_timeout(ms)` です"));
+        } else if name == "read" {
+            params.push(ty.i64t());
+            ret = ty.Ty.List(own ty.Ty.Int("u8"));
+        } else if name == "read_text" {
+            ret = ty.Ty.Str;
+        } else if name == "write" {
+            params.push(ty.Ty.List(own ty.Ty.Int("u8")));
+        } else if name == "write_text" {
+            params.push(ty.Ty.Str);
+        } else {
+            return Err(diag.make("`{ty.show(r)}` にメソッド `{name}` はありません")
+                .at(span, "`read(n)`・`read_text()`・`write(bytes)`・`write_text(s)` です")
+                .with_note("閉じるのは `fs.close(f)`（結果を受け取る）。何もしなければ、持ち主がいなくなったところで黙って閉じる"));
+        }
+        if argv.len() != params.len() { return Err(arity_error(name, params.len(), argv.len(), span)); }
+        require_mut(recv, rt, span, "資源を `{name}` で使おうとした")?;
+        for (i, a) in argv { expect(a, params[i])?; }
+        Ok(ty.Ty.Enum("Result", own [ret, ty.Ty.Str]))
+    }
+
     fn mut Result<ty.Ty, diag.Diag> chan_method(ref ty.Ty x, str name, ref ast.Expr[] argv, i64 span) {
         let ty.Ty[] mut params = [];
         let mut ret = ty.Ty.Unit;
@@ -2717,6 +2767,45 @@ pub struct Checker {
     }
 
     fn mut Result<ty.Ty, diag.Diag> call(str name, ref ast.Expr[] argv, i64 span, ref Hint hint) {
+        if name == "__res_close" || name == "__net_connect" || name == "__net_listen" {
+            // 標準ライブラリの中だけで使う（資源を作る・閉じる内部の操作）
+            let home = if name == "__res_close" { cur_mod.starts_with("std:") } else { cur_mod == "std:net" };
+            if !home {
+                return Err(diag.make("`{name}` は標準ライブラリの中だけで使えます").at(span, "std.fs・std.net の関数を使ってください"));
+            }
+            if name == "__res_close" {
+                if argv.len() != 1 { return Err(arity_error(name, 1, argv.len(), span)); }
+                let t = value(argv[0])?;
+                if !ty.is(t, "Res") { return Err(mismatch(ty.Ty.Res("std:fs.File"), t, argv[0].span)); }
+                return Ok(ty.Ty.Enum("Result", own [ty.Ty.Unit, ty.Ty.Str]));
+            }
+            if argv.len() != 2 { return Err(arity_error(name, 2, argv.len(), span)); }
+            expect(argv[0], ty.Ty.Str)?;
+            expect(argv[1], ty.i64t())?;
+            let rn = if name == "__net_connect" { "std:net.TcpStream" } else { "std:net.TcpListener" };
+            return Ok(ty.Ty.Enum("Result", own [ty.Ty.Res(rn), ty.Ty.Str]));
+        }
+        if name == "__fs_open" || name == "__fs_exists" || name == "__fs_list" || name == "__fs_make_dir" || name == "__fs_remove" {
+            // 標準ライブラリ std.fs の中だけで使う（資源を作る内部の操作）
+            if cur_mod != "std:fs" {
+                return Err(diag.make("`{name}` は標準ライブラリの中だけで使えます").at(span, "std.fs の関数を使ってください"));
+            }
+            let file = ty.Ty.Res("std:fs.File");
+            let ty.Ty[] mut params = [];
+            let mut ret = ty.Ty.Unit;
+            if name == "__fs_open" {
+                params.push(ty.Ty.Str);
+                params.push(ty.i64t());
+                ret = ty.cl(file);
+            } else {
+                params.push(ty.Ty.Str);
+                if name == "__fs_list" { ret = ty.Ty.List(own ty.Ty.Str); }
+            }
+            if argv.len() != params.len() { return Err(arity_error(name, params.len(), argv.len(), span)); }
+            for (i, a) in argv { expect(a, params[i])?; }
+            if name == "__fs_exists" { return Ok(ty.Ty.Bool); }
+            return Ok(ty.Ty.Enum("Result", own [ret, ty.Ty.Str]));
+        }
         if name == "print" || name == "eprint" {
             for a in argv { value(a)?; }
             return Ok(ty.Ty.Unit);
@@ -2885,6 +2974,7 @@ pub struct Checker {
             let tr = ty.inner(inner);
             return task_method(tr, name, argv, span);
         }
+        if k == "Res" { return res_method(recv, rt, inner, name, argv, span); }
         if k == "Chan" {
             let cx = ty.inner(inner);
             return chan_method(cx, name, argv, span);
@@ -3209,7 +3299,13 @@ pub fn Result<Checker, diag.Diag> check(ref ast.Program prog) {
         cur_ret: ty.Ty.Unit, cur_tps: [], b_names: [], b_vals: [], cur_fields: [], lstack: [], warns: [],
         mods: prog.modules.map((x) -> x), cnames: prog.consts.map((x) -> x), cur_mod: "",
         has_pending: false, pending: ty.tmap(), borrow_spans: prog.borrow_lambdas.map((x) -> x), info: new_info(prog.nodes),
+        resources: prog.resources.map((x) -> x),
     };
+    for (i, r) in prog.resources {
+        if !known_resource(r) {
+            return Err(diag.make("資源の型 `{r}` はコンパイラが知りません").at(prog.resource_spans[i], "使えるのは std.fs の File と std.net の TcpStream・TcpListener だけ"));
+        }
+    }
     for s in prog.structs {
         if c.is_struct(s.name) {
             return Err(diag.make("構造体 `{s.name}` が二重に定義されています").at(s.span, "ここで再定義されている"));
