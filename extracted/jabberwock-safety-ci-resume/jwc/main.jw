@@ -250,7 +250,10 @@ fn build(ref str[] a, ref packages.Map package) {
     let windows = platform.starts_with("windows");
     if windows && !out.ends_with(".exe") { out += ".exe"; }
     let str[] mut flags = ["-O2", llp, rt, "-o", out, "-Wno-override-module"];
-    if ll.contains("call i32 @jw_browser_open(") {
+    // 命令の形（` = call`）で探す。探す字面は 2 つに分けて組み立てる
+    // （jwc 自身のように、文字列の定数に同じ字面があるだけのプログラムを取り違えない）
+    let opens = " = call i32 @jw_" + "browser_open(";
+    if ll.contains(opens) {
         // std.browser: 実行時ライブラリのエンジンとの境目をつけ、エンジンの実装をリンクする
         if links.len() == 0 {
             eprint("error: std.browser を使うプログラムには、エンジンの実装が要ります");

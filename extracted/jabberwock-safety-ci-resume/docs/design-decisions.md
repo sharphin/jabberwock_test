@@ -751,3 +751,4 @@ let x = pick(true, 1, 2);
   エンジンの実装は alice の能力の仕組みができるまで `jwc build --link` で渡す。std.browser を使うプログラムだけ実行時ライブラリを JW_BROWSER つきで作るので、
   ほかのプログラムはエンジンなしでリンクできる。イベントの文字列は実行時ライブラリで写し、UTF-8 でなければ Failed にする（jabberwock の文字列の決まりを守る）。
   公開の形（Engine・Event・Config・Info・KeyCode）は試作の app/engine.jw に合わせた（tab_new だけ Result にした）。
+  std.browser を使うかは、生成した LLVM の中の jw_browser_open を呼ぶ命令で見分ける（探す字面は組み立てる。jwc 自身の文字列の定数と取り違えないため。run 32 の自己コンパイルの失敗から）。
