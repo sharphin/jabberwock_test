@@ -203,6 +203,11 @@ jobs:
               for compiler, counts in judgement['summary']['by_compiler'].items():
                   out.write(f"- {compiler}: {counts['accepted']}/{counts['required']} goals accepted\n")
           PY
+      - name: Formal runner aggregation regressions (replayed run, tamper cases)
+        if: success() || failure()
+        timeout-minutes: 10
+        working-directory: extracted/jabberwock-safety-ci-resume/scripts
+        run: python -m unittest -v test_formal_tool
       - name: Upload specification judgement evidence
         if: always()
         uses: actions/upload-artifact@v4
