@@ -707,3 +707,7 @@ let x = pick(true, 1, 2);
   01 は Lean の検査器（`jwc-elision-certificate`）を probe に入れた。定理の検査ではなくプログラムごとの IR の確かめ直しなので、
   「実用の probe は形式の道具を動かさない」の例外とする。Rust 版の 01 は検査器が jwc の IR しか読まないので満たさない。
   10 は spec.md の節ごとに既存のケースから正しい例と拒否される例を割り当てた表（`tests/spec_coverage.json`）。正解は Rust 版のインタプリタ。
+- 証明の義務 `jwc:checks:jwc/analyze.jw` に、消した検査の検査器をつないだ（2026-10-30、`scripts/elision_bridge.py`、verifier 名 `elision-certificate-v1`）。
+  refinement の判定は、今のソースから jwc を作り直して（Rust 版で。Rust 版の正しさは前提）検査器にかけ直し、evidence と同じときだけ
+  `verified_subset` を記録する。プログラムごとの確かめなので、全プログラムについての analyze の正しさではない。義務は REFINEMENT_NOT_PROVEN のまま。
+  1 回の再生に数分かかる（jwc の作り直しが大半）。formal_tool に evidence を渡すと段ごとに再生するので、`--stage-timeout` を大きくする。

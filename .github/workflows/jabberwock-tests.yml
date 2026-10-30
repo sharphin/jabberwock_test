@@ -296,12 +296,31 @@ jobs:
           with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as out:
               out.write(f"Elided checks: **{d['status']}** ({d['checked']} programs checked, {d['skipped']} did not reach IR)\n")
           PY
+      - name: Bridge the checker into the refinement verifier (subset only, stays NOT_PROVEN)
+        timeout-minutes: 30
+        shell: bash
+        env:
+          JW_CLANG: /usr/bin/clang
+        run: |
+          set -uo pipefail
+          python3 scripts/elision_bridge.py --rust target/release/jabberwock --output target/elision-check/bridge-evidence.json
+          python3 scripts/refinement_transition.py --evidence target/elision-check/bridge-evidence.json --output target/elision-check/refinement.json
+          code=$?
+          python3 - "$code" <<'PY'
+          import json, os, sys
+          d = json.load(open('target/elision-check/refinement.json'))
+          f = next(x for x in d['findings'] if x.get('id', x.get('obligation_id')) == 'jwc:checks:jwc/analyze.jw')
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as out:
+              out.write(f"Refinement: **{d['status']}** ({d['proved']}/{d['required']}); analyze: {f['status']}, subset {f.get('verified_subset')} ({f.get('programs_verified')} programs)\n")
+          assert sys.argv[1] == '1' and d['status'] == 'NOT_PROVEN' and d['invalid'] == 0, (sys.argv[1], d['status'], d['invalid'])
+          assert f['status'] == 'REFINEMENT_NOT_PROVEN' and f.get('verified_subset'), f
+          PY
       - name: Seal elision evidence (SHA-256 manifest)
         if: always()
         shell: bash
         run: |
           set -euo pipefail
-          find target/elision-check/summary.json -type f ! -name '*.sha256' -print0 | sort -z | xargs -0 -r sha256sum > target/elision-check/evidence.sha256
+          find target/elision-check/summary.json target/elision-check/bridge-evidence.json target/elision-check/refinement.json -type f ! -name '*.sha256' -print0 | sort -z | xargs -0 -r sha256sum > target/elision-check/evidence.sha256
           wc -l target/elision-check/evidence.sha256
       - name: Attest elision evidence manifest (Sigstore, GitHub OIDC)
         if: always()
@@ -315,5 +334,7 @@ jobs:
           name: elision-certificate-evidence
           path: |
             extracted/jabberwock-safety-ci-resume/target/elision-check/summary.json
+            extracted/jabberwock-safety-ci-resume/target/elision-check/bridge-evidence.json
+            extracted/jabberwock-safety-ci-resume/target/elision-check/refinement.json
             extracted/jabberwock-safety-ci-resume/target/elision-check/evidence.sha256
           if-no-files-found: warn

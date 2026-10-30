@@ -93,5 +93,36 @@ class ProofTransitionTests(unittest.TestCase):
                 self.assertEqual(transition.main(["--output", str(dest)]), 2)
 
 
+class ElisionBridgeTests(unittest.TestCase):
+    """消した検査の検査器（elision-certificate-v1）は部分の確かめ。再生と食い違えば INVALID、通っても証明済みにしない"""
+    def setUp(self):
+        import elision_bridge
+        self.bridge = elision_bridge
+        self.row = {"id": elision_bridge.OBLIGATION, "source_sha256": "abc"}
+        self.summary = {"subject": "jwc", "status": "VERIFIED", "checked": 2,
+                        "results": [{"id": "jwc/main.jw", "compiler": "jwc", "status": "pass"}]}
+        self.record = {"obligation_id": self.row["id"], "source_sha256": "abc",
+                       "required_claims": sorted(transition.REQUIRED), "verifier": elision_bridge.VERIFIER,
+                       "rust_compiler": sys.executable, "summary": copy.deepcopy(self.summary)}
+
+    def test_unrelated_obligation_is_invalid(self):
+        row = {"id": "jwc:checks:jwc/main.jw", "source_sha256": "abc"}
+        record = dict(self.record, obligation_id=row["id"])
+        self.assertEqual(self.bridge.check(row, record, run=lambda rust: self.summary)["status"], "INVALID_EVIDENCE")
+
+    def test_replay_mismatch_is_invalid(self):
+        replayed = dict(self.summary, checked=3)
+        self.assertEqual(self.bridge.check(self.row, self.record, run=lambda rust: replayed)["status"],
+                         "INVALID_EVIDENCE")
+
+    def test_matching_replay_is_a_subset_never_proven(self):
+        result = self.bridge.check(self.row, self.record, run=lambda rust: copy.deepcopy(self.summary))
+        self.assertEqual(result["status"], "REFINEMENT_NOT_PROVEN")
+        self.assertEqual(result["verified_subset"], "jwc.analyze:elided-generation-checks:corpus")
+        with mock.patch.object(self.bridge, "replay", return_value=copy.deepcopy(self.summary)):
+            self.assertEqual(transition.status_for(self.row, {self.row["id"]: self.record})["status"],
+                             "REFINEMENT_NOT_PROVEN")
+
+
 if __name__ == "__main__":
     unittest.main()

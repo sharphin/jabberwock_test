@@ -99,6 +99,10 @@ def status_for(obligation: dict, proofs: dict, verifier_registry=None) -> dict:
             "lean_kernel": "KERNEL_CHECKED",
             "preprocessing_sha256": current["preprocessed_output_sha256"],
         }
+    if checker == "elision-certificate-v1" and verifier_registry is None:
+        # 消した検査の検査器（プログラムごとの確かめ）。今のソースから作り直して再生する。部分なので証明済みにはしない
+        from elision_bridge import check as check_elision_bridge
+        return check_elision_bridge(obligation, record)
     if checker == "lean-kernel-v1" and verifier_registry is None:
         manifest = record.get("lean_manifest")
         if not isinstance(manifest, dict):
