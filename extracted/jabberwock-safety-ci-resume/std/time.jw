@@ -1,0 +1,22 @@
+// 標準ライブラリ std.time: 単調な時計と待機。`use std.time;` と書いて使う
+//   let t = time.now();
+//   time.sleep(100);
+//   print(t.elapsed_ms() >= 100);
+// 時計は壁時計の修正に影響されない（始まりの位置は決めないので、2 つの Instant の差だけに意味がある）。日付・時刻はまだない。
+
+/// 時計の読み（ナノ秒）
+pub struct Instant {
+    i64 ns;
+
+    /// これから今までのナノ秒
+    fn i64 elapsed_ns() { __time_now_ns() - ns }
+
+    /// これから今までのミリ秒（切り捨て）
+    fn i64 elapsed_ms() { (__time_now_ns() - ns) / 1000000 }
+}
+
+/// 今の読み
+pub fn Instant now() { Instant { ns: __time_now_ns() } }
+
+/// ms ミリ秒待つ（負なら実行時エラー）。待つ前に print の出力を書き出す
+pub fn sleep(i64 ms) { __time_sleep_ms(ms); }

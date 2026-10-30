@@ -43,7 +43,7 @@ fn bool is_builtin(str n) {
     n == "print" || n == "eprint" || n == "drop" || n == "assert" || n == "read_line" || n == "args" || n == "spawn"
         || n == "chan" || n == "exit" || n == "read_file" || n == "write_file" || n == "run_command" || n == "chr"
         || n == "__fs_open" || n == "__res_close" || n == "__fs_exists" || n == "__fs_list" || n == "__fs_make_dir" || n == "__fs_remove"
-        || n == "__net_connect" || n == "__net_listen"
+        || n == "__net_connect" || n == "__net_listen" || n == "__env_get" || n == "__time_now_ns" || n == "__time_sleep_ms"
 }
 
 /// コンパイラが知っている資源の型（`resource` で書けるのはこれだけ）
@@ -2767,6 +2767,24 @@ pub struct Checker {
     }
 
     fn mut Result<ty.Ty, diag.Diag> call(str name, ref ast.Expr[] argv, i64 span, ref Hint hint) {
+        if name == "__env_get" || name == "__time_now_ns" || name == "__time_sleep_ms" {
+            // 標準ライブラリ std.env・std.time の中だけで使う
+            let home = if name == "__env_get" { "std:env" } else { "std:time" };
+            if cur_mod != home {
+                return Err(diag.make("`{name}` は標準ライブラリの中だけで使えます").at(span, "std.env・std.time の関数を使ってください"));
+            }
+            if name == "__time_now_ns" {
+                if argv.len() > 0 { return Err(arity_error(name, 0, argv.len(), span)); }
+                return Ok(ty.i64t());
+            }
+            if argv.len() != 1 { return Err(arity_error(name, 1, argv.len(), span)); }
+            if name == "__env_get" {
+                expect(argv[0], ty.Ty.Str)?;
+                return Ok(ty.opt(ty.Ty.Str));
+            }
+            expect(argv[0], ty.i64t())?;
+            return Ok(ty.Ty.Unit);
+        }
         if name == "__res_close" || name == "__net_connect" || name == "__net_listen" {
             // 標準ライブラリの中だけで使う（資源を作る・閉じる内部の操作）
             let home = if name == "__res_close" { cur_mod.starts_with("std:") } else { cur_mod == "std:net" };

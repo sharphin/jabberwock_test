@@ -86,6 +86,9 @@ fn main() {
 | `std.math` | `gcd(a, b)`・`lcm(a, b)`・`pow(base, exp)`（exp は 0 以上）・`clamp(x, lo, hi)`（どれも i64）、`pi()`・`floor(x)`・`ceil(x)`・`round(x)`（f64。round はちょうど半分なら 0 から遠い方） |
 | `std.text` | `pad_left(s, width, fill)`・`pad_right(s, width, fill)`（fill は 1 文字）・`reverse(s)`・`count(s, sub)`（重ならずに数える。sub が空なら実行時エラー）・`is_digits(s)`（空でなく全部 0〜9）・`from_utf8(ref bytes)`（`Option<str>`。正しい UTF-8 でなければ None） |
 | `std.fs` | `open(path)`・`create(path)`・`append(path)`・`close(f)` と資源の型 `File`、`exists(path)`・`list_dir(path)`・`make_dir(path)`・`remove(path)`（[1.3](#13-資源と-stdfsjwc-だけ)） |
+| `std.env` | `get(name)`（`Option<str>`）（[1.6](#16-stdenvstdtimestdjsonjwc-だけ)） |
+| `std.time` | `now()`・`sleep(ms)` と `Instant`（[1.6](#16-stdenvstdtimestdjsonjwc-だけ)） |
+| `std.json` | `parse(s)`・`stringify(ref v)`・`quote(s)` と `Json`（[1.6](#16-stdenvstdtimestdjsonjwc-だけ)） |
 | `std.http` | `get(url)`・`post(url, content_type, body)` と `Response`（[1.5](#15-stdhttpjwc-だけ)） |
 | `std.net` | `connect(host, port)`・`listen(host, port)`・`close(s)`・`stop(l)` と資源の型 `TcpStream`・`TcpListener`（[1.4](#14-stdnetjwc-だけ)） |
 
@@ -155,6 +158,30 @@ let p = http.post("http://127.0.0.1:8080/p", "application/json", "{{}}")?;
   リダイレクトはたどらない。状態の番号が 404 などでも Ok（`status` を見る）。
 - `Response`: `status`（`i64`）・`headers`（`str[str]`。名前は小文字。同じ名前が二つ以上なら `", "` でつなぐ）・`body`（`u8[]`）・`text()`（本文を `str` に。UTF-8 でなければ Err）。
 - URL に空白・改行、content_type に改行があれば Err（ヘッダーを足されないように）。
+
+### 1.6 std.env・std.time・std.json（jwc だけ）
+
+```
+use std.env;
+use std.time;
+use std.json;
+print(env.get("HOME"));                         // Some(/home/...)。なければ None
+let t = time.now();                             // time.Instant
+time.sleep(100);                                // ミリ秒待つ
+print(t.elapsed_ms());                          // 100 くらい
+let v = json.parse("{{\"a\": [1, \"x\"]}}")?;     // json.Json
+print(v.get("a").at(1).as_str(), json.stringify(ref v));   // Some(x) {"a":[1,"x"]}
+```
+
+- `env.get(name)`: 環境変数（名前が空・`=` や NUL を含む・値が UTF-8 でないなら None）。設定する関数はまだない。
+- `time.now()`: 単調な時計の読み（`Instant { ns }`）。壁時計の修正に影響されず、差だけに意味がある。`t.elapsed_ns()`・`t.elapsed_ms()`。
+  `time.sleep(ms)`（負なら実行時エラー。待つ前に print の出力を書き出す）。日付・時刻はまだない。
+- `Json` は enum: `Null`・`Bool(b)`・`Num(n)`（いつも f64）・`Str(s)`・`Arr(own Json[] items)`・`Obj(own Json[str] fields)`（キーは書いた順。同じキーは後ろの値）。
+  メソッド: `get(key)`・`at(i)`（写しを返す。なければ Null）・`len()`・`keys()`・`is_null()`・`as_bool()`・`as_num()`・`as_str()`（`Option`）・`clone()`。
+  中を借りて読むなら `match ref v { case Obj(fields) -> ... }`。
+- `json.parse(s)`（`Result<Json, str>`）: RFC 8259 のとおり（前後の空白はよい。余分な文字・先頭の 0・制御文字・対になっていないサロゲートは Err）。
+  入れ子は 512 段まで。Err の文には何文字目かが入る。
+- `json.stringify(ref v)`: 空白なしで書く。整数の値（2^53 未満）は `3`、ほかは小数の表示。NaN・inf は `null`。`json.quote(s)` は文字列 1 つ。
 
 ## 2. 字句
 

@@ -1879,6 +1879,31 @@ struct FnGen {
             let ok = b.val("call i32 @jw_tcp_set_timeout(ptr " + vals[0].v + ", i64 " + vals[1].v + ", ptr " + err + ", ptr " + site + ")");
             return result_of(m, want, ok, err, "unit", "");
         }
+        if name == "__env_get" {
+            let out = b.alloca("ptr");
+            let ok = b.val("call i32 @jw_env_get(ptr " + vals[0].v + ", ptr " + out + ")");
+            release(vals, all);
+            let none = b.val("icmp eq i32 " + ok + ", 0");
+            let lt = m.lt(want)?;
+            let res = b.alloca(lt);
+            let some = b.if_true(none);
+            let nv = make_enum(m, want, "None", [])?;
+            b.op("store " + lt + " " + nv + ", ptr " + res);
+            let done = b.l();
+            b.br(done);
+            b.label(some);
+            let sv = make_enum(m, want, "Some", [llvm.vt(b.val("load ptr, ptr " + out), ty.Ty.Str)])?;
+            b.op("store " + lt + " " + sv + ", ptr " + res);
+            b.br(done);
+            b.label(done);
+            return Ok(llvm.vt(b.val("load " + lt + ", ptr " + res), ty.cl(want)));
+        }
+        if name == "__time_now_ns" { return Ok(llvm.vt(b.val("call i64 @jw_time_now_ns()"), ty.i64t())); }
+        if name == "__time_sleep_ms" {
+            let site = m.site(span, "");
+            b.op("call void @jw_time_sleep_ms(i64 " + vals[0].v + ", ptr " + site + ")");
+            return Ok(llvm.vt("0", ty.Ty.Unit));
+        }
         if name == "__fs_exists" {
             let ok = b.val("call i32 @jw_fs_exists(ptr " + vals[0].v + ")");
             release(vals, all);

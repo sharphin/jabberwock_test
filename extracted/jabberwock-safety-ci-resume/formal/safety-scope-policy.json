@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "specifications": {
-    "docs/spec.md": "3333ee8ff50cccba4a1134857b91ba16e0b175671411b18d09d0f36c6cb1571a",
+    "docs/spec.md": "49322a87afde704c70a37d13d880ad3325abd2b1f346433bf34b2f2debb735e4",
     "docs/language-safety-contract.md": "e394e2734c8b2d27f71cfe14efce569556e6b531d4b8afffd9d91f765f7b4c07"
   },
   "conditions": [

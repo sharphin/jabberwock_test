@@ -36,7 +36,10 @@ const RES_DECLS = "declare i32 @jw_fs_open(ptr, i64, ptr, ptr)\n" +
     "declare i32 @jw_tcp_write_text(ptr, ptr, ptr, ptr)\n" +
     "declare i32 @jw_tcp_set_timeout(ptr, i64, ptr, ptr)\n" +
     "declare i32 @jw_listener_accept(ptr, ptr, ptr, ptr)\n" +
-    "declare i64 @jw_listener_port(ptr, ptr)\n";
+    "declare i64 @jw_listener_port(ptr, ptr)\n" +
+    "declare i32 @jw_env_get(ptr, ptr)\n" +
+    "declare i64 @jw_time_now_ns()\n" +
+    "declare void @jw_time_sleep_ms(i64, ptr)\n";
 
 const PRELUDE = "; jabberwock が書き出した LLVM IR\n" +
     "%ref = type {{ ptr, ptr, i64, ptr }}\n" +
@@ -475,7 +478,7 @@ pub struct Module {
     fn str output() {
         let body = code.join("");
         let res = if body.contains("@jw_res_") || body.contains("@jw_fs_") || body.contains("@jw_file_") || body.contains("@jw_net_")
-            || body.contains("@jw_tcp_") || body.contains("@jw_listener_") { RES_DECLS } else { "" };
+            || body.contains("@jw_tcp_") || body.contains("@jw_listener_") || body.contains("@jw_env_get(") || body.contains("@jw_time_") { RES_DECLS } else { "" };
         PRELUDE + res + types.join("") + "\n" + globals.join("") + "\n" + body + TBAA
     }
 
@@ -1432,7 +1435,7 @@ pub struct Module {
             if !ck.s_at.contains(sn) { return Err("構造体の定義がない"); }
             let si = ck.s_at[sn];
             let st = lt(t)?;
-            lit(b, ck.sdefs[si].name + " {{ ");
+            lit(b, ty.std_name(ck.sdefs[si].name) + " {{ ");
             for (i, f) in struct_fields(t)? {
                 let sep = if i > 0 { ", " } else { "" };
                 lit(b, sep + ck.sdefs[si].fields[i] + ": ");

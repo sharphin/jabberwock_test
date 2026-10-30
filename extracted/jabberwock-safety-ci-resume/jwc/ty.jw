@@ -359,6 +359,9 @@ fn str shows(ref Ty[] ts) {
     out.join(", ")
 }
 
+/// 標準ライブラリの名前（`std:json.Json`）は、使う側の書き方（`json.Json`）で見せる
+pub fn str std_name(str n) { if n.starts_with("std:") { n.slice(4, n.len()) } else { n } }
+
 pub fn str show(ref Ty t) {
     match ref t {
         case Int(x) -> x;
@@ -367,8 +370,8 @@ pub fn str show(ref Ty t) {
         case Str -> "str";
         case Unit -> "値なし";
         case Never -> "（終わらない）";
-        case Struct(n, xs) -> if xs.len() == 0 { n } else { n + "<" + shows(xs) + ">" };
-        case Enum(n, xs) -> if xs.len() == 0 { n } else { n + "<" + shows(xs) + ">" };
+        case Struct(n, xs) -> if xs.len() == 0 { std_name(n) } else { std_name(n) + "<" + shows(xs) + ">" };
+        case Enum(n, xs) -> if xs.len() == 0 { std_name(n) } else { std_name(n) + "<" + shows(xs) + ">" };
         case Param(n) -> n;
         case Iface(n) -> n;
         case Own(x) -> "own " + show(x);
@@ -378,7 +381,7 @@ pub fn str show(ref Ty t) {
         case Map(k, v) -> show(v) + "[" + show(k) + "]";
         case Task(x) -> "task<" + show(x) + ">";
         case Chan(x) -> "chan<" + show(x) + ">";
-        case Res(n) -> if n.starts_with("std:") { n.slice(4, n.len()) } else { n };
+        case Res(n) -> std_name(n);
         case Fn(ps, r) -> if is(r, "Unit") { "fn(" + shows(ps) + ")" } else { "fn " + show(r) + "(" + shows(ps) + ")" };
     }
 }

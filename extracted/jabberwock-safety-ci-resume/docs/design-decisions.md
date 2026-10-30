@@ -732,3 +732,9 @@ let x = pick(true, 1, 2);
   SIGPIPE で止まらないよう、送るときは MSG_NOSIGNAL（macOS は SO_NOSIGPIPE）を使う。
 - std.http（2026-10-30、オーナーの了承のうえ）: 設計では HTTP は初期版の外だったが、オーナーの希望で std.net の上に .jw だけで最小のクライアントを置いた（コンパイラ・実行時ライブラリは変えない）。
   Linux の TLS は設計で Unsupported なので https はまだ。バイト列を文字列にする組み込みがないので、std.text.from_utf8 を .jw で書いた（遅ければ組み込みにする）。
+- std.env・std.time・std.json（2026-10-30、オーナーの判断で入れた。軽量ブラウザの試作で要るため）: env と time は実行時ライブラリの小さな組み込み
+  （`__env_get` / `__time_now_ns` / `__time_sleep_ms`。それぞれ std.env・std.time の中だけで呼べる）。time は設計の std.time のうち単調時計と待機だけで、Duration・Deadline はまだ。
+  json は .jw だけ。借りて match したときに中を読めるよう、Arr と Obj の中身は own にした（own でない list は借りた match で受け取れないため）。
+  エラーや print で標準ライブラリの型を `std:json.Json` ではなく `json.Json` と見せるようにした（`ty.std_name`）。
+- std の節（spec.md 1.2〜1.6）の見直し（2026-10-30、オーナー了承）: `formal/safety-scope-policy.json` の spec.md のハッシュを今の版にした。std は安全性の条件（conditions）を変えていない。
+  `tests/spec_coverage.json` では 1.2〜1.6 を除外に入れた。std は jwc だけで、Rust 版を正解にして比べる表の仕組みに乗らないため。確かめるのは tests/jwc.rs の jwc_std_*。

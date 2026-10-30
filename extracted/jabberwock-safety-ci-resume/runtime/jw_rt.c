@@ -2698,6 +2698,84 @@ void jw_res_drop(void *h, const WSite *site) {
 
 void *jw_res_view(void *h) { return (void *)((uintptr_t)h | 1); }
 
+// ---------------------------------------------------------------- 環境変数・時計（std.env・std.time）
+
+#ifdef _WIN32
+__declspec(dllimport) int __stdcall QueryPerformanceCounter(int64_t *);
+__declspec(dllimport) int __stdcall QueryPerformanceFrequency(int64_t *);
+__declspec(dllimport) void __stdcall Sleep(unsigned long);
+__declspec(dllimport) int __stdcall WideCharToMultiByte(unsigned, unsigned long, const wchar_t *, int, char *, int, const char *, int *);
+wchar_t *_wgetenv(const wchar_t *);
+#else
+#include <time.h>
+#endif
+
+// 環境変数。あれば 1（UTF-8 でない値は、ないとみなす）
+int32_t jw_env_get(WStr *name, WStr **out) {
+    if (name->len == 0 || memchr(name->data, 0, (size_t)name->len) || memchr(name->data, '=', (size_t)name->len)) return 0;
+    char *cp = c_str(name);
+#ifdef _WIN32
+    wchar_t *w = to_wide(cp);
+    const wchar_t *v = _wgetenv(w);
+    free(w);
+    char *val = NULL;
+    if (v) {
+        int n = WideCharToMultiByte(65001, 0, v, -1, NULL, 0, NULL, NULL);
+        val = jw_checked_malloc((size_t)(n > 0 ? n : 1));
+        if (n <= 0) val[0] = 0;
+        else WideCharToMultiByte(65001, 0, v, -1, val, n, NULL, NULL);
+    }
+#else
+    const char *v = getenv(cp);
+    char *val = NULL;
+    if (v) {
+        val = jw_checked_malloc(strlen(v) + 1);
+        memcpy(val, v, strlen(v) + 1);
+    }
+#endif
+    free(cp);
+    if (!val) return 0;
+    int64_t n = (int64_t)strlen(val);
+    int ok = valid_utf8((const unsigned char *)val, n);
+    if (ok) *out = jw_str_new(val, n);
+    free(val);
+    return ok;
+}
+
+// 単調な時計（ナノ秒。始まりの位置は決めない。壁時計の修正に影響されない）
+int64_t jw_time_now_ns(void) {
+#ifdef _WIN32
+    int64_t c = 0, f = 1;
+    QueryPerformanceCounter(&c);
+    QueryPerformanceFrequency(&f);
+    return (int64_t)((double)c * 1e9 / (double)f);
+#else
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (int64_t)ts.tv_sec * 1000000000 + ts.tv_nsec;
+#endif
+}
+
+void jw_time_sleep_ms(int64_t ms, const WSite *at) {
+    if (ms < 0) {
+        begin_error("待つ時間が負です");
+        finish_error(at, "sleep(ms) の ms は 0 以上", NULL);
+    }
+    jw_flush();
+#ifdef _WIN32
+    while (ms > 0) {
+        unsigned long k = ms > 86400000 ? 86400000 : (unsigned long)ms;
+        Sleep(k);
+        ms -= k;
+    }
+#else
+    struct timespec ts;
+    ts.tv_sec = (time_t)(ms / 1000);
+    ts.tv_nsec = (long)((ms % 1000) * 1000000);
+    while (nanosleep(&ts, &ts) != 0) {}
+#endif
+}
+
 // ---------------------------------------------------------------- TCP（std.net）
 // 同期だけ。名前の解決は getaddrinfo。Windows はまだ（Winsock の初期化を含めて後で足す）
 
@@ -2934,7 +3012,6 @@ int64_t jw_listener_port(void *h, const WSite *at) {
 #ifdef _WIN32
 #include <io.h>
 #include <direct.h>
-__declspec(dllimport) int __stdcall WideCharToMultiByte(unsigned, unsigned long, const wchar_t *, int, char *, int, const char *, int *);
 #else
 #include <dirent.h>
 #include <sys/stat.h>

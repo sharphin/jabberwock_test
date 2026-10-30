@@ -678,6 +678,52 @@ fn Result<(), str> run() {
 fn main() { match run() { case Ok(u) -> print("ok"); case Err(e) -> print("err", e); } }
 "#;
 
+/// std.env・std.time・std.json
+#[test]
+fn jwc_std_env_time_json() {
+    if !have_clang() { return; }
+    let dir = std::env::temp_dir().join(format!("jw-jwc-json-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("main.jw");
+    std::fs::write(&path, JSON_SRC).unwrap();
+    let exe = dir.join("main");
+    let out = Command::new(jwc()).args(["build", "--clang", &native::clang(), "-o"]).arg(&exe).arg(&path).output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let got = Command::new(&exe).env("JW_TEST_X", "はい").env_remove("NO_SUCH_VAR_123").output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&got.stdout), "Some(はい) None None\ntrue true\nSome(上書き) Some(-125.0) Some(3.0) 5 [name, n, ok, o, a]\n{\"name\":\"上書き\",\"n\":-125,\"ok\":[true,false,null,3,0.1],\"o\":{},\"a\":[]}\ntrue true\nJSON が読めません（1 文字目）: 値がありません\nJSON が読めません（4 文字目）: 値がありません\nJSON が読めません（6 文字目）: キーのあとに `:` がありません\nJSON が読めません（2 文字目）: 値のあとに余分な文字があります\nJSON が読めません（3 文字目）: 小数点のあとに数字が必要です\nJSON が読めません（8 文字目）: 対になっていないサロゲートです\nJSON が読めません（5 文字目）: 値のあとに余分な文字があります\nJSON が読めません（4 文字目）: `true` のつもりの書き方が違います\nJSON が読めません（4 文字目）: 文字列の中に制御文字があります（\\n などと書きます）\nJSON が読めません（2 文字目）: 数の書き方が違います\nok [100000,0.002,null]\nJSON が読めません（513 文字目）: 入れ子が深すぎます\n\"a\\\"b\\\\c\\u0001\"\n");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+const JSON_SRC: &str = r#"use std.env;
+use std.time;
+use std.json;
+
+fn main() {
+    print(env.get("JW_TEST_X"), env.get(""), env.get("NO_SUCH_VAR_123"));
+    let t = time.now();
+    time.sleep(30);
+    print(t.elapsed_ms() >= 30, t.elapsed_ns() > 0);
+    match json.parse(" {{\"name\": \"太郎\\n\\u00e9\\ud83d\\ude00\", \"n\": -12.5e1, \"ok\": [true, false, null, 3, 0.1], \"o\": {{}}, \"a\": [], \"name\": \"上書き\"}} ") {
+        case Ok(v) -> {
+            print(v.get("name").as_str(), v.get("n").as_num(), v.get("ok").at(3).as_num(), v.get("ok").len(), v.keys());
+            print(json.stringify(ref v));
+            print(v.get("nai").is_null(), v.at(0).is_null());
+        }
+        case Err(e) -> print(e);
+    }
+    for s in ["", "[1,", "{{\"a\" 1}}", "01", "1.", "\"\\ud800\"", "[1] x", "tru", "\"a\nb\"", "-", "[1e5, 2E-3, 1e400]"] {
+        match json.parse(s) {
+            case Ok(v) -> print("ok", json.stringify(ref v));
+            case Err(e) -> print(e);
+        }
+    }
+    let mut deep = "";
+    for i in range(600) { deep += "["; }
+    match json.parse(deep) { case Ok(v) -> print("?"); case Err(e) -> print(e); }
+    print(json.quote("a\"b\\c" + chr(1)));
+}
+"#;
+
 /// `jwc build` で作った実行ファイルが、interp と同じものを出す
 #[test]
 fn jwc_build_makes_an_executable() {
