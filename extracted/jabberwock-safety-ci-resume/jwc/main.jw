@@ -5,7 +5,7 @@
 //         jwc --ir-raw / --ir <file.jw>  IR を出す（解析の前 / 後）
 //         jwc --ir-cert <file.jw>  解析のあとの IR を Lean の検査器が読む JSON で出す（jwc/ircert.jw）
 //         jwc --ll <file.jw>       LLVM のテキストを出す（Rust 版の `jabberwock --ll` と同じ形）
-//         jwc build [--release] [-o 出力] [--clang clang] <file.jw>   実行ファイルを作る（Rust 版の `jabberwock build` と同じ）
+//         jwc build [--release] [-o 出力] [--clang clang] [--link 部品]... <file.jw>   実行ファイルを作る（Rust 版の `jabberwock build` と同じ）
 use analyze;
 use ast;
 use astdump;
@@ -180,28 +180,30 @@ fn bool run_clang(str clang, str[] argv) {
 /// `jwc build`: LLVM に書き出し、実行時ライブラリと一緒に clang で実行ファイルを作る（Rust 版の `jabberwock build` と同じ手順）。
 /// 途中のファイル（`出力.ll` と `出力.jw_rt.c`）は出力と同じフォルダに残す（jabberwock にはファイルを消す関数がまだないため）
 fn build(ref str[] a, ref packages.Map package) {
-    let usage = "使い方: jwc build [--release] [-o 出力] [--clang clang] <file.jw>";
+    let usage = "使い方: jwc build [--release] [-o 出力] [--clang clang] [--link 部品]... <file.jw>";
     let mut release = false;
     let mut out = "";
     let mut path = "";
     let mut clang = "clang";
+    let str[] mut links = [];
     let mut i = 1;
     while i < a.len() {
         let x = a[i];
         if x == "--release" {
             release = true;
-        } else if x == "-o" || x == "--clang" {
+        } else if x == "-o" || x == "--clang" || x == "--link" {
             if i + 1 >= a.len() {
                 eprint(usage);
                 exit(2);
             }
-            if x == "-o" { out = a[i + 1]; } else { clang = a[i + 1]; }
+            if x == "-o" { out = a[i + 1]; } else if x == "--link" { links.push(a[i + 1]); } else { clang = a[i + 1]; }
             i += 1;
         } else if x == "-h" || x == "--help" {
             eprint(usage);
             eprint("  --release     実行時エラーは使った位置だけ出す（ソースを実行ファイルに入れない）");
             eprint("  -o 出力        実行ファイルの名前（なければファイル名から .jw を除いたもの）");
             eprint("  --clang clang  使う clang（なければ clang）");
+            eprint("  --link 部品    一緒にリンクするもの（std.browser のエンジンの .c / .o や -lole32 など。何度でも書ける）");
             eprint("  --package-map マップ  alice package-mapで解決した依存と入口を使う（file.jwは不要）");
             exit(0);
         } else if path == "" {
@@ -248,6 +250,16 @@ fn build(ref str[] a, ref packages.Map package) {
     let windows = platform.starts_with("windows");
     if windows && !out.ends_with(".exe") { out += ".exe"; }
     let str[] mut flags = ["-O2", llp, rt, "-o", out, "-Wno-override-module"];
+    if ll.contains("call i32 @jw_browser_open(") {
+        // std.browser: 実行時ライブラリのエンジンとの境目をつけ、エンジンの実装をリンクする
+        if links.len() == 0 {
+            eprint("error: std.browser を使うプログラムには、エンジンの実装が要ります");
+            eprint("  = note: `--link エンジン.c`（試験用なら runtime/engine/mock/jwe_mock.c）のように渡してください");
+            exit(1);
+        }
+        flags.push("-DJW_BROWSER");
+    }
+    for l in links { flags.push(l); }
     if windows {
         flags.push("-lshell32");
         flags.push(if platform == "windows-msvc" { "-Wl,/stack:268435456" } else { "-Wl,--stack,268435456" });

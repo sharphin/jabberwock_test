@@ -745,3 +745,9 @@ let x = pick(true, 1, 2);
 - spec.md の std の節の見直し（2026-10-30、オーナーの決めごと）: std の節（1.2〜1.x の「jwc だけ」の標準ライブラリ）だけが変わったときは、
   `formal/safety-scope-policy.json` の spec.md のハッシュの更新と、`tests/spec_coverage.json` の除外への追加を、そのつど聞かずにしてよい（報告はする）。
   言語の節（std の節の外）が変わったときは、今までどおりオーナーに聞く。今回の 1.3・1.5・1.6・1.7 の変更はこれで記録した。
+- std.browser（2026-10-30、オーナーの選択。ブラウザ試作の次の一歩）: 任意の extern は入れず、std.browser の資源 `Handle` と、std の中だけで呼べる内部の操作
+  （`__browser_open` と Handle のメソッド call・next・event_*・caps・name）を足した。境目は jw_engine.h（ブラウザ試作で決めたもの）をそのまま使い、
+  runtime/engine/ に置いた（実行時ライブラリには写しを入れ、テストで同じか確かめる）。
+  エンジンの実装は alice の能力の仕組みができるまで `jwc build --link` で渡す。std.browser を使うプログラムだけ実行時ライブラリを JW_BROWSER つきで作るので、
+  ほかのプログラムはエンジンなしでリンクできる。イベントの文字列は実行時ライブラリで写し、UTF-8 でなければ Failed にする（jabberwock の文字列の決まりを守る）。
+  公開の形（Engine・Event・Config・Info・KeyCode）は試作の app/engine.jw に合わせた（tab_new だけ Result にした）。

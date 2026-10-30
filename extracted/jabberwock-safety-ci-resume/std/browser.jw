@@ -1,0 +1,173 @@
+// 標準ライブラリ std.browser: ブラウザのエンジン（Web ページを表示する部品）を使う。`use std.browser;` と書いて使う
+//   let mut e = browser.open(browser.Config { title: "試し", data_dir: "data", width: 1024, height: 768, ephemeral: true })?;
+//   let tab = e.tab_new()?;
+//   e.navigate(tab, "https://example.com/")?;
+//   loop {
+//       match e.wait(-1) {
+//           case Some(CloseRequested) -> break;
+//           case Some(ev) -> print(ev);
+//           case None -> {}
+//       }
+//   }
+// エンジンとの境目は runtime/engine/jw_engine.h（C の関数だけ）。エンジンの実装は `jwc build --link` で渡す
+// （試験用の偽エンジンは runtime/engine/mock/jwe_mock.c。WebView2 版などは別に作る）。
+// 呼び返しはしない。イベントはエンジンが溜め、poll / wait で 1 つずつ取りに行く。
+// Engine は資源を持つ（ムーブだけ。ほかのスレッドへは渡せない。持ち主がいなくなると閉じる）。
+
+pub resource Handle;
+
+/// 開くときの設定
+pub struct Config {
+    str title;
+    str data_dir;     // Cookie などの置き場所（1 か所だけ）
+    i64 width;        // 論理ピクセル（1〜100000）
+    i64 height;
+    bool ephemeral;   // true なら何もディスクに残さない
+}
+
+/// エンジンから来るできごと（jw_engine.h の JWE_EV_*）
+pub enum Event {
+    Ready;
+    CloseRequested;
+    NavStarted(i64 tab, str url);
+    NavFinished(i64 tab, str url, i64 code);   // code 0 は成功
+    UrlChanged(i64 tab, str url);
+    TitleChanged(i64 tab, str title);
+    HistoryChanged(i64 tab, bool back, bool forward);
+    NewTabRequested(i64 tab, str url);
+    ChromeMessage(str text);
+    Key(i64 code);                              // KeyCode.of(code) で読む
+    PermissionDenied(i64 tab, str what);
+    Failed(i64 code, str text);
+}
+
+/// キーの番号（jw_engine.h の JWE_KEY_*）
+pub enum KeyCode {
+    FocusAddress;
+    NewTab;
+    CloseTab;
+    NextTab;
+    PrevTab;
+    Reload;
+    Back;
+    Forward;
+    Unknown;
+
+    static fn KeyCode of(i64 n) {
+        match n {
+            case 1 -> KeyCode.FocusAddress;
+            case 2 -> KeyCode.NewTab;
+            case 3 -> KeyCode.CloseTab;
+            case 4 -> KeyCode.NextTab;
+            case 5 -> KeyCode.PrevTab;
+            case 6 -> KeyCode.Reload;
+            case 7 -> KeyCode.Back;
+            case 8 -> KeyCode.Forward;
+            default -> KeyCode.Unknown;
+        }
+    }
+}
+
+/// エンジンができること
+pub struct Info {
+    str name;
+    bool script;      // ページの JavaScript が動く
+    bool chrome_view; // 外枠を HTML で出せる（chrome_load / chrome_post）
+    bool persist;     // Cookie などを残せる
+}
+
+/// 開いたエンジン
+pub struct Engine {
+    Handle h;
+
+    fn Info info() {
+        let c = h.caps();
+        Info { name: h.name(), script: c % 2 == 1, chrome_view: (c / 2) % 2 == 1, persist: (c / 4) % 2 == 1 }
+    }
+
+    /// イベントがあれば取り出す（待たない）
+    fn mut Option<Event> poll() { next(-2) }
+
+    /// イベントが来るか timeout_ms ミリ秒たつまで待つ（-1 は無期限。待つ前に print の出力を書き出す）
+    fn mut Option<Event> wait(i64 timeout_ms) {
+        if timeout_ms < -1 { return next(-3); }
+        next(timeout_ms)
+    }
+
+    fn mut Option<Event> next(i64 timeout_ms) {
+        let k = h.next(timeout_ms);
+        if k == 0 { return None; }
+        let tab = h.event_tab();
+        let code = h.event_code();
+        let s = h.event_text();
+        let ev = match k {
+            case 1 -> Event.Ready;
+            case 2 -> Event.CloseRequested;
+            case 3 -> Event.NavStarted(tab, s);
+            case 4 -> Event.NavFinished(tab, s, code);
+            case 5 -> Event.UrlChanged(tab, s);
+            case 6 -> Event.TitleChanged(tab, s);
+            case 7 -> Event.HistoryChanged(tab, code % 2 == 1, (code / 2) % 2 == 1);
+            case 8 -> Event.NewTabRequested(tab, s);
+            case 9 -> Event.ChromeMessage(s);
+            case 10 -> Event.Key(code);
+            case 11 -> Event.PermissionDenied(tab, s);
+            case 12 -> Event.Failed(code, s);
+            default -> Event.Failed(code, "知らない種類のイベント（{k}）: " + s);
+        };
+        Some(ev)
+    }
+
+    /// タブを作る（番号は 1 から。閉じた番号は使い回さない）
+    fn mut Result<i64, str> tab_new() {
+        let r = h.call(1, 0, "", 0);
+        if r < 0 { return Err(status(r)); }
+        Ok(r)
+    }
+
+    fn mut Result<(), str> tab_close(i64 tab) { done(h.call(2, tab, "", 0)) }
+
+    /// 見えるタブを切り替える
+    fn mut Result<(), str> tab_show(i64 tab) { done(h.call(3, tab, "", 0)) }
+
+    fn mut Result<(), str> navigate(i64 tab, str url) { done(h.call(4, tab, url, 0)) }
+    fn mut Result<(), str> back(i64 tab) { done(h.call(5, tab, "", 0)) }
+    fn mut Result<(), str> forward(i64 tab) { done(h.call(6, tab, "", 0)) }
+    fn mut Result<(), str> reload(i64 tab) { done(h.call(7, tab, "", 0)) }
+    fn mut Result<(), str> stop(i64 tab) { done(h.call(8, tab, "", 0)) }
+
+    /// 外枠の HTML を出す（Info.chrome_view があるときだけ）。height は外枠の高さ（論理ピクセル）
+    fn mut Result<(), str> chrome_load(str html, i64 height) { done(h.call(9, 0, html, height)) }
+
+    /// 外枠の HTML へ文字列を送る
+    fn mut Result<(), str> chrome_post(str msg) { done(h.call(10, 0, msg, 0)) }
+
+    fn mut Result<(), str> set_title(str title) { done(h.call(11, 0, title, 0)) }
+
+    /// Cookie・キャッシュ・サイトのデータを全部消す
+    fn mut Result<(), str> clear_site_data() { done(h.call(12, 0, "", 0)) }
+}
+
+/// エンジンを開く。最初のイベントは Ready（それより前の navigate も受け付ける）
+pub fn Result<Engine, str> open(Config cfg) {
+    let h = __browser_open(cfg.title, cfg.data_dir, cfg.width, cfg.height, if cfg.ephemeral { 1 } else { 0 })?;
+    Ok(Engine { h: h })
+}
+
+/// 閉じる（開いているタブも全部。ephemeral なら置き場所の中も消す）。何もしなければ、持ち主がいなくなったところで閉じる
+pub fn close(Engine e) { drop(e); }
+
+fn Result<(), str> done(i64 r) {
+    if r < 0 { return Err(status(r)); }
+    Ok(())
+}
+
+fn str status(i64 r) {
+    match -r {
+        case 1 -> "エンジンが使えません";
+        case 2 -> "そのタブはありません";
+        case 3 -> "引数が正しくありません";
+        case 4 -> "このエンジンにはその機能がありません";
+        default -> "エンジンの操作が失敗しました（{-r}）";
+    }
+}

@@ -11,7 +11,7 @@ fn bool is_builtin(str n) {
     n == "print" || n == "eprint" || n == "drop" || n == "assert" || n == "read_line" || n == "args" || n == "spawn"
         || n == "chan" || n == "exit" || n == "read_file" || n == "write_file" || n == "run_command" || n == "chr"
         || n == "__fs_open" || n == "__res_close" || n == "__fs_exists" || n == "__fs_list" || n == "__fs_make_dir" || n == "__fs_remove" || n == "__fs_rename"
-        || n == "__net_connect" || n == "__net_listen" || n == "__env_get" || n == "__time_now_ns" || n == "__time_unix_ms" || n == "__time_sleep_ms"
+        || n == "__net_connect" || n == "__net_listen" || n == "__env_get" || n == "__time_now_ns" || n == "__time_unix_ms" || n == "__time_sleep_ms" || n == "__browser_open"
 }
 
 /// エラー表示に使う場所の名前（interp の `describe`）
@@ -1513,7 +1513,7 @@ pub struct Lower {
             for a in argv { strs.push(show(a)?); }
             return Ok(temp_of(ty.Ty.Unit, ir.Rvalue.Builtin(name, own strs, sp), sp));
         }
-        if name == "exit" || name == "read_file" || name == "write_file" || name == "run_command" || name == "chr" || name.starts_with("__fs_") || name.starts_with("__net_") || name == "__res_close" || name == "__env_get" || name.starts_with("__time_") {
+        if name == "exit" || name == "read_file" || name == "write_file" || name == "run_command" || name == "chr" || name.starts_with("__fs_") || name.starts_with("__net_") || name == "__res_close" || name == "__env_get" || name.starts_with("__time_") || name == "__browser_open" {
             let opv = exprs(argv)?;
             if name != "exit" { return Ok(temp_of(et, ir.Rvalue.Builtin(name, own opv, sp), sp)); }
             // exit からは戻らない
@@ -1712,7 +1712,7 @@ pub struct Lower {
             let ir.Operand[] mut opv5 = [h];
             for v in vals.drain() { opv5.push(v); }
             let rn = ty.name_of(inner);
-            let kind = if rn == "std:net.TcpStream" { "tcp" } else if rn == "std:net.TcpListener" { "listener" } else { "file" };
+            let kind = if rn == "std:net.TcpStream" { "tcp" } else if rn == "std:net.TcpListener" { "listener" } else if rn == "std:browser.Handle" { "browser" } else { "file" };
             let r = temp_of(et, ir.Rvalue.Builtin(kind + "." + name, own opv5, sp), sp);
             drop_temp_l(temp_l, sp);
             return Ok(r);

@@ -1869,6 +1869,33 @@ struct FnGen {
             let ok = b.val("call i32 @jw_listener_accept(ptr " + vals[0].v + ", ptr " + out + ", ptr " + err + ", ptr " + site + ")");
             return result_of(m, want, ok, err, "res", out);
         }
+        if name == "__browser_open" {
+            let out = b.alloca("ptr");
+            let err = b.alloca("ptr");
+            let ok = b.val("call i32 @jw_browser_open(ptr " + vals[0].v + ", ptr " + vals[1].v + ", i64 " + vals[2].v + ", i64 " + vals[3].v + ", i64 " + vals[4].v + ", ptr " + out + ", ptr " + err + ")");
+            release(vals, all);
+            return result_of(m, want, ok, err, "res", out);
+        }
+        if name == "browser.call" {
+            let site = m.site(span, "");
+            let r = b.val("call i64 @jw_browser_call(ptr " + vals[0].v + ", i64 " + vals[1].v + ", i64 " + vals[2].v + ", ptr " + vals[3].v + ", i64 " + vals[4].v + ", ptr " + site + ")");
+            release(vals, all);
+            return Ok(llvm.vt(r, ty.i64t()));
+        }
+        if name == "browser.next" {
+            let site = m.site(span, "");
+            return Ok(llvm.vt(b.val("call i64 @jw_browser_next(ptr " + vals[0].v + ", i64 " + vals[1].v + ", ptr " + site + ")"), ty.i64t()));
+        }
+        if name == "browser.event_tab" || name == "browser.event_code" || name == "browser.caps" {
+            let site = m.site(span, "");
+            let f = if name == "browser.caps" { "@jw_browser_caps" } else { "@jw_browser_" + name.slice(8, name.len()) };
+            return Ok(llvm.vt(b.val("call i64 " + f + "(ptr " + vals[0].v + ", ptr " + site + ")"), ty.i64t()));
+        }
+        if name == "browser.event_text" || name == "browser.name" {
+            let site = m.site(span, "");
+            let f = if name == "browser.name" { "@jw_browser_name" } else { "@jw_browser_event_text" };
+            return Ok(llvm.vt(b.val("call ptr " + f + "(ptr " + vals[0].v + ", ptr " + site + ")"), ty.Ty.Str));
+        }
         if name == "listener.port" {
             let site = m.site(span, "");
             return Ok(llvm.vt(b.val("call i64 @jw_listener_port(ptr " + vals[0].v + ", ptr " + site + ")"), ty.i64t()));

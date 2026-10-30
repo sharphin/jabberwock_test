@@ -771,6 +771,68 @@ fn main() {
 }
 "##;
 
+#[test]
+fn jwc_std_browser() {
+    if !have_clang() { return; }
+    let dir = std::env::temp_dir().join(format!("jw-jwc-browser-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("main.jw");
+    std::fs::write(&path, BROWSER_SRC).unwrap();
+    std::fs::write(dir.join("script.txt"), "chrome {\"a\":1}\nkey 2\nnewtab http://n/\nclose\n").unwrap();
+    let exe = dir.join("main");
+    // エンジンがなければ断る
+    let out = Command::new(jwc()).args(["build", "--clang", &native::clang(), "-o"]).arg(&exe).arg(&path).output().unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("エンジンの実装が要ります"));
+    let mock = root().join("runtime/engine/mock/jwe_mock.c");
+    let out = Command::new(jwc()).args(["build", "--clang", &native::clang(), "--link"]).arg(&mock).arg("-o").arg(&exe).arg(&path).output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let got = Command::new(&exe).current_dir(&dir).env("JWE_MOCK_SCRIPT", "script.txt").env("JWE_MOCK_LOG", "log.txt").output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&got.stdout), "窓の大きさは 1〜100000 にしてください\nmock false true false\n1 Err(そのタブはありません) Ok(()) Ok(()) Ok(())\nOk(()) Ok(()) Ok(()) Ok(()) Err(そのタブはありません)\nSome(Ready)\nNavStarted(1, http://a/)\nUrlChanged(1, http://a/)\nTitleChanged(1, title:http://a/)\nNavFinished(1, http://a/, 0)\nHistoryChanged(1, false, false)\nNavStarted(1, http://b/)\nUrlChanged(1, http://b/)\nTitleChanged(1, title:http://b/)\nNavFinished(1, http://b/, 0)\nHistoryChanged(1, true, false)\nNavStarted(1, http://a/)\nUrlChanged(1, http://a/)\nTitleChanged(1, title:http://a/)\nNavFinished(1, http://a/, 0)\nHistoryChanged(1, false, true)\nChromeMessage({\"a\":1})\nkey NewTab\nNewTabRequested(0, http://n/)\n閉じる\n");
+    assert_eq!(std::fs::read_to_string(dir.join("log.txt")).unwrap(), "open 0 試し\ntab_new 1\nnavigate 1 http://a/\nnavigate 1 http://b/\nback 1\nchrome_load 40\nchrome_post 0 こんにちは\nset_title 0 題\ntab_close 1\nclose 0\n");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// 実行時ライブラリの中のエンジンとの境目は runtime/engine/jw_engine.h の写し
+#[test]
+fn runtime_engine_header_is_a_copy() {
+    let rt = std::fs::read_to_string(root().join("runtime/jw_rt.c")).unwrap().replace("\r\n", "\n");
+    let h = std::fs::read_to_string(root().join("runtime/engine/jw_engine.h")).unwrap().replace("\r\n", "\n");
+    let a = rt.find("// ---- jw_engine.h ここから\n").unwrap() + "// ---- jw_engine.h ここから\n".len();
+    let b = rt.find("// ---- jw_engine.h ここまで\n").unwrap();
+    assert_eq!(&rt[a..b], h, "runtime/jw_rt.c の写しを runtime/engine/jw_engine.h に合わせてください");
+}
+
+const BROWSER_SRC: &str = r##"use std.browser;
+
+fn main() {
+    match browser.open(browser.Config { title: "試し", data_dir: "", width: 0, height: 10, ephemeral: true }) {
+        case Ok(_) -> print("?");
+        case Err(e) -> print(e);
+    }
+    let mut e = match browser.open(browser.Config { title: "試し", data_dir: "data", width: 800, height: 600, ephemeral: true }) {
+        case Ok(x) -> x;
+        case Err(m) -> { print(m); return; }
+    };
+    let info = e.info();
+    print(info.name, info.script, info.chrome_view, info.persist);
+    let tab = match e.tab_new() { case Ok(t) -> t; case Err(m) -> { print(m); return; } };
+    print(tab, e.tab_show(99), e.navigate(tab, "http://a/"), e.navigate(tab, "http://b/"), e.back(tab));
+    print(e.chrome_load("<p>枠</p>", 40), e.chrome_post("こんにちは"), e.set_title("題"), e.tab_close(tab), e.tab_close(tab));
+    print(e.poll());
+    loop {
+        match e.wait(-1) {
+            case Some(CloseRequested) -> { print("閉じる"); break; }
+            case Some(Key(k)) -> print("key", browser.KeyCode.of(k));
+            case Some(ev) -> print(ev);
+            case None -> { print("なし"); break; }
+        }
+    }
+    browser.close(e);
+}
+"##;
+
+
 
 /// `jwc build` で作った実行ファイルが、interp と同じものを出す
 #[test]

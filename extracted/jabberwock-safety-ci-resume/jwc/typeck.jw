@@ -43,11 +43,11 @@ fn bool is_builtin(str n) {
     n == "print" || n == "eprint" || n == "drop" || n == "assert" || n == "read_line" || n == "args" || n == "spawn"
         || n == "chan" || n == "exit" || n == "read_file" || n == "write_file" || n == "run_command" || n == "chr"
         || n == "__fs_open" || n == "__res_close" || n == "__fs_exists" || n == "__fs_list" || n == "__fs_make_dir" || n == "__fs_remove" || n == "__fs_rename"
-        || n == "__net_connect" || n == "__net_listen" || n == "__env_get" || n == "__time_now_ns" || n == "__time_unix_ms" || n == "__time_sleep_ms"
+        || n == "__net_connect" || n == "__net_listen" || n == "__env_get" || n == "__time_now_ns" || n == "__time_unix_ms" || n == "__time_sleep_ms" || n == "__browser_open"
 }
 
 /// コンパイラが知っている資源の型（`resource` で書けるのはこれだけ）
-fn bool known_resource(str n) { n == "std:fs.File" || n == "std:net.TcpStream" || n == "std:net.TcpListener" }
+fn bool known_resource(str n) { n == "std:fs.File" || n == "std:net.TcpStream" || n == "std:net.TcpListener" || n == "std:browser.Handle" }
 
 /// 最後の `.` の位置（なければ -1）
 fn i64 last_dot(str s) {
@@ -2500,6 +2500,27 @@ pub struct Checker {
         let ty.Ty[] mut params = [];
         let mut ret = ty.Ty.Unit;
         let n = ty.name_of(r);
+        if n == "std:browser.Handle" {
+            // エンジンの札の内部の操作。std.browser の中だけで使う（使う側は browser.Engine のメソッド）
+            if cur_mod != "std:browser" {
+                return Err(diag.make("`{ty.show(r)}` のメソッドは標準ライブラリの中だけで使えます").at(span, "browser.Engine のメソッドを使ってください"));
+            }
+            if name == "call" {
+                params.push(ty.i64t());
+                params.push(ty.i64t());
+                params.push(ty.Ty.Str);
+                params.push(ty.i64t());
+            } else if name == "next" {
+                params.push(ty.i64t());
+            } else if name != "event_tab" && name != "event_code" && name != "caps" && name != "event_text" && name != "name" {
+                return Err(diag.make("`{ty.show(r)}` にメソッド `{name}` はありません").at(span, "std/browser.jw の中で使う内部の操作です"));
+            }
+            ret = if name == "event_text" || name == "name" { ty.Ty.Str } else { ty.i64t() };
+            if argv.len() != params.len() { return Err(arity_error(name, params.len(), argv.len(), span)); }
+            if name == "call" || name == "next" { require_mut(recv, rt, span, "資源を `{name}` で使おうとした")?; }
+            for (i, a) in argv { expect(a, params[i])?; }
+            return Ok(ret);
+        }
         if n == "std:net.TcpListener" {
             if name == "port" {
                 if argv.len() > 0 { return Err(arity_error(name, 0, argv.len(), span)); }
@@ -2784,6 +2805,19 @@ pub struct Checker {
             }
             expect(argv[0], ty.i64t())?;
             return Ok(ty.Ty.Unit);
+        }
+        if name == "__browser_open" {
+            // 標準ライブラリ std.browser の中だけで使う（エンジンを開く内部の操作）
+            if cur_mod != "std:browser" {
+                return Err(diag.make("`{name}` は標準ライブラリの中だけで使えます").at(span, "browser.open を使ってください"));
+            }
+            if argv.len() != 5 { return Err(arity_error(name, 5, argv.len(), span)); }
+            expect(argv[0], ty.Ty.Str)?;
+            expect(argv[1], ty.Ty.Str)?;
+            expect(argv[2], ty.i64t())?;
+            expect(argv[3], ty.i64t())?;
+            expect(argv[4], ty.i64t())?;
+            return Ok(ty.Ty.Enum("Result", own [ty.Ty.Res("std:browser.Handle"), ty.Ty.Str]));
         }
         if name == "__res_close" || name == "__net_connect" || name == "__net_listen" {
             // 標準ライブラリの中だけで使う（資源を作る・閉じる内部の操作）

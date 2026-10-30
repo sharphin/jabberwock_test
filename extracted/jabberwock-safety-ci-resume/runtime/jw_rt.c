@@ -2483,6 +2483,7 @@ int32_t jw_run_command(WStr *cmd, WList *args, int64_t *code, WStr **err) {
 #define RES_FILE 1
 #define RES_TCP 2
 #define RES_LISTENER 3
+#define RES_BROWSER 4
 
 typedef struct WRes {
     uint64_t gen;
@@ -2492,6 +2493,8 @@ typedef struct WRes {
     FILE *fp;
     // ソケット（TCP）
     int64_t fd;
+    // ブラウザのエンジン（std.browser。WBrowser）
+    void *ptr;
     // 空きの場所のつながり（0 で終わり）
     int64_t next_free;
 } WRes;
@@ -2553,6 +2556,7 @@ static WRes *res_get(uint64_t tok, uint32_t kind, const WSite *at) {
 static void res_release(WRes *r, int64_t slot) {
     lock(&g_lock);
     r->fp = NULL;
+    r->ptr = NULL;
     if (r->gen >= RES_GEN_MAX) {
         r->state = 2;
     } else {
@@ -2669,8 +2673,11 @@ int32_t jw_file_write_text(void *h, WStr *text, WStr **err, const WSite *at) {
 static int sock_close(int64_t fd);
 
 // 種類ごとに OS の資源を手放す。失敗したら 0（それでも手放したとみなす。同じ番号をもう一度閉じない）
+static int browser_free(void *p);
+
 static int res_free_os(WRes *r) {
     if (r->kind == RES_FILE) return fclose(r->fp) == 0;
+    if (r->kind == RES_BROWSER) return browser_free(r->ptr);
     return sock_close(r->fd);
 }
 
@@ -2697,6 +2704,294 @@ void jw_res_drop(void *h, const WSite *site) {
 }
 
 void *jw_res_view(void *h) { return (void *)((uintptr_t)h | 1); }
+
+// ---------------------------------------------------------------- ブラウザのエンジン（std.browser）
+//
+// エンジンとの境目は runtime/engine/jw_engine.h（C の関数だけ。呼び返しなし）。下にそのまま写してある（テストで同じか確かめる）。
+// エンジンの実装は jwc build の --link で渡す。std.browser を使うプログラムだけ JW_BROWSER をつけて作る
+// （使わないプログラムは jwe_* を呼ばないので、エンジンなしでリンクできる）。
+// 資源の中身は WBrowser: エンジンと、最後に取ったイベント（文字列は写して持つ）。エンジンは開いたスレッドだけが触る（資源は送れない）。
+
+#ifdef JW_BROWSER
+// ---- jw_engine.h ここから
+/* jw_engine.h: ブラウザのエンジンとの境目（C の関数だけ）。
+ *
+ * jabberwock のブラウザ（browser.jw）はこのヘッダーの関数だけを使う。
+ * エンジン（WebView2・試験用の偽エンジン・あとで Servo や jabberwock 製）は、
+ * それぞれこの関数を 1 組ずつ実装する。差し替えはリンクするファイルを変えるだけ。
+ *
+ * 決まり:
+ * - 呼び返しはしない。エンジンはイベントを溜め、呼ぶ側が jwe_poll / jwe_wait で取りに行く。
+ * - すべての関数は jwe_open を呼んだスレッドから呼ぶ。
+ * - 文字列はすべて UTF-8。長さつき（終わりの 0 は要らない）。
+ * - イベントの中の文字列はエンジンが持ち、次に jwe_poll / jwe_wait / jwe_close を呼ぶまで有効。
+ *   取っておくなら呼ぶ側で写す。
+ * - タブは 1 から始まる番号。閉じた番号は使い回さない。0 は「タブではない」。
+ * - アカウント・同期・プロファイル・パスワード保存の関数は置かない（作らない）。
+ */
+#ifndef JW_ENGINE_H
+#define JW_ENGINE_H
+
+#include <stdint.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+#define JWE_ABI_VERSION 1
+
+typedef struct JweEngine JweEngine;
+
+/* エンジンができること。jwe_info で返す */
+enum {
+    JWE_CAP_SCRIPT = 1u << 0,      /* ページの JavaScript が動く */
+    JWE_CAP_CHROME_VIEW = 1u << 1, /* 外枠（アドレスバーなど）を HTML で表示できる（jwe_chrome_*） */
+    JWE_CAP_PERSIST = 1u << 2      /* Cookie などをディスクに残せる */
+};
+
+typedef struct {
+    uint32_t abi_version; /* JWE_ABI_VERSION */
+    uint32_t caps;        /* JWE_CAP_* の組み合わせ */
+    const char *name;     /* 例 "webview2"。0 で終わる。エンジンが持つ */
+    const char *version;  /* エンジンの版。0 で終わる。エンジンが持つ */
+} JweInfo;
+
+typedef struct {
+    const char *title;    uint32_t title_len;
+    const char *data_dir; uint32_t data_dir_len; /* Cookie などの置き場所（1 か所だけ） */
+    uint32_t width, height;                      /* 論理ピクセル */
+    uint32_t ephemeral;                          /* 1: 何もディスクに残さない（終わると全部消える） */
+} JweConfig;
+
+typedef enum {
+    JWE_OK = 0,
+    JWE_ERR_UNAVAILABLE = 1, /* エンジンが使えない（例: WebView2 の実行環境が入っていない） */
+    JWE_ERR_BAD_TAB = 2,     /* その番号のタブはない */
+    JWE_ERR_BAD_ARG = 3,
+    JWE_ERR_UNSUPPORTED = 4, /* このエンジンにはその機能がない（JweInfo.caps を見る） */
+    JWE_ERR_FAILED = 5
+} JweStatus;
+
+typedef enum {
+    JWE_EV_NONE = 0,
+    JWE_EV_READY,             /* エンジンの準備ができた。これより前の navigate も受け付けて後で動かす */
+    JWE_EV_CLOSE_REQUESTED,   /* 窓の × が押された。閉じるかどうかは呼ぶ側が決める */
+    JWE_EV_NAV_STARTED,       /* tab, text = URL */
+    JWE_EV_NAV_FINISHED,      /* tab, text = URL, code = 0 成功 / それ以外は失敗 */
+    JWE_EV_URL_CHANGED,       /* tab, text = URL（ページ内の移動・リダイレクトも） */
+    JWE_EV_TITLE_CHANGED,     /* tab, text = 題 */
+    JWE_EV_HISTORY_CHANGED,   /* tab, code = 1 なら戻れる | 2 なら進める */
+    JWE_EV_NEW_TAB_REQUESTED, /* tab = 元のタブ, text = URL（target=_blank など）。開くかは呼ぶ側が決める */
+    JWE_EV_CHROME_MESSAGE,    /* 外枠の HTML から来た文字列（text） */
+    JWE_EV_KEY,               /* 呼ぶ側に渡すショートカット。code = JWE_KEY_* */
+    JWE_EV_PERMISSION_DENIED, /* tab, text = 何を求められたか。いつも断る（記録用） */
+    JWE_EV_ERROR              /* code = JweStatus, text = 説明 */
+} JweEventKind;
+
+enum { JWE_KEY_FOCUS_ADDRESS = 1, JWE_KEY_NEW_TAB, JWE_KEY_CLOSE_TAB, JWE_KEY_NEXT_TAB, JWE_KEY_PREV_TAB, JWE_KEY_RELOAD, JWE_KEY_BACK, JWE_KEY_FORWARD };
+
+typedef struct {
+    uint32_t kind; /* JweEventKind */
+    uint32_t tab;
+    int64_t code;
+    const char *text; uint32_t text_len;
+} JweEvent;
+
+/* 開く・閉じる */
+JweStatus jwe_open(const JweConfig *cfg, JweEngine **out);
+void jwe_close(JweEngine *e); /* 開いているタブも全部閉じる。ephemeral なら data_dir の中も消す */
+void jwe_info(const JweEngine *e, JweInfo *out);
+
+/* イベント。あれば *out に入れて 1、なければ 0 */
+int jwe_poll(JweEngine *e, JweEvent *out);
+/* イベントが来るか timeout_ms たつまで待つ（OS のメッセージもここで処理する）。-1 は無期限 */
+int jwe_wait(JweEngine *e, int32_t timeout_ms, JweEvent *out);
+
+/* タブ */
+JweStatus jwe_tab_new(JweEngine *e, uint32_t *out_tab);
+JweStatus jwe_tab_close(JweEngine *e, uint32_t tab);
+JweStatus jwe_tab_show(JweEngine *e, uint32_t tab); /* 見えるタブを切り替える */
+JweStatus jwe_navigate(JweEngine *e, uint32_t tab, const char *url, uint32_t url_len);
+JweStatus jwe_back(JweEngine *e, uint32_t tab);
+JweStatus jwe_forward(JweEngine *e, uint32_t tab);
+JweStatus jwe_reload(JweEngine *e, uint32_t tab);
+JweStatus jwe_stop(JweEngine *e, uint32_t tab);
+
+/* 外枠（JWE_CAP_CHROME_VIEW があるときだけ）。height は外枠の高さ（論理ピクセル） */
+JweStatus jwe_chrome_load(JweEngine *e, const char *html, uint32_t html_len, uint32_t height);
+JweStatus jwe_chrome_post(JweEngine *e, const char *msg, uint32_t msg_len);
+
+/* 窓 */
+JweStatus jwe_set_title(JweEngine *e, const char *title, uint32_t title_len);
+
+/* Cookie・キャッシュ・サイトのデータを全部消す */
+JweStatus jwe_clear_site_data(JweEngine *e);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif
+// ---- jw_engine.h ここまで
+
+typedef struct {
+    JweEngine *e;
+    int64_t tab, code;
+    WStr *text;
+} WBrowser;
+
+static int browser_free(void *p) {
+    WBrowser *b = p;
+    jwe_close(b->e);
+    if (b->text) jw_str_release(b->text);
+    free(b);
+    return 1;
+}
+
+static WStr *browser_err(const char *head, int st) {
+    char buf[160];
+    snprintf(buf, sizeof buf, "%s（jw_engine の状態 %d）", head, st);
+    return err_text(buf);
+}
+
+int32_t jw_browser_open(WStr *title, WStr *dir, int64_t w, int64_t h, int64_t eph, void **out, WStr **err) {
+    if (w < 1 || w > 100000 || h < 1 || h > 100000) {
+        *err = err_text("窓の大きさは 1〜100000 にしてください");
+        return 0;
+    }
+    if (title->len > 0x7fffffff || dir->len > 0x7fffffff) {
+        *err = err_text("題や置き場所が長すぎます");
+        return 0;
+    }
+    JweConfig cfg;
+    memset(&cfg, 0, sizeof cfg);
+    cfg.title = title->data;
+    cfg.title_len = (uint32_t)title->len;
+    cfg.data_dir = dir->data;
+    cfg.data_dir_len = (uint32_t)dir->len;
+    cfg.width = (uint32_t)w;
+    cfg.height = (uint32_t)h;
+    cfg.ephemeral = eph ? 1 : 0;
+    JweEngine *e = NULL;
+    JweStatus st = res_fail("open") ? JWE_ERR_FAILED : jwe_open(&cfg, &e);
+    if (st != JWE_OK || !e) {
+        *err = browser_err("ブラウザのエンジンを開けません", (int)st);
+        return 0;
+    }
+    JweInfo info;
+    memset(&info, 0, sizeof info);
+    jwe_info(e, &info);
+    if (info.abi_version != JWE_ABI_VERSION) {
+        jwe_close(e);
+        *err = err_text("エンジンの jw_engine.h の版が違います");
+        return 0;
+    }
+    WBrowser *b = jw_checked_calloc(1, sizeof(WBrowser));
+    b->e = e;
+    uint64_t tok = res_new(RES_BROWSER, NULL, -1);
+    if (!tok) {
+        browser_free(b);
+        *err = err_text("開いている資源が多すぎます");
+        return 0;
+    }
+    res_at(res_slot(tok))->ptr = b;
+    *out = (void *)(uintptr_t)tok;
+    return 1;
+}
+
+static WBrowser *browser_get(void *h, const WSite *at) { return res_get((uint64_t)(uintptr_t)h, RES_BROWSER, at)->ptr; }
+
+// 操作 op（std/browser.jw の OP_*）。0 以上は成功（タブを作ったらその番号）、負は -JweStatus
+int64_t jw_browser_call(void *h, int64_t op, int64_t tab, WStr *text, int64_t n, const WSite *at) {
+    WBrowser *b = browser_get(h, at);
+    if (tab < 0 || tab > 0xffffffffLL || text->len > 0x7fffffff || n < 0 || n > 100000) return -(int64_t)JWE_ERR_BAD_ARG;
+    uint32_t t = (uint32_t)tab;
+    uint32_t len = (uint32_t)text->len;
+    JweStatus st = JWE_ERR_BAD_ARG;
+    switch (op) {
+    case 1: {
+        uint32_t got = 0;
+        st = jwe_tab_new(b->e, &got);
+        if (st == JWE_OK) return got;
+        break;
+    }
+    case 2: st = jwe_tab_close(b->e, t); break;
+    case 3: st = jwe_tab_show(b->e, t); break;
+    case 4: st = jwe_navigate(b->e, t, text->data, len); break;
+    case 5: st = jwe_back(b->e, t); break;
+    case 6: st = jwe_forward(b->e, t); break;
+    case 7: st = jwe_reload(b->e, t); break;
+    case 8: st = jwe_stop(b->e, t); break;
+    case 9: st = jwe_chrome_load(b->e, text->data, len, (uint32_t)n); break;
+    case 10: st = jwe_chrome_post(b->e, text->data, len); break;
+    case 11: st = jwe_set_title(b->e, text->data, len); break;
+    case 12: st = jwe_clear_site_data(b->e); break;
+    default: break;
+    }
+    return st == JWE_OK ? 0 : -(int64_t)st;
+}
+
+// 次のイベントの種類（なければ 0）。timeout_ms が -2 なら待たない（poll）、-1 は無期限
+int64_t jw_browser_next(void *h, int64_t timeout_ms, const WSite *at) {
+    WBrowser *b = browser_get(h, at);
+    if (timeout_ms < -2) {
+        begin_error("待つ時間が負です");
+        finish_error(at, "wait(ms) の ms は 0 以上か -1（無期限）", NULL);
+    }
+    jw_flush();
+    JweEvent ev;
+    memset(&ev, 0, sizeof ev);
+    int got = timeout_ms == -2 ? jwe_poll(b->e, &ev)
+                               : jwe_wait(b->e, timeout_ms > 0x7fffffff ? 0x7fffffff : (int32_t)timeout_ms, &ev);
+    if (b->text) jw_str_release(b->text);
+    b->text = NULL;
+    if (!got || ev.kind == JWE_EV_NONE) return 0;
+    b->tab = ev.tab;
+    b->code = ev.code;
+    // 文字列はエンジンが持つので、ここで写す（jabberwock の文字列は UTF-8 でなければならない）
+    if (ev.text_len > 0 && !ev.text) ev.text_len = 0;
+    if (valid_utf8((const unsigned char *)ev.text, ev.text_len)) {
+        b->text = jw_str_new(ev.text ? ev.text : "", ev.text_len);
+    } else {
+        ev.kind = JWE_EV_ERROR;
+        b->code = JWE_ERR_BAD_ARG;
+        b->text = jw_str_new("エンジンが UTF-8 でない文字列を返しました", (int64_t)strlen("エンジンが UTF-8 でない文字列を返しました"));
+    }
+    return ev.kind;
+}
+
+int64_t jw_browser_event_tab(void *h, const WSite *at) { return browser_get(h, at)->tab; }
+int64_t jw_browser_event_code(void *h, const WSite *at) { return browser_get(h, at)->code; }
+
+WStr *jw_browser_event_text(void *h, const WSite *at) {
+    WBrowser *b = browser_get(h, at);
+    if (!b->text) return jw_str_new("", 0);
+    jw_str_retain(b->text);
+    return b->text;
+}
+
+// できること（JWE_CAP_*）
+int64_t jw_browser_caps(void *h, const WSite *at) {
+    JweInfo info;
+    memset(&info, 0, sizeof info);
+    jwe_info(browser_get(h, at)->e, &info);
+    return info.caps;
+}
+
+WStr *jw_browser_name(void *h, const WSite *at) {
+    JweInfo info;
+    memset(&info, 0, sizeof info);
+    jwe_info(browser_get(h, at)->e, &info);
+    const char *n = info.name ? info.name : "";
+    int64_t len = (int64_t)strlen(n);
+    return valid_utf8((const unsigned char *)n, len) ? jw_str_new(n, len) : jw_str_new("?", 1);
+}
+#else
+static int browser_free(void *p) {
+    (void)p;
+    return 1;
+}
+#endif
 
 // ---------------------------------------------------------------- 環境変数・時計（std.env・std.time）
 

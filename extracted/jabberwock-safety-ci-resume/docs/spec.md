@@ -91,6 +91,7 @@ fn main() {
 | `std.json` | `parse(s)`・`stringify(ref v)`・`quote(s)` と `Json`（[1.6](#16-stdenvstdtimestdjsonjwc-だけ)） |
 | `std.http` | `get(url)`・`post(url, content_type, body)` と `Response`（[1.5](#15-stdhttpjwc-だけ)） |
 | `std.url` | `parse(s)`・`encode(s)`・`decode(s, plus)` と `Url`（[1.7](#17-stdurljwc-だけ)） |
+| `std.browser` | `open(cfg)`・`close(e)` と `Engine`・`Config`・`Event`・`KeyCode`・`Info`（[1.8](#18-stdbrowserjwc-だけ)） |
 | `std.net` | `connect(host, port)`・`listen(host, port)`・`close(s)`・`stop(l)` と資源の型 `TcpStream`・`TcpListener`（[1.4](#14-stdnetjwc-だけ)） |
 
 - 詳しい動き（一周・実行時エラーになる条件）は `std/*.jw` の各関数の説明に書いてある。
@@ -111,7 +112,7 @@ fn Result<(), str> save() {
 ```
 
 - **資源**は外のもの（今は開いたファイルだけ）を持つ値。`resource 名前;` で決めるが、書けるのは標準ライブラリの中だけで、
-  コンパイラが知っている種類（`std.fs` の `File`）に限る。数や文字列から作る方法はない（作るのは `fs.open` などだけ）。
+  コンパイラが知っている種類（`std.fs` の `File`、`std.net` の `TcpStream`・`TcpListener`、`std.browser` の `Handle`）に限る。数や文字列から作る方法はない（作るのは `fs.open` などだけ）。
 - 値として読むといつもムーブ（2 つ目の持ち主はできない）。`ref` / `ref mut` で借りられる。`for x in` の x などの読むだけの写しは、閉じない。
 - 持ち主がいなくなると黙って閉じる（構造体・リストの中でも）。閉じたときの失敗を知りたいときは `fs.close(f)`（`Result<(), str>`。失敗しても f はもう使えない）。
   `exit` と実行時エラーでは閉じない（ほかの後片づけと同じ。書いた内容は close で確かめる）。
@@ -205,6 +206,38 @@ print(url.decode("a%20b+c", true)?);                       // a b c
 - `Url`: `scheme`・`host`・`port`（`i64`）・`path`・`query`・`fragment`（なければ空の文字列）と `target()`（path と、あれば `?query`）。
 - `url.encode(s)`: 英数字と `-` `.` `_` `~` のほかは、UTF-8 のバイトごとに `%XX`（大文字）にする。
 - `url.decode(s, plus)`: `%XX` を戻す（plus が true なら `+` を空白にする）。`%` のあとが 2 桁の 16 進数でない・戻した結果が UTF-8 でないなら Err。
+
+### 1.8 std.browser（jwc だけ）
+
+```
+use std.browser;
+let mut e = browser.open(browser.Config { title: "試し", data_dir: "data", width: 1024, height: 768, ephemeral: true })?;
+let tab = e.tab_new()?;
+e.navigate(tab, "https://example.com/")?;
+loop {
+    match e.wait(-1) {                    // Option<browser.Event>
+        case Some(CloseRequested) -> break;
+        case Some(ev) -> print(ev);       // NavStarted(1, https://example.com/) など
+        case None -> {}
+    }
+}
+browser.close(e);
+```
+
+- ブラウザのエンジン（ページを表示する部品）を使う。エンジンとの境目は `runtime/engine/jw_engine.h`（C の関数だけ。版 1）。
+  エンジンの実装は jabberwock の外にあり、`jwc build --link エンジン.c`（`.o`・`-lole32` なども。何度でも書ける）で一緒にリンクする。
+  std.browser を使うプログラムで `--link` がなければ、作る前にエラー。試験用の偽エンジンは `runtime/engine/mock/jwe_mock.c`（画面なし）。
+- 呼び返しはしない。エンジンがイベントを溜め、`e.poll()`（待たない）・`e.wait(ms)`（-1 は無期限。-1 より小さいと実行時エラー。待つ前に print の出力を書き出す）で 1 つずつ取る。
+  エンジンは開いたスレッドだけで使う（`Engine` は資源 `Handle` を持つので、ほかのスレッドへ渡せない）。
+- `browser.open(cfg)`（`Result<Engine, str>`）: width・height は 1〜100000。エンジンが使えない・境目の版が違うなら Err。
+  持ち主がいなくなるか `browser.close(e)` で閉じる（タブも全部。ephemeral なら置き場所の中も消す）。
+- `Engine` のメソッド（持ち主が mut であること）: `info()`（`Info { name, script, chrome_view, persist }`）・`poll()`・`wait(ms)`・
+  `tab_new()`（`Result<i64, str>`。タブの番号は 1 から、使い回さない）・`tab_close(tab)`・`tab_show(tab)`・`navigate(tab, url)`・`back(tab)`・`forward(tab)`・
+  `reload(tab)`・`stop(tab)`・`chrome_load(html, height)`・`chrome_post(msg)`（外枠の HTML。`chrome_view` のときだけ）・`set_title(s)`・`clear_site_data()`。
+  操作は `Result<(), str>`（ないタブ・できない操作は Err）。
+- `Event`: `Ready`・`CloseRequested`・`NavStarted(tab, url)`・`NavFinished(tab, url, code)`（code 0 は成功）・`UrlChanged(tab, url)`・`TitleChanged(tab, title)`・
+  `HistoryChanged(tab, back, forward)`・`NewTabRequested(tab, url)`・`ChromeMessage(text)`・`Key(code)`（`KeyCode.of(code)` で読む）・`PermissionDenied(tab, what)`・`Failed(code, text)`。
+  エンジンが UTF-8 でない文字列を返したら `Failed` にする。
 
 ## 2. 字句
 
