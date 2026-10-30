@@ -577,8 +577,7 @@ fn jwc_std_fs() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
-/// std.net の TCP（Windows はまだ）。待ち受け・接続・送受信・時間切れ
-#[cfg(unix)]
+/// std.net の TCP。待ち受け・接続・送受信・時間切れ
 #[test]
 fn jwc_std_net() {
     if !have_clang() { return; }
@@ -604,7 +603,6 @@ fn jwc_std_net() {
 }
 
 /// std.http（std.net の上の HTTP/1.1 クライアント）。同じプログラムの中に小さなサーバーを立てて試す
-#[cfg(unix)]
 #[test]
 fn jwc_std_http() {
     if !have_clang() { return; }
@@ -621,7 +619,6 @@ fn jwc_std_http() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
-#[cfg(unix)]
 const HTTP_SRC: &str = r#"use std.net;
 use std.http;
 use std.text;

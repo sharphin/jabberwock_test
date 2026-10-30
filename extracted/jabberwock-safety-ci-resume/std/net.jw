@@ -1,4 +1,4 @@
-// 標準ライブラリ std.net: TCP（同期だけ）。`use std.net;` と書いて使う。今は Linux・macOS だけ（Windows はまだ）
+// 標準ライブラリ std.net: TCP（同期だけ）。`use std.net;` と書いて使う。Linux・macOS・Windows（Winsock）
 //
 // TcpStream と TcpListener は資源（ムーブだけできる。ほかのスレッドへは渡せない）。持ち主がいなくなると黙って閉じる。
 //   let mut c = net.connect("localhost", 8080)?;

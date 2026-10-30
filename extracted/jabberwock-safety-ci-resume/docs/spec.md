@@ -147,7 +147,7 @@ net.close(c)?;
 - `net.connect(host, port)`・`net.listen(host, port)`（`Result`）。host は名前か番号。port が 0〜65535 の外なら Err。
 - TcpStream: `read(n)`（`u8[]`）・`write(bytes)`・`write_text(s)`・`set_timeout(ms)`。時間切れは `Err("時間切れです")`。相手が閉じた接続へ書くと Err（プログラムは止まらない）。
 - TcpListener: `accept()`（`Result<TcpStream, str>`）・`port()`（`i64`）。やめるのは `net.stop(l)`。
-- **今は Linux・macOS だけ。** Windows では connect / listen が `Err("std.net はまだ Windows で使えません: ...")` を返す。
+- Linux・macOS・Windows で使える。Windows は Winsock（ws2_32.dll）を初めて使うときに読み込む（リンクの指定は要らない。読み込めなければ connect / listen が Err）。
 
 ### 1.5 std.http（jwc だけ）
 
@@ -158,7 +158,7 @@ print(r.status, r.headers["content-type"], r.text()?);
 let p = http.post("http://127.0.0.1:8080/p", "application/json", "{{}}")?;
 ```
 
-- HTTP/1.1 のクライアント。std.net の上に .jw だけで書いている（`std/http.jw`）。**http:// だけ**（https は Err）。std.net と同じく今は Linux・macOS だけ。
+- HTTP/1.1 のクライアント。std.net の上に .jw だけで書いている（`std/http.jw`）。**http:// だけ**（https は Err）。
 - 1 回ごとにつなぎ、`Connection: close` を送って、相手が閉じるまで読む。本文は chunked なら読み解き、`Content-Length` があればその長さにする（足りなければ Err）。
   リダイレクトはたどらない。状態の番号が 404 などでも Ok（`status` を見る）。
 - `Response`: `status`（`i64`）・`headers`（`str[str]`。名前は小文字。同じ名前が二つ以上なら `", "` でつなぐ）・`body`（`u8[]`）・`text()`（本文を `str` に。UTF-8 でなければ Err）。

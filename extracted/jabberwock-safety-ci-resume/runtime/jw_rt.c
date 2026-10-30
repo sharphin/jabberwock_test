@@ -3087,52 +3087,227 @@ void jw_time_sleep_ms(int64_t ms, const WSite *at) {
 }
 
 // ---------------------------------------------------------------- TCP（std.net）
-// 同期だけ。名前の解決は getaddrinfo。Windows はまだ（Winsock の初期化を含めて後で足す）
+// 同期だけ。名前の解決は getaddrinfo。
+// Windows は Winsock（ws2_32.dll）を初めて使うときに読み込む（リンクの指定を増やさないため。Rust 版で作る実行ファイルも同じ）。
 
 #ifdef _WIN32
-static int sock_close(int64_t fd) { (void)fd; return 1; }
+// windows.h なしで宣言する（x64 の Winsock と同じ並び）
+typedef uintptr_t WSock;
+#define WSOCK_BAD (~(WSock)0)
+struct w_addrinfo {
+    int ai_flags, ai_family, ai_socktype, ai_protocol;
+    size_t ai_addrlen;
+    char *ai_canonname;
+    void *ai_addr;
+    struct w_addrinfo *ai_next;
+};
+__declspec(dllimport) void *__stdcall LoadLibraryW(const wchar_t *);
+__declspec(dllimport) void *__stdcall GetProcAddress(void *, const char *);
 
-int32_t jw_net_connect(WStr *host, int64_t port, void **out, WStr **err) {
-    (void)port; (void)out;
-    *err = message("std.net はまだ Windows で使えません: ", host);
-    return 0;
+static struct {
+    int ready; // 0: まだ、1: 使える、-1: 使えない
+    int(__stdcall *startup)(unsigned short, void *);
+    int(__stdcall *getaddrinfo)(const char *, const char *, const struct w_addrinfo *, struct w_addrinfo **);
+    void(__stdcall *freeaddrinfo)(struct w_addrinfo *);
+    WSock(__stdcall *socket)(int, int, int);
+    int(__stdcall *connect)(WSock, const void *, int);
+    int(__stdcall *bind)(WSock, const void *, int);
+    int(__stdcall *listen)(WSock, int);
+    WSock(__stdcall *accept)(WSock, void *, int *);
+    int(__stdcall *recv)(WSock, char *, int, int);
+    int(__stdcall *send)(WSock, const char *, int, int);
+    int(__stdcall *closesocket)(WSock);
+    int(__stdcall *setsockopt)(WSock, int, int, const char *, int);
+    int(__stdcall *getsockname)(WSock, void *, int *);
+    int(__stdcall *last_error)(void);
+} g_ws;
+
+// 初めてなら ws2_32.dll を読み込んで WSAStartup する。使えれば 1
+static int ws_ready(void) {
+    lock(&g_lock);
+    if (g_ws.ready == 0) {
+        void *m = LoadLibraryW(L"ws2_32.dll");
+        g_ws.ready = -1;
+        if (m) {
+#define WS_GET(f, n) *(void **)&g_ws.f = GetProcAddress(m, n)
+            WS_GET(startup, "WSAStartup");
+            WS_GET(getaddrinfo, "getaddrinfo");
+            WS_GET(freeaddrinfo, "freeaddrinfo");
+            WS_GET(socket, "socket");
+            WS_GET(connect, "connect");
+            WS_GET(bind, "bind");
+            WS_GET(listen, "listen");
+            WS_GET(accept, "accept");
+            WS_GET(recv, "recv");
+            WS_GET(send, "send");
+            WS_GET(closesocket, "closesocket");
+            WS_GET(setsockopt, "setsockopt");
+            WS_GET(getsockname, "getsockname");
+            WS_GET(last_error, "WSAGetLastError");
+#undef WS_GET
+            char data[1024]; // WSADATA より大きい
+            if (g_ws.startup && g_ws.getaddrinfo && g_ws.freeaddrinfo && g_ws.socket && g_ws.connect && g_ws.bind &&
+                g_ws.listen && g_ws.accept && g_ws.recv && g_ws.send && g_ws.closesocket && g_ws.setsockopt &&
+                g_ws.getsockname && g_ws.last_error && g_ws.startup(0x0202, data) == 0)
+                g_ws.ready = 1;
+        }
+    }
+    int ok = g_ws.ready == 1;
+    unlock(&g_lock);
+    return ok;
 }
 
-int32_t jw_net_listen(WStr *host, int64_t port, void **out, WStr **err) {
-    (void)port; (void)out;
-    *err = message("std.net はまだ Windows で使えません: ", host);
-    return 0;
+static int sock_close(int64_t fd) { return g_ws.closesocket((WSock)fd) == 0; }
+
+// 名前を解決して、つなぐ（listen なら待ち受ける）。できたらソケット、だめなら -1
+static int64_t net_open(WStr *host, int64_t port, int listening) {
+    if (port < 0 || port > 65535 || memchr(host->data, 0, (size_t)host->len) || !ws_ready()) return -1;
+    char *hc = c_str(host);
+    char ps[16];
+    snprintf(ps, sizeof ps, "%d", (int)port);
+    struct w_addrinfo hints, *res = NULL;
+    memset(&hints, 0, sizeof hints);
+    hints.ai_family = 0;   // AF_UNSPEC
+    hints.ai_socktype = 1; // SOCK_STREAM
+    if (listening) hints.ai_flags = 1; // AI_PASSIVE
+    WSock fd = WSOCK_BAD;
+    if (g_ws.getaddrinfo(hc, ps, &hints, &res) == 0) {
+        for (struct w_addrinfo *a = res; a && fd == WSOCK_BAD; a = a->ai_next) {
+            fd = g_ws.socket(a->ai_family, a->ai_socktype, a->ai_protocol);
+            if (fd == WSOCK_BAD) continue;
+            int ok;
+            if (listening) {
+                // ほかのプログラムに同じ番号を横取りさせない（SO_EXCLUSIVEADDRUSE）
+                int one = 1;
+                g_ws.setsockopt(fd, 0xffff, ~4, (const char *)&one, sizeof one);
+                ok = g_ws.bind(fd, a->ai_addr, (int)a->ai_addrlen) == 0 && g_ws.listen(fd, 64) == 0;
+            } else {
+                ok = g_ws.connect(fd, a->ai_addr, (int)a->ai_addrlen) == 0;
+            }
+            if (!ok) {
+                g_ws.closesocket(fd);
+                fd = WSOCK_BAD;
+            }
+        }
+        g_ws.freeaddrinfo(res);
+    }
+    free(hc);
+    return fd == WSOCK_BAD ? -1 : (int64_t)fd;
 }
 
+static int32_t net_start(WStr *host, int64_t port, int listening, void **out, WStr **err) {
+    int64_t fd = res_fail(listening ? "listen" : "connect") ? -1 : net_open(host, port, listening);
+    if (fd < 0) {
+        *err = message(listening ? "待ち受けられません: " : "接続できません: ", host);
+        return 0;
+    }
+    uint64_t tok = res_new(listening ? RES_LISTENER : RES_TCP, NULL, fd);
+    if (!tok) {
+        sock_close(fd);
+        *err = message("開いている資源が多すぎます: ", host);
+        return 0;
+    }
+    *out = (void *)(uintptr_t)tok;
+    return 1;
+}
+
+int32_t jw_net_connect(WStr *host, int64_t port, void **out, WStr **err) { return net_start(host, port, 0, out, err); }
+
+int32_t jw_net_listen(WStr *host, int64_t port, void **out, WStr **err) { return net_start(host, port, 1, out, err); }
+
+static WStr *sock_error(const char *what) {
+    return err_text(g_ws.last_error() == 10060 /* WSAETIMEDOUT */ ? "時間切れです" : what);
+}
+
+// 最大 n バイト受け取る（相手が閉じたら空のリスト）
 int32_t jw_tcp_read(void *h, int64_t n, WList *out, WStr **err, const WSite *at) {
-    (void)h; (void)n; (void)out; (void)err; (void)at;
-    return 0;
+    WRes *r = res_get((uint64_t)(uintptr_t)h, RES_TCP, at);
+    if (n < 0) {
+        begin_error("読む大きさが負です");
+        finish_error(at, "read(n) の n は 0 以上", NULL);
+    }
+    if (n == 0) return 1;
+    int64_t want = n < 65536 ? n : 65536;
+    jw_list_reserve(out, 1, want);
+    int got = res_fail("read") ? -1 : g_ws.recv((WSock)r->fd, out->data, (int)want, 0);
+    if (got < 0) {
+        jw_list_free(out, 1, NULL);
+        *err = res_fail("read") ? err_text("受け取れません") : sock_error("受け取れません");
+        return 0;
+    }
+    out->len = (int64_t)got;
+    return 1;
+}
+
+static int32_t sock_write(WRes *r, const char *p, int64_t n, WStr **err) {
+    while (n > 0) {
+        int chunk = n > 0x40000000 ? 0x40000000 : (int)n;
+        int k = res_fail("write") ? -1 : g_ws.send((WSock)r->fd, p, chunk, 0);
+        if (k <= 0) {
+            *err = res_fail("write") ? err_text("送れません") : sock_error("送れません");
+            return 0;
+        }
+        p += k;
+        n -= k;
+    }
+    return 1;
 }
 
 int32_t jw_tcp_write(void *h, WList *data, WStr **err, const WSite *at) {
-    (void)h; (void)err; (void)at;
+    WRes *r = res_get((uint64_t)(uintptr_t)h, RES_TCP, at);
+    int32_t ok = sock_write(r, data->data, data->len, err);
     jw_list_free(data, 1, NULL);
-    return 0;
+    return ok;
 }
 
 int32_t jw_tcp_write_text(void *h, WStr *text, WStr **err, const WSite *at) {
-    (void)h; (void)text; (void)err; (void)at;
-    return 0;
+    WRes *r = res_get((uint64_t)(uintptr_t)h, RES_TCP, at);
+    return sock_write(r, text->data, text->len, err);
 }
 
+// 受け取り・送りの待ち時間（ミリ秒。0 なら待ち続ける）
 int32_t jw_tcp_set_timeout(void *h, int64_t ms, WStr **err, const WSite *at) {
-    (void)h; (void)ms; (void)err; (void)at;
-    return 0;
+    WRes *r = res_get((uint64_t)(uintptr_t)h, RES_TCP, at);
+    if (ms < 0) {
+        begin_error("待ち時間が負です");
+        finish_error(at, "set_timeout(ms) の ms は 0 以上", NULL);
+    }
+    unsigned long t = ms > 0xffffffffLL ? 0xfffffffful : (unsigned long)ms;
+    // SO_RCVTIMEO・SO_SNDTIMEO（Windows ではミリ秒の DWORD）
+    if (g_ws.setsockopt((WSock)r->fd, 0xffff, 0x1006, (const char *)&t, sizeof t) != 0 ||
+        g_ws.setsockopt((WSock)r->fd, 0xffff, 0x1005, (const char *)&t, sizeof t) != 0) {
+        *err = err_text("待ち時間を決められません");
+        return 0;
+    }
+    return 1;
 }
 
 int32_t jw_listener_accept(void *h, void **out, WStr **err, const WSite *at) {
-    (void)h; (void)out; (void)err; (void)at;
-    return 0;
+    WRes *r = res_get((uint64_t)(uintptr_t)h, RES_LISTENER, at);
+    WSock fd = res_fail("accept") ? WSOCK_BAD : g_ws.accept((WSock)r->fd, NULL, NULL);
+    if (fd == WSOCK_BAD) {
+        *err = err_text("接続を受けられません");
+        return 0;
+    }
+    uint64_t tok = res_new(RES_TCP, NULL, (int64_t)fd);
+    if (!tok) {
+        g_ws.closesocket(fd);
+        *err = err_text("開いている資源が多すぎます");
+        return 0;
+    }
+    *out = (void *)(uintptr_t)tok;
+    return 1;
 }
 
+// 待ち受けている番号（listen で 0 を渡したときに OS が選んだもの）。番号は IPv4・IPv6 とも 2 バイト目から（ネットワークの順）
 int64_t jw_listener_port(void *h, const WSite *at) {
-    (void)h; (void)at;
-    return 0;
+    WRes *r = res_get((uint64_t)(uintptr_t)h, RES_LISTENER, at);
+    unsigned char ss[128];
+    int n = sizeof ss;
+    if (g_ws.getsockname((WSock)r->fd, ss, &n) != 0 || n < 4) return -1;
+    unsigned short fam = (unsigned short)(ss[0] | ss[1] << 8);
+    if (fam != 2 && fam != 23) return -1;
+    return (int64_t)(ss[2] << 8 | ss[3]);
 }
 #else
 #include <errno.h>

@@ -280,7 +280,7 @@ pub fn Result<(), str> write_text_atomic(str path, str s) {{ write_atomic(path, 
 // 標準ライブラリ std.http: HTTP/1.1 のクライアント。`use std.http;` と書いて使う
 //   let r = http.get("http://example.com/")?;
 //   print(r.status, r.headers["content-type"], r.text()?);
-// http:// だけ（https はまだ）。std.net の上に .jw だけで書いている（std.net と同じく、今は Linux・macOS だけ）。
+// http:// だけ（https はまだ）。std.net の上に .jw だけで書いている。
 // 1 回ごとにつなぎ、`Connection: close` で相手が閉じるまで読む。chunked の本文は読み解く。リダイレクトはたどらない。
 
 use std.net;
@@ -895,7 +895,7 @@ pub fn f64 round(f64 x) {{
     }
     if name == "net" {
         return Some("""
-// 標準ライブラリ std.net: TCP（同期だけ）。`use std.net;` と書いて使う。今は Linux・macOS だけ（Windows はまだ）
+// 標準ライブラリ std.net: TCP（同期だけ）。`use std.net;` と書いて使う。Linux・macOS・Windows（Winsock）
 //
 // TcpStream と TcpListener は資源（ムーブだけできる。ほかのスレッドへは渡せない）。持ち主がいなくなると黙って閉じる。
 //   let mut c = net.connect("localhost", 8080)?;

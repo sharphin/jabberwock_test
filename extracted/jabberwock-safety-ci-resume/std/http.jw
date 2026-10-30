@@ -1,7 +1,7 @@
 // 標準ライブラリ std.http: HTTP/1.1 のクライアント。`use std.http;` と書いて使う
 //   let r = http.get("http://example.com/")?;
 //   print(r.status, r.headers["content-type"], r.text()?);
-// http:// だけ（https はまだ）。std.net の上に .jw だけで書いている（std.net と同じく、今は Linux・macOS だけ）。
+// http:// だけ（https はまだ）。std.net の上に .jw だけで書いている。
 // 1 回ごとにつなぎ、`Connection: close` で相手が閉じるまで読む。chunked の本文は読み解く。リダイレクトはたどらない。
 
 use std.net;

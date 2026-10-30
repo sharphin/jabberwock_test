@@ -752,3 +752,7 @@ let x = pick(true, 1, 2);
   ほかのプログラムはエンジンなしでリンクできる。イベントの文字列は実行時ライブラリで写し、UTF-8 でなければ Failed にする（jabberwock の文字列の決まりを守る）。
   公開の形（Engine・Event・Config・Info・KeyCode）は試作の app/engine.jw に合わせた（tab_new だけ Result にした）。
   std.browser を使うかは、生成した LLVM の中の jw_browser_open を呼ぶ命令で見分ける（探す字面は組み立てる。jwc 自身の文字列の定数と取り違えないため。run 32 の自己コンパイルの失敗から）。
+- Windows の std.net（2026-10-30、オーナーの指示）: Winsock を使う。ws2_32.dll は初めて使うときに LoadLibraryW で読み込み、関数は GetProcAddress で取る。
+  リンクの指定（-lws2_32）を増やさないため（Rust 版で作る実行ファイルも同じ実行時ライブラリを使い、Rust 版は凍結なので）。windows.h は今までどおり入れない。
+  待ち受けは SO_EXCLUSIVEADDRUSE（Windows の SO_REUSEADDR はほかのプログラムに番号を横取りさせるため使わない）。
+  確かめたのは Linux の上の mingw（クロスコンパイル）と wine で、本物の Windows ではまだ（std.net・std.http のテストのプログラムが Linux と同じ出力）。
