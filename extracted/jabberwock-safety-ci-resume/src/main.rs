@@ -165,7 +165,7 @@ fn build(args: Vec<String>) {
             "-h" | "--help" => {
                 eprintln!("{}", usage);
                 eprintln!("  --release  実行時エラーは使った位置だけ出す（ソースを実行ファイルに入れない）");
-                eprintln!("  --debug-native  初回ブートストラップ用に -O0 / LTOなしでネイティブ生成");
+                eprintln!("  --debug-native  初回ブートストラップ用に -O1 / LTOなしでネイティブ生成（-O0 だと jwc が自分をコンパイルするときスタックが足りない）");
                 eprintln!("  -o 出力     実行ファイルの名前（なければファイル名から .jw を除いたもの）");
                 eprintln!("測定用（ベンチマークで検査の費用を分けるため）:");
                 eprintln!("  --no-elide          検査を消す解析をしない（世代の検査を全部残す）");
@@ -216,7 +216,7 @@ fn build(args: Vec<String>) {
         let stem = std::path::Path::new(&path).file_stem().and_then(|s| s.to_str()).unwrap_or("a");
         stem.to_string()
     });
-    match jabberwock::native::build(&ll, std::path::Path::new(&out), if debug_native { "-O0" } else { "-O2" }) {
+    match jabberwock::native::build(&ll, std::path::Path::new(&out), if debug_native { "-O1" } else { "-O2" }) {
         Ok(exe) => eprintln!("作りました: {}", exe.display()),
         Err(e) => {
             eprintln!("{}", e);

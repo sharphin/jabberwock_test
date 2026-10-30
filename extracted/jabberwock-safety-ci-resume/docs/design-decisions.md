@@ -696,3 +696,6 @@ let x = pick(true, 1, 2);
 - jabberwock_test にだけあった CI 向けの修正を取り込んだ（2026-10-29）: -O0/-O1 では LTO を使わない（大きな jwc の -O1 ビルドで LTO が時間の大半を占め、
   CI では SIGSEGV の回避にもなっていた。オーナーの判断で LTO なし）、実行時ライブラリのオブジェクトのキャッシュをテストのフォルダの外に置く、
   formal_report の `--kernel-only`。jabberwock_test の extracted/ はこのブランチの写しとし、向こうだけで直さない。
+- `jabberwock build --debug-native`（安全性の検査で最初の jwc を作る）は -O1・LTO なし（2026-10-30）。-O0 で作った jwc は
+  フレームが大きく、jwc 自身をコンパイルすると型検査の再帰で 8MB のスタックがあふれる（自己ホストの検査 ITEM 07 が落ちた）。
+  -O1 なら通る。作る時間は -O0 より長い（手元で約 4 分）が、-O2 + LTO よりは短い。
