@@ -7,11 +7,13 @@ formal/JabberwockFormal/ElisionCheck.lean で証明してある（docs/elision-p
 対象: examples/*.jw、tests/jwc_cases.txt の各プログラム、tests/safety/*.jw、bench/jabberwock/*.jw、jwc 自身（jwc/main.jw）。
 型のエラーなどで IR まで行かないプログラムは数えるだけ（SKIPPED）。
 
-使い方: python3 scripts/elision_check.py --jwc <jwc の実行ファイル> [--out <フォルダ>]
+使い方: python3 scripts/elision_check.py --jwc <jwc の実行ファイル> [--out <フォルダ>] [--build] [--output <summary.json>]
+--build は先に `lake build elision-check` をする。--output は結果を別の場所にも書く（安全性の検査の probe が読む）。
 結果: 全部通れば VERIFIED（終了コード 0）、通らない関数があれば NOT_VERIFIED（1）、検査器や jwc が動かなければ TOOL_ERROR（2）。
 """
 import argparse
 import json
+import os
 import pathlib
 import subprocess
 import sys
@@ -42,41 +44,70 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--jwc", required=True)
     ap.add_argument("--out", default=str(ROOT / "target" / "elision-check"))
-    ap.add_argument("--checker", default=str(ROOT / "formal" / ".lake" / "build" / "bin" / "elision-check"))
+    exe = "elision-check" + (".exe" if os.name == "nt" else "")
+    ap.add_argument("--checker", default=str(ROOT / "formal" / ".lake" / "build" / "bin" / exe))
+    ap.add_argument("--build", action="store_true")
+    ap.add_argument("--output")
     a = ap.parse_args()
     out = pathlib.Path(a.out)
     (out / "json").mkdir(parents=True, exist_ok=True)
     checker = pathlib.Path(a.checker)
-    if not checker.is_file():
-        print(f"TOOL_ERROR: 検査器がありません（cd formal && lake build elision-check）: {checker}")
+    summary = {"subject": "jwc", "status": "TOOL_ERROR", "results": [], "infrastructure_errors": []}
+
+    def save():
+        text = json.dumps(summary, ensure_ascii=False, indent=2)
+        (out / "summary.json").write_text(text, encoding="utf-8")
+        if a.output:
+            pathlib.Path(a.output).parent.mkdir(parents=True, exist_ok=True)
+            pathlib.Path(a.output).write_text(text, encoding="utf-8")
+
+    def tool_error(message):
+        print("TOOL_ERROR: " + message)
+        summary["infrastructure_errors"].append(message)
+        save()
         return 2
+
+    if a.build:
+        try:
+            r = subprocess.run(["lake", "build", "elision-check"], cwd=ROOT / "formal", capture_output=True, text=True, timeout=3600)
+        except (OSError, subprocess.TimeoutExpired) as e:
+            return tool_error(f"lake build elision-check が動きません: {e}")
+        if r.returncode != 0:
+            return tool_error("lake build elision-check が失敗しました: " + (r.stdout + r.stderr).strip()[-1000:])
+    if not checker.is_file():
+        return tool_error(f"検査器がありません（cd formal && lake build elision-check）: {checker}")
     emitted, skipped = [], []
     for name, src in programs(out):
         dst = out / "json" / (name.replace("/", "_").replace("#", "_") + ".json")
         try:
             r = subprocess.run([a.jwc, "--ir-cert", str(src)], capture_output=True, text=True, timeout=600)
         except (OSError, subprocess.TimeoutExpired) as e:
-            print(f"TOOL_ERROR: jwc が動きません: {name}: {e}")
-            return 2
+            return tool_error(f"jwc が動きません: {name}: {e}")
         if r.returncode != 0 or not r.stdout.startswith("{"):
             skipped.append(name)
             continue
         dst.write_text(r.stdout, encoding="utf-8")
         emitted.append((name, dst))
+    if not any(n == "jwc/main.jw" for n, _ in emitted):
+        return tool_error("jwc 自身（jwc/main.jw）の IR が出ませんでした")
     failed = []
     for name, dst in emitted:
-        r = subprocess.run([str(checker), str(dst)], capture_output=True, text=True, timeout=3600)
+        try:
+            r = subprocess.run([str(checker), str(dst)], capture_output=True, text=True, timeout=3600)
+        except (OSError, subprocess.TimeoutExpired) as e:
+            return tool_error(f"検査器が動きません: {name}: {e}")
         if r.returncode == 0 and "VERIFIED" in r.stdout:
+            summary["results"].append({"id": name, "compiler": "jwc", "status": "pass"})
             continue
         if r.returncode == 1:
             failed.append((name, r.stderr.strip()))
+            summary["results"].append({"id": name, "compiler": "jwc", "status": "fail", "why": r.stderr.strip()})
         else:
-            print(f"TOOL_ERROR: 検査器が止まりました: {name}: {r.stderr.strip()[:500]}")
-            return 2
+            return tool_error(f"検査器が止まりました: {name}: {r.stderr.strip()[:500]}")
     status = "VERIFIED" if not failed else "NOT_VERIFIED"
-    summary = {"status": status, "checked": len(emitted), "skipped": len(skipped),
-               "failed": [{"program": n, "why": w} for n, w in failed], "skipped_programs": skipped}
-    (out / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+    summary.update(status=status, checked=len(emitted), skipped=len(skipped),
+                   failed=[{"program": n, "why": w} for n, w in failed], skipped_programs=skipped)
+    save()
     for n, w in failed:
         print(f"NOT_VERIFIED: {n}\n  {w}")
     print(f"{status}: 確かめた {len(emitted)} 本、IR まで行かず数えただけ {len(skipped)} 本、通らない {len(failed)} 本"

@@ -384,7 +384,14 @@ def main(argv=None, *, target_os=None) -> int:
                                         "pending_probe_names": pending,
                                         "failures": [x["name"] for x in problems],
                                         "unavailable": unavailable})
+                if not args.dry_run:
+                    # 合意した基準（safety_goals.AGREED）。acceptance とは別の欄
+                    report["items"][-1]["agreed"] = safety_goals.agreed(report["items"][-1], compiler, selected_os,
+                                                                         produced, references)
         report["goals"] = safety_goals.goals(report["items"], compilers, selected_os, catalog, produced)
+        if not args.dry_run:
+            for goal in report["goals"]:
+                goal["agreed"] = safety_goals.agreed_goal(goal, report["items"])
         if not args.dry_run:
             report["updated_utc"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
             writer.save(report)
@@ -460,9 +467,11 @@ def main(argv=None, *, target_os=None) -> int:
         print("Final results could not be saved; last saved report: " + str(writer.path), file=sys.stderr, flush=True)
         return 2
     for item in report["items"]:
-        print(f"{selected_os.upper()} {item['compiler']} ITEM {item['item']:02d}/12 {item['name']}: {item['status']}", flush=True)
+        agreed = f" (agreed: {item['agreed']['status']})" if "agreed" in item else ""
+        print(f"{selected_os.upper()} {item['compiler']} ITEM {item['item']:02d}/12 {item['name']}: {item['status']}{agreed}", flush=True)
     for goal in report["goals"]:
-        print(f"{selected_os.upper()} {goal['compiler']} GOAL {goal['name']}: {goal['status']} (acceptance: {goal['acceptance']})", flush=True)
+        agreed = f", agreed: {goal['agreed']['status']}" if "agreed" in goal else ""
+        print(f"{selected_os.upper()} {goal['compiler']} GOAL {goal['name']}: {goal['status']} (acceptance: {goal['acceptance']}{agreed})", flush=True)
     if not args.dry_run:
         print("Report: " + str(writer.path), flush=True)
     else:

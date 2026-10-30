@@ -106,7 +106,14 @@ def catalog(target, scale, work, compilers=COMPILERS):
         add("effects", [10,11,12], [sys.executable, "scripts/retest_practical_effects.py", "--subject", subject,
             "--debug-compiler", str(executable(target, "jabberwock", "debug")), "--release-compiler", str(rust),
             "--jwc", str(jwc)], nested=True, count=4 if subject == "jwc" else 12)
+        # 10 の合意した基準: spec.md の節ごとの正しい例・拒否される例（tests/spec_coverage.json）
+        add("spec-coverage", [10], [sys.executable, "scripts/check_spec_coverage.py", "--subject", subject,
+            "--compiler", str(compiler), "--rust", str(rust)], nested=True)
         if subject == "jwc":
+            # 01 の合意した基準: 消した検査を Lean の検査器で確かめ直す（検査器は jwc の IR を読む）
+            p = add("elision-certificate", [1], [sys.executable, "scripts/elision_check.py", "--jwc", str(jwc), "--build",
+                    "--out", str(work / "elision-check")], nested=True)
+            p["lake"] = True
             add("bootstrap", [7,12], [sys.executable, "scripts/check_jwc_bootstrap.py", "--jwc", str(jwc)], nested=True, count=7, timeout=10800)
             p = add("retirement", [2,7,11], ["cargo", "test", "--test", "jwc", "jwc_generated_checks_reject_a_matching_retired_generation", "--", "--exact", "--nocapture"])
             p["required_test_names"] = ["jwc_generated_checks_reject_a_matching_retired_generation"]

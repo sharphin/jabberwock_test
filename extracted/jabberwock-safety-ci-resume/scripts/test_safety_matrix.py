@@ -16,7 +16,9 @@ class MatrixTests(unittest.TestCase):
         for target in ("windows", "linux"):
             preparations, probes = matrix.catalog(target, 1, Path("work"))
             self.assertEqual(probes[0]["compiler"], "jwc")
-            self.assertFalse(any(p["lake"] or "scripts/check_formal.py" in p["cmd"] for p in preparations + probes))
+            # 例外は jwc-elision-certificate だけ: 定理の検査ではなく、プログラムごとに IR を確かめ直す道具（01 の合意した基準）
+            self.assertFalse(any((p["lake"] and p["name"] != "jwc-elision-certificate") or "scripts/check_formal.py" in p["cmd"]
+                                 for p in preparations + probes))
             for compiler in matrix.COMPILERS:
                 own = [p for p in probes if p["compiler"] == compiler]
                 self.assertEqual({n for p in own for n in p["items"]}, set(range(1, 13)))
@@ -52,6 +54,35 @@ class MatrixTests(unittest.TestCase):
             self.assertEqual(len(data["goals"]), 10)
             self.assertTrue(all(i["status"] == "PROBES_PASS_ONLY" for i in data["items"] if i["compiler"] == "jwc"))
             self.assertTrue(all(i["acceptance"] == "BLOCKED" for i in data["items"]))
+
+    def test_agreed_criteria_need_every_required_probe(self):
+        # 合意した基準: 必要な probe が全部通ったときだけ MET。acceptance は BLOCKED のまま変えない
+        def run(failing):
+            with tempfile.TemporaryDirectory() as d:
+                path = Path(d) / "report.json"
+                def execute(p, *_):
+                    return {"name": p["name"], "status": "FAIL" if p["name"] == failing else "PROBE_PASS"}
+                with mock.patch.object(report.suites, "host_os", return_value="linux"), \
+                     mock.patch.object(report, "version", return_value="mock"), \
+                     mock.patch.object(report, "run_probe", side_effect=execute), contextlib.redirect_stdout(io.StringIO()):
+                    report.main(["--output", str(path)])
+                data = json.loads(path.read_text(encoding="utf-8"))
+            return ({(i["compiler"], i["item"]): i for i in data["items"]},
+                    {g["id"]: g for g in data["goals"]})
+        items, goals = run(None)
+        self.assertTrue(all(i["acceptance"] == "BLOCKED" for i in items.values()))
+        self.assertEqual(items["jwc", 1]["agreed"]["status"], "MET")
+        self.assertEqual(items["jwc", 7]["agreed"]["status"], "MET")
+        self.assertEqual(items["jwc", 10]["agreed"]["status"], "MET")
+        # 検査器（jwc の IR しか読まない）のない Rust の 01 は満たさない
+        self.assertEqual(items["rust", 1]["agreed"]["absent_probes"], ["rust-elision-certificate"])
+        self.assertEqual(goals["linux-jwc-memory"]["agreed"]["status"], "MET")
+        self.assertEqual(goals["linux-jwc-semantics"]["agreed"]["status"], "MET")
+        self.assertEqual(goals["linux-rust-semantics"]["agreed"]["unmet_items"], [1])
+        items, goals = run("jwc-elision-certificate")
+        self.assertEqual(items["jwc", 1]["agreed"]["not_passed_probes"], ["jwc-elision-certificate"])
+        self.assertEqual(goals["linux-jwc-checks"]["agreed"]["status"], "NOT_MET")
+        self.assertEqual(items["rust", 2]["agreed"]["status"], "MET")
 
     def test_unknown_status_cannot_exit_successfully(self):
         with tempfile.TemporaryDirectory() as d:

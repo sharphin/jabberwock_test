@@ -111,6 +111,20 @@ jobs:
           sudo apt-get install -y -qq llvm
           command -v opt
           opt --version
+      - name: Install pinned Lean 4.24.0 (lake only on PATH; keep the system Clang)
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/lean-4.24.0-linux.tar.zst"
+          lean_root="$RUNNER_TEMP/jw-lean"
+          curl --fail --location --silent --show-error --retry 3 --max-time 300 \
+            -o "$archive" https://github.com/leanprover/lean4/releases/download/v4.24.0/lean-4.24.0-linux.tar.zst
+          printf '%s  %s\n' b14f5e5159219dd1a1956c3b806813319f5e94ccd5bdfd56f54520609a5bb5ec "$archive" | sha256sum -c -
+          mkdir -p "$lean_root" "$RUNNER_TEMP/jw-lake"
+          tar --zstd -xf "$archive" -C "$lean_root" --strip-components=1
+          # Lean に入っている clang で system の clang を隠さないよう、lake だけを PATH に置く（01 の jwc-elision-certificate が使う）
+          ln -s "$lean_root/bin/lake" "$RUNNER_TEMP/jw-lake/lake"
+          echo "$RUNNER_TEMP/jw-lake" >> "$GITHUB_PATH"
       - name: Linux safety probes
         timeout-minutes: 55
         run: |

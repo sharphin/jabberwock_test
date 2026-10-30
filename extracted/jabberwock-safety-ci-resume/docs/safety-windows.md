@@ -80,6 +80,15 @@ ASanのランタイムがない、負例が検出されない、リンクでき�
 ASanの検査に失敗したとき、検査を外して成功に置き換える動作はしない。
 `PROBES_PASS_ONLY` は実行したプローブの成功であり、項目全体の認定は常に `acceptance: NOT_ASSESSED`。
 
+### 合意した基準（agreed、2026-10-30）
+
+各項目と 5 目標には、`acceptance` とは別の欄 `agreed` がある（`MET` / `NOT_MET`）。
+条件は `scripts/safety_goals.py` の `AGREED`。項目ごとに必要な probe を決め、全部 `PROBE_PASS` のときだけ `MET`。
+`coverage_gaps` は消さずに残し、`acceptance` は `BLOCKED` のまま（34 の義務の全体の受け入れとは別の判定）。
+01 は `jwc-elision-certificate`（Lean の検査器で消した検査を確かめ直す。lake が要る）、
+10 は `*-spec-coverage`（`tests/spec_coverage.json` の、spec.md の節ごとの正しい例・拒否される例）。
+12 はこのレポートの OS の分だけ。12 全体は Linux と Windows（オーナーの実機）の両方のレポートで `MET` のとき。
+
 ## この変更の確認状況
 
 作業分担に従い、変更担当者はビルド・テスト・clippy・Lean検査を実行していない。
