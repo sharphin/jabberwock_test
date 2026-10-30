@@ -93,6 +93,7 @@ fn main() {
 | `std.url` | `parse(s)`・`encode(s)`・`decode(s, plus)` と `Url`（[1.7](#17-stdurljwc-だけ)） |
 | `std.browser` | `open(cfg)`・`close(e)` と `Engine`・`Config`・`Event`・`KeyCode`・`Info`（[1.8](#18-stdbrowserjwc-だけ)） |
 | `std.net` | `connect(host, port)`・`listen(host, port)`・`close(s)`・`stop(l)` と資源の型 `TcpStream`・`TcpListener`（[1.4](#14-stdnetjwc-だけ)） |
+| `std.tls` | `connect(host, port)`・`close(s)` と資源の型 `TlsStream`（[1.9](#19-stdtlsjwc-だけ)） |
 
 - 詳しい動き（一周・実行時エラーになる条件）は `std/*.jw` の各関数の説明に書いてある。
 
@@ -112,7 +113,7 @@ fn Result<(), str> save() {
 ```
 
 - **資源**は外のもの（今は開いたファイルだけ）を持つ値。`resource 名前;` で決めるが、書けるのは標準ライブラリの中だけで、
-  コンパイラが知っている種類（`std.fs` の `File`、`std.net` の `TcpStream`・`TcpListener`、`std.browser` の `Handle`）に限る。数や文字列から作る方法はない（作るのは `fs.open` などだけ）。
+  コンパイラが知っている種類（`std.fs` の `File`、`std.net` の `TcpStream`・`TcpListener`、`std.tls` の `TlsStream`、`std.browser` の `Handle`）に限る。数や文字列から作る方法はない（作るのは `fs.open` などだけ）。
 - 値として読むといつもムーブ（2 つ目の持ち主はできない）。`ref` / `ref mut` で借りられる。`for x in` の x などの読むだけの写しは、閉じない。
 - 持ち主がいなくなると黙って閉じる（構造体・リストの中でも）。閉じたときの失敗を知りたいときは `fs.close(f)`（`Result<(), str>`。失敗しても f はもう使えない）。
   `exit` と実行時エラーでは閉じない（ほかの後片づけと同じ。書いた内容は close で確かめる）。
@@ -143,7 +144,7 @@ c.write_text("ok\n")?;
 net.close(c)?;
 ```
 
-- TCP だけ（同期。HTTP・TLS・UDP はまだ）。`TcpStream`・`TcpListener` は資源で、規則は 1.3 と同じ（ムーブだけ・送れない・持ち主がいなくなると閉じる）。
+- TCP だけ（同期。UDP はまだ。TLS は std.tls、HTTP は std.http）。`TcpStream`・`TcpListener` は資源で、規則は 1.3 と同じ（ムーブだけ・送れない・持ち主がいなくなると閉じる）。
 - `net.connect(host, port)`・`net.listen(host, port)`（`Result`）。host は名前か番号。port が 0〜65535 の外なら Err。
 - TcpStream: `read(n)`（`u8[]`）・`write(bytes)`・`write_text(s)`・`set_timeout(ms)`。時間切れは `Err("時間切れです")`。相手が閉じた接続へ書くと Err（プログラムは止まらない）。
 - TcpListener: `accept()`（`Result<TcpStream, str>`）・`port()`（`i64`）。やめるのは `net.stop(l)`。
@@ -158,7 +159,8 @@ print(r.status, r.headers["content-type"], r.text()?);
 let p = http.post("http://127.0.0.1:8080/p", "application/json", "{{}}")?;
 ```
 
-- HTTP/1.1 のクライアント。std.net の上に .jw だけで書いている（`std/http.jw`）。**http:// だけ**（https は Err）。
+- HTTP/1.1 のクライアント。std.net・std.tls の上に .jw だけで書いている（`std/http.jw`）。http:// と https://（[1.9](#19-stdtlsjwc-だけ) の規則で証明書を確かめる）。ほかの scheme は Err。
+  Host ヘッダーは、port がその scheme の決まりの番号（http は 80、https は 443）なら port を書かない。
 - 1 回ごとにつなぎ、`Connection: close` を送って、相手が閉じるまで読む。本文は chunked なら読み解き、`Content-Length` があればその長さにする（足りなければ Err）。
   リダイレクトはたどらない。状態の番号が 404 などでも Ok（`status` を見る）。
 - `Response`: `status`（`i64`）・`headers`（`str[str]`。名前は小文字。同じ名前が二つ以上なら `", "` でつなぐ）・`body`（`u8[]`）・`text()`（本文を `str` に。UTF-8 でなければ Err）。
@@ -238,6 +240,25 @@ browser.close(e);
 - `Event`: `Ready`・`CloseRequested`・`NavStarted(tab, url)`・`NavFinished(tab, url, code)`（code 0 は成功）・`UrlChanged(tab, url)`・`TitleChanged(tab, title)`・
   `HistoryChanged(tab, back, forward)`・`NewTabRequested(tab, url)`・`ChromeMessage(text)`・`Key(code)`（`KeyCode.of(code)` で読む）・`PermissionDenied(tab, what)`・`Failed(code, text)`。
   エンジンが UTF-8 でない文字列を返したら `Failed` にする。
+
+### 1.9 std.tls（jwc だけ）
+
+```
+use std.tls;
+let mut s = tls.connect("example.com", 443)?;   // TlsStream。証明書と名前を確かめてから Ok
+s.write_text("GET / HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n")?;
+let got = s.read(4096)?;                         // 相手が終わりを知らせたら []
+tls.close(s)?;
+```
+
+- TLS のクライアントだけ（待ち受けはまだ）。版は TLS 1.2 以上（Windows は 1.2）。`TlsStream` は資源で、規則は 1.3 と同じ。メソッドは TcpStream と同じ（`read(n)`・`write(bytes)`・`write_text(s)`・`set_timeout(ms)`）。
+- `tls.connect(host, port)`: TCP でつなぎ、TLS の握手をして、相手の証明書を OS の信頼の置き場所までたどれるか・`host` と名前が合うかを確かめる。
+  どちらかがだめなら `Err("TLS の証明書を確かめられません（理由）: host")`。理由の文は OS の部品による（下）。host が IP の番号なら、証明書の IP と照らす。
+  確かめるのをやめる指定はない。`tls.close(s)` は終わりの知らせ（close_notify）を送ってから閉じる。持ち主がいなくなったときも同じ。
+- OS の部品は初めて使うときに読み込む（リンクの指定は要らない。読み込めなければ connect が Err）。
+  - Linux など: OpenSSL 3（`libssl.so.3`、なければ `libssl.so`）。信頼の置き場所は OpenSSL の決まりのもの（環境変数 `SSL_CERT_FILE`・`SSL_CERT_DIR` で変えられる）。理由の文は OpenSSL のもの（英語）。
+  - Windows: Schannel（secur32.dll）と crypt32.dll。信頼の置き場所は Windows のもの。理由の文は「信頼できる発行元につながりません」「名前が合いません」「期限が切れています」「取り消されています」か、番号（`0x...`）。
+- 取り消し（失効）は調べない。
 
 ## 2. 字句
 

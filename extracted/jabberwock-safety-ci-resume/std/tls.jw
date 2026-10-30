@@ -1,0 +1,17 @@
+// 標準ライブラリ std.tls: TLS のクライアント（証明書を確かめる）。`use std.tls;` と書いて使う
+//   let mut s = tls.connect("example.com", 443)?;
+//   s.write_text("GET / HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n")?;
+//   print(s.read(100)?.len());
+//   tls.close(s)?;
+// TLS そのものは作らず OS の部品を使う（Linux は OpenSSL の libssl.so.3、Windows は Schannel。macOS はまだ）。
+// 証明書は OS の信頼の置き場所で確かめ、接続先の名前（IP なら IP）と照らす。最低の版は TLS 1.2。確かめられなければ Err で、弱めて続ける道はない。
+// TlsStream は資源（ムーブだけ。ほかのスレッドへは渡せない。持ち主がいなくなると閉じる）。
+// メソッドは std.net の TcpStream と同じ: `read(n)`・`write(bytes)`・`write_text(s)`・`set_timeout(ms)`（持ち主が mut であること）。
+
+pub resource TlsStream;
+
+/// host の port へつなぎ、TLS を始める（証明書と名前を確かめる）
+pub fn Result<TlsStream, str> connect(str host, i64 port) { __tls_connect(host, port) }
+
+/// 閉じる（終わりの知らせを 1 回送ってみる。返事は待たない）
+pub fn Result<(), str> close(TlsStream s) { __res_close(s) }

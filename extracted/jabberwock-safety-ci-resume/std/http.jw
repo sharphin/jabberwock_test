@@ -1,10 +1,11 @@
 // 標準ライブラリ std.http: HTTP/1.1 のクライアント。`use std.http;` と書いて使う
 //   let r = http.get("http://example.com/")?;
 //   print(r.status, r.headers["content-type"], r.text()?);
-// http:// だけ（https はまだ）。std.net の上に .jw だけで書いている。
+// http:// と https://（std.tls。証明書と名前を確かめる）。std.net・std.tls の上に .jw だけで書いている。
 // 1 回ごとにつなぎ、`Connection: close` で相手が閉じるまで読む。chunked の本文は読み解く。リダイレクトはたどらない。
 
 use std.net;
+use std.tls;
 use std.url;
 use std.text;
 
@@ -30,28 +31,40 @@ pub fn Result<Response, str> get(str target) { request("GET", target, "", "") }
 pub fn Result<Response, str> post(str target, str content_type, str body) { request("POST", target, content_type, body) }
 
 fn Result<url.Url, str> parse_url(str s) {
-    if s.starts_with("https://") { return Err("https はまだ使えません: " + s); }
-    if !s.starts_with("http://") { return Err("http:// で始まる URL ではありません: " + s); }
-    url.parse(s)
+    let u = url.parse(s)?;
+    if u.scheme != "http" && u.scheme != "https" { return Err("http:// か https:// で始まる URL ではありません: " + s); }
+    Ok(u)
 }
 
 fn Result<Response, str> request(str method, str target, str content_type, str body) {
     let u = parse_url(target)?;
     if content_type.contains("\r") || content_type.contains("\n") { return Err("content_type に改行があります"); }
     let name = if u.host.contains(":") { "[" + u.host + "]" } else { u.host };
-    let host = if u.port == 80 { name } else { name + ":{u.port}" };
+    let plain_port = if u.scheme == "https" { 443 } else { 80 };
+    let host = if u.port == plain_port { name } else { name + ":{u.port}" };
     let mut req = "{method} {u.target()} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\nUser-Agent: jabberwock\r\n";
     if method == "POST" { req += "Content-Type: {content_type}\r\nContent-Length: {body.byte_len()}\r\n"; }
     req += "\r\n" + body;
-    let mut c = net.connect(u.host, u.port)?;
-    c.write_text(req)?;
     let u8[] mut all = [];
-    loop {
-        let got = c.read(65536)?;
-        if got.len() == 0 { break; }
-        for x in got { all.push(x); }
+    if u.scheme == "https" {
+        let mut c = tls.connect(u.host, u.port)?;
+        c.write_text(req)?;
+        loop {
+            let got = c.read(65536)?;
+            if got.len() == 0 { break; }
+            for x in got { all.push(x); }
+        }
+        tls.close(c)?;
+    } else {
+        let mut c = net.connect(u.host, u.port)?;
+        c.write_text(req)?;
+        loop {
+            let got = c.read(65536)?;
+            if got.len() == 0 { break; }
+            for x in got { all.push(x); }
+        }
+        net.close(c)?;
     }
-    net.close(c)?;
     parse_response(ref all)
 }
 

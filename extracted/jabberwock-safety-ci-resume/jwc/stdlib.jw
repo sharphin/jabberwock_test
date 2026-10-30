@@ -11,6 +11,7 @@ pub fn str[] names() {
     out.push("net");
     out.push("text");
     out.push("time");
+    out.push("tls");
     out.push("url");
     out
 }
@@ -280,10 +281,11 @@ pub fn Result<(), str> write_text_atomic(str path, str s) {{ write_atomic(path, 
 // 標準ライブラリ std.http: HTTP/1.1 のクライアント。`use std.http;` と書いて使う
 //   let r = http.get("http://example.com/")?;
 //   print(r.status, r.headers["content-type"], r.text()?);
-// http:// だけ（https はまだ）。std.net の上に .jw だけで書いている。
+// http:// と https://（std.tls。証明書と名前を確かめる）。std.net・std.tls の上に .jw だけで書いている。
 // 1 回ごとにつなぎ、`Connection: close` で相手が閉じるまで読む。chunked の本文は読み解く。リダイレクトはたどらない。
 
 use std.net;
+use std.tls;
 use std.url;
 use std.text;
 
@@ -309,28 +311,40 @@ pub fn Result<Response, str> get(str target) {{ request("GET", target, "", "") }
 pub fn Result<Response, str> post(str target, str content_type, str body) {{ request("POST", target, content_type, body) }}
 
 fn Result<url.Url, str> parse_url(str s) {{
-    if s.starts_with("https://") {{ return Err("https はまだ使えません: " + s); }}
-    if !s.starts_with("http://") {{ return Err("http:// で始まる URL ではありません: " + s); }}
-    url.parse(s)
+    let u = url.parse(s)?;
+    if u.scheme != "http" && u.scheme != "https" {{ return Err("http:// か https:// で始まる URL ではありません: " + s); }}
+    Ok(u)
 }}
 
 fn Result<Response, str> request(str method, str target, str content_type, str body) {{
     let u = parse_url(target)?;
     if content_type.contains("\\r") || content_type.contains("\\n") {{ return Err("content_type に改行があります"); }}
     let name = if u.host.contains(":") {{ "[" + u.host + "]" }} else {{ u.host }};
-    let host = if u.port == 80 {{ name }} else {{ name + ":{{u.port}}" }};
+    let plain_port = if u.scheme == "https" {{ 443 }} else {{ 80 }};
+    let host = if u.port == plain_port {{ name }} else {{ name + ":{{u.port}}" }};
     let mut req = "{{method}} {{u.target()}} HTTP/1.1\\r\\nHost: {{host}}\\r\\nConnection: close\\r\\nUser-Agent: jabberwock\\r\\n";
     if method == "POST" {{ req += "Content-Type: {{content_type}}\\r\\nContent-Length: {{body.byte_len()}}\\r\\n"; }}
     req += "\\r\\n" + body;
-    let mut c = net.connect(u.host, u.port)?;
-    c.write_text(req)?;
     let u8[] mut all = [];
-    loop {{
-        let got = c.read(65536)?;
-        if got.len() == 0 {{ break; }}
-        for x in got {{ all.push(x); }}
+    if u.scheme == "https" {{
+        let mut c = tls.connect(u.host, u.port)?;
+        c.write_text(req)?;
+        loop {{
+            let got = c.read(65536)?;
+            if got.len() == 0 {{ break; }}
+            for x in got {{ all.push(x); }}
+        }}
+        tls.close(c)?;
+    }} else {{
+        let mut c = net.connect(u.host, u.port)?;
+        c.write_text(req)?;
+        loop {{
+            let got = c.read(65536)?;
+            if got.len() == 0 {{ break; }}
+            for x in got {{ all.push(x); }}
+        }}
+        net.close(c)?;
     }}
-    net.close(c)?;
     parse_response(ref all)
 }}
 
@@ -1049,6 +1063,27 @@ pub fn sleep(i64 ms) {{ __time_sleep_ms(ms); }}
 
 /// 壁時計: 1970-01-01 UTC からのミリ秒。時刻の修正で戻ることがあるので、かかった時間を測るには now を使う
 pub fn i64 unix_ms() {{ __time_unix_ms() }}
+""");
+    }
+    if name == "tls" {
+        return Some("""
+// 標準ライブラリ std.tls: TLS のクライアント（証明書を確かめる）。`use std.tls;` と書いて使う
+//   let mut s = tls.connect("example.com", 443)?;
+//   s.write_text("GET / HTTP/1.1\\r\\nHost: example.com\\r\\nConnection: close\\r\\n\\r\\n")?;
+//   print(s.read(100)?.len());
+//   tls.close(s)?;
+// TLS そのものは作らず OS の部品を使う（Linux は OpenSSL の libssl.so.3、Windows は Schannel。macOS はまだ）。
+// 証明書は OS の信頼の置き場所で確かめ、接続先の名前（IP なら IP）と照らす。最低の版は TLS 1.2。確かめられなければ Err で、弱めて続ける道はない。
+// TlsStream は資源（ムーブだけ。ほかのスレッドへは渡せない。持ち主がいなくなると閉じる）。
+// メソッドは std.net の TcpStream と同じ: `read(n)`・`write(bytes)`・`write_text(s)`・`set_timeout(ms)`（持ち主が mut であること）。
+
+pub resource TlsStream;
+
+/// host の port へつなぎ、TLS を始める（証明書と名前を確かめる）
+pub fn Result<TlsStream, str> connect(str host, i64 port) {{ __tls_connect(host, port) }}
+
+/// 閉じる（終わりの知らせを 1 回送ってみる。返事は待たない）
+pub fn Result<(), str> close(TlsStream s) {{ __res_close(s) }}
 """);
     }
     if name == "url" {

@@ -756,3 +756,10 @@ let x = pick(true, 1, 2);
   リンクの指定（-lws2_32）を増やさないため（Rust 版で作る実行ファイルも同じ実行時ライブラリを使い、Rust 版は凍結なので）。windows.h は今までどおり入れない。
   待ち受けは SO_EXCLUSIVEADDRUSE（Windows の SO_REUSEADDR はほかのプログラムに番号を横取りさせるため使わない）。
   確かめたのは Linux の上の mingw（クロスコンパイル）と wine で、本物の Windows ではまだ（std.net・std.http のテストのプログラムが Linux と同じ出力）。
+- std.tls と https（2026-10-30、オーナーの選択「Windows と Linux」）: 設計では Linux の TLS は Unsupported だったが、オーナーの選択で Linux も入れた。
+  外部のクレートも -l の指定も増やさないため、どちらも OS の部品を初めて使うときに読み込む（Linux は dlopen で OpenSSL 3 の libssl、Windows は LoadLibraryW で Schannel と crypt32）。
+  ない環境では connect が Err になるだけで、TLS を使わないプログラムには関係しない。証明書の確かめは必ずする（やめる指定は作らない）。取り消しは調べない。
+  Windows は Schannel の自動の確かめ（SCH_CRED_AUTO_CRED_VALIDATION）を使わず、握手のあとに crypt32 で鎖と名前を確かめる。wine では自動の確かめが何もしなかったため
+  （鎖の途切れも、SSL の決まりの結果に加えて鎖の状態で見る）。終わりの知らせは中身のない OK で返る実装（wine）もあるので、記録の種類（21）でも見分ける。
+  TLS 1.3 は Windows では使わない（Schannel の 1.3 は版によって動きが違うため。Linux は 1.2 以上で OpenSSL に任せる）。
+  確かめたのは Linux（OpenSSL 3）と、mingw で作って wine で動かした Windows 版で、本物の Windows ではまだ。テストは Linux だけ（tests/tls の試験用の証明書で openssl s_server を立てる）。

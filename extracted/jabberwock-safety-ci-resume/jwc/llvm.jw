@@ -41,6 +41,11 @@ const RES_DECLS = "declare i32 @jw_fs_open(ptr, i64, ptr, ptr)\n" +
     "declare i32 @jw_env_get(ptr, ptr)\n" +
     "declare i64 @jw_time_now_ns()\n" +
     "declare i64 @jw_time_unix_ms()\n" +
+    "declare i32 @jw_tls_connect(ptr, i64, ptr, ptr)\n" +
+    "declare i32 @jw_tls_read(ptr, i64, ptr, ptr, ptr)\n" +
+    "declare i32 @jw_tls_write(ptr, ptr, ptr, ptr)\n" +
+    "declare i32 @jw_tls_write_text(ptr, ptr, ptr, ptr)\n" +
+    "declare i32 @jw_tls_set_timeout(ptr, i64, ptr, ptr)\n" +
     "declare i32 @jw_browser_open(ptr, ptr, i64, i64, i64, ptr, ptr)\n" +
     "declare i64 @jw_browser_call(ptr, i64, i64, ptr, i64, ptr)\n" +
     "declare i64 @jw_browser_next(ptr, i64, ptr)\n" +
@@ -488,7 +493,7 @@ pub struct Module {
     fn str output() {
         let body = code.join("");
         let res = if body.contains("@jw_res_") || body.contains("@jw_fs_") || body.contains("@jw_file_") || body.contains("@jw_net_")
-            || body.contains("@jw_tcp_") || body.contains("@jw_listener_") || body.contains("@jw_env_get(") || body.contains("@jw_time_") || body.contains("@jw_browser_") { RES_DECLS } else { "" };
+            || body.contains("@jw_tcp_") || body.contains("@jw_listener_") || body.contains("@jw_env_get(") || body.contains("@jw_time_") || body.contains("@jw_browser_") || body.contains("@jw_tls_") { RES_DECLS } else { "" };
         PRELUDE + res + types.join("") + "\n" + globals.join("") + "\n" + body + TBAA
     }
 

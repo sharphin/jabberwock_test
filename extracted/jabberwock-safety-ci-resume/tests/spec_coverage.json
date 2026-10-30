@@ -50,6 +50,7 @@
     {"section": "1.6", "reason": "std.env・std.time・std.jsonは jwc だけの機能で、Rust 版を正解にして比べられない。確かめるのは tests/jwc.rs の jwc_std_*"},
     {"section": "1.7", "reason": "std.urlは jwc だけの機能で、Rust 版を正解にして比べられない。確かめるのは tests/jwc.rs の jwc_std_*"},
     {"section": "1.8", "reason": "std.browserは jwc だけの機能で、Rust 版を正解にして比べられない。確かめるのは tests/jwc.rs の jwc_std_*"},
+    {"section": "1.9", "reason": "std.tlsは jwc だけの機能で、Rust 版を正解にして比べられない。確かめるのは tests/jwc.rs の jwc_std_*"},
     {"section": "11", "reason": "未実装の機能の一覧で、言語の機能ではない"}
   ]
 }

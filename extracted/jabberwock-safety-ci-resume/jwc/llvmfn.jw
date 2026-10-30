@@ -1854,10 +1854,10 @@ struct FnGen {
             release(vals, all);
             return result_of(m, want, ok, err, "res", out);
         }
-        if name == "__net_connect" || name == "__net_listen" {
+        if name == "__net_connect" || name == "__net_listen" || name == "__tls_connect" {
             let out = b.alloca("ptr");
             let err = b.alloca("ptr");
-            let f = if name == "__net_connect" { "@jw_net_connect" } else { "@jw_net_listen" };
+            let f = if name == "__net_connect" { "@jw_net_connect" } else if name == "__tls_connect" { "@jw_tls_connect" } else { "@jw_net_listen" };
             let ok = b.val("call i32 " + f + "(ptr " + vals[0].v + ", i64 " + vals[1].v + ", ptr " + out + ", ptr " + err + ")");
             release(vals, all);
             return result_of(m, want, ok, err, "res", out);
@@ -1900,10 +1900,10 @@ struct FnGen {
             let site = m.site(span, "");
             return Ok(llvm.vt(b.val("call i64 @jw_listener_port(ptr " + vals[0].v + ", ptr " + site + ")"), ty.i64t()));
         }
-        if name == "tcp.set_timeout" {
+        if name == "tcp.set_timeout" || name == "tls.set_timeout" {
             let err = b.alloca("ptr");
             let site = m.site(span, "");
-            let ok = b.val("call i32 @jw_tcp_set_timeout(ptr " + vals[0].v + ", i64 " + vals[1].v + ", ptr " + err + ", ptr " + site + ")");
+            let ok = b.val("call i32 @jw_" + name.slice(0, 3) + "_set_timeout(ptr " + vals[0].v + ", i64 " + vals[1].v + ", ptr " + err + ", ptr " + site + ")");
             return result_of(m, want, ok, err, "unit", "");
         }
         if name == "__env_get" {
@@ -1964,12 +1964,12 @@ struct FnGen {
             let ok = b.val("call i32 @jw_res_close(ptr " + vals[0].v + ", ptr " + err + ", ptr " + site + ")");
             return result_of(m, want, ok, err, "unit", "");
         }
-        if name == "file.read" || name == "tcp.read" {
+        if name == "file.read" || name == "tcp.read" || name == "tls.read" {
             let out = b.alloca("%list");
             b.op("store %list zeroinitializer, ptr " + out);
             let err = b.alloca("ptr");
             let site = m.site(span, "");
-            let ok = b.val("call i32 @jw_" + (if name.starts_with("tcp.") { "tcp" } else { "file" }) + "_read(ptr " + vals[0].v + ", i64 " + vals[1].v + ", ptr " + out + ", ptr " + err + ", ptr " + site + ")");
+            let ok = b.val("call i32 @jw_" + (if name.starts_with("tcp.") { "tcp" } else if name.starts_with("tls.") { "tls" } else { "file" }) + "_read(ptr " + vals[0].v + ", i64 " + vals[1].v + ", ptr " + out + ", ptr " + err + ", ptr " + site + ")");
             return result_of(m, want, ok, err, "bytes", out);
         }
         if name == "file.read_text" {
@@ -1980,18 +1980,18 @@ struct FnGen {
             return result_of(m, want, ok, err, "str", out);
         }
         // 書くリストはムーブされてきたので、jw_file_write が解放する
-        if name == "file.write" || name == "tcp.write" {
+        if name == "file.write" || name == "tcp.write" || name == "tls.write" {
             let lst = b.alloca("%list");
             b.op("store %list " + vals[1].v + ", ptr " + lst);
             let err = b.alloca("ptr");
             let site = m.site(span, "");
-            let ok = b.val("call i32 @jw_" + (if name.starts_with("tcp.") { "tcp" } else { "file" }) + "_write(ptr " + vals[0].v + ", ptr " + lst + ", ptr " + err + ", ptr " + site + ")");
+            let ok = b.val("call i32 @jw_" + (if name.starts_with("tcp.") { "tcp" } else if name.starts_with("tls.") { "tls" } else { "file" }) + "_write(ptr " + vals[0].v + ", ptr " + lst + ", ptr " + err + ", ptr " + site + ")");
             return result_of(m, want, ok, err, "unit", "");
         }
-        if name == "file.write_text" || name == "tcp.write_text" {
+        if name == "file.write_text" || name == "tcp.write_text" || name == "tls.write_text" {
             let err = b.alloca("ptr");
             let site = m.site(span, "");
-            let ok = b.val("call i32 @jw_" + (if name.starts_with("tcp.") { "tcp" } else { "file" }) + "_write_text(ptr " + vals[0].v + ", ptr " + vals[1].v + ", ptr " + err + ", ptr " + site + ")");
+            let ok = b.val("call i32 @jw_" + (if name.starts_with("tcp.") { "tcp" } else if name.starts_with("tls.") { "tls" } else { "file" }) + "_write_text(ptr " + vals[0].v + ", ptr " + vals[1].v + ", ptr " + err + ", ptr " + site + ")");
             release(vals, all);
             return result_of(m, want, ok, err, "unit", "");
         }

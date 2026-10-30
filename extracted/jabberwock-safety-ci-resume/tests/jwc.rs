@@ -615,7 +615,7 @@ fn jwc_std_http() {
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     let got = Command::new(&exe).output().unwrap();
     assert_eq!(String::from_utf8_lossy(&got.stdout), "200 text/plain 1, 2 こんに\n404 abcde\n\
-        Ok(GET /a?b=1 HTTP/1.1|POST /p HTTP/1.1|)\nNone None None\nhttps はまだ使えません: https://x\nok\n");
+        Ok(GET /a?b=1 HTTP/1.1|POST /p HTTP/1.1|)\nNone None None\nhttp:// か https:// で始まる URL ではありません: ftp://x\nok\n");
     let _ = std::fs::remove_dir_all(dir);
 }
 
@@ -668,7 +668,7 @@ fn Result<(), str> run() {
     let u8[] x2 = [192, 128];
     let u8[] x3 = [230, 151];
     print(text.from_utf8(ref x1), text.from_utf8(ref x2), text.from_utf8(ref x3));
-    match http.get("https://x") { case Ok(x) -> print("?"); case Err(e) -> print(e); }
+    match http.get("ftp://x") { case Ok(x) -> print("?"); case Err(e) -> print(e); }
     Ok(())
 }
 
@@ -718,6 +718,72 @@ fn main() {
     for i in range(600) { deep += "["; }
     match json.parse(deep) { case Ok(v) -> print("?"); case Err(e) -> print(e); }
     print(json.quote("a\"b\\c" + chr(1)));
+}
+"#;
+
+/// std.tls と https。`openssl s_server` を試験用の証明書（tests/tls）で立て、確かめられる場合と確かめられない場合を見る。
+/// Windows（Schannel）は信頼の置き場所に試験用の発行元を入れないと試せないので、ここでは試さない（手で wine と Windows で確かめる）
+#[cfg(unix)]
+#[test]
+fn jwc_std_tls() {
+    if !have_clang() { return; }
+    let dir = std::env::temp_dir().join(format!("jw-jwc-tls-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("main.jw");
+    std::fs::write(&path, TLS_SRC).unwrap();
+    let exe = dir.join("main");
+    let out = Command::new(jwc()).args(["build", "--clang", &native::clang(), "-o"]).arg(&exe).arg(&path).output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let certs = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/tls");
+    let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+    let mut server = Command::new("openssl")
+        .args(["s_server", "-quiet", "-www", "-accept"])
+        .arg(port.to_string())
+        .arg("-cert").arg(certs.join("server.pem"))
+        .arg("-key").arg(certs.join("server.key"))
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("この試験には openssl のコマンドが要ります");
+    let start = Instant::now();
+    while std::net::TcpStream::connect(("127.0.0.1", port)).is_err() {
+        assert!(start.elapsed().as_secs() < 20, "openssl s_server が立ち上がりません");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let trusted = Command::new(&exe).arg(port.to_string()).env("SSL_CERT_FILE", certs.join("ca.pem")).output().unwrap();
+    let unknown = Command::new(&exe).arg(port.to_string()).env_remove("SSL_CERT_FILE").output().unwrap();
+    let _ = server.kill();
+    let _ = server.wait();
+    assert_eq!(String::from_utf8_lossy(&trusted.stdout), "200 true\n\
+        TLS の証明書を確かめられません（IP address mismatch）: 127.0.0.1\nOk([72, 84, 84, 80])\nok\n");
+    assert_eq!(String::from_utf8_lossy(&unknown.stdout), "TLS の証明書を確かめられません（unable to get local issuer certificate）: localhost\n\
+        TLS の証明書を確かめられません（unable to get local issuer certificate）: 127.0.0.1\n\
+        TLS の証明書を確かめられません（unable to get local issuer certificate）: localhost\n");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+const TLS_SRC: &str = r#"use std.http;
+use std.tls;
+
+fn Result<(), str> direct(i64 port) {
+    let mut s = tls.connect("localhost", port)?;
+    s.set_timeout(5000)?;
+    s.write_text("GET / HTTP/1.0\r\n\r\n")?;
+    print(s.read(4));
+    tls.close(s)?;
+    Ok(())
+}
+
+fn main() {
+    let a = args();
+    let port = a[0].to_int().unwrap_or(0);
+    for u in ["https://localhost:{port}/", "https://127.0.0.1:{port}/"] {
+        match http.get(u) {
+            case Ok(r) -> print(r.status, r.body.len() > 0);
+            case Err(e) -> print(e);
+        }
+    }
+    match direct(port) { case Ok(_) -> print("ok"); case Err(e) -> print(e); }
 }
 "#;
 

@@ -43,11 +43,11 @@ fn bool is_builtin(str n) {
     n == "print" || n == "eprint" || n == "drop" || n == "assert" || n == "read_line" || n == "args" || n == "spawn"
         || n == "chan" || n == "exit" || n == "read_file" || n == "write_file" || n == "run_command" || n == "chr"
         || n == "__fs_open" || n == "__res_close" || n == "__fs_exists" || n == "__fs_list" || n == "__fs_make_dir" || n == "__fs_remove" || n == "__fs_rename"
-        || n == "__net_connect" || n == "__net_listen" || n == "__env_get" || n == "__time_now_ns" || n == "__time_unix_ms" || n == "__time_sleep_ms" || n == "__browser_open"
+        || n == "__net_connect" || n == "__net_listen" || n == "__env_get" || n == "__time_now_ns" || n == "__time_unix_ms" || n == "__time_sleep_ms" || n == "__browser_open" || n == "__tls_connect"
 }
 
 /// コンパイラが知っている資源の型（`resource` で書けるのはこれだけ）
-fn bool known_resource(str n) { n == "std:fs.File" || n == "std:net.TcpStream" || n == "std:net.TcpListener" || n == "std:browser.Handle" }
+fn bool known_resource(str n) { n == "std:fs.File" || n == "std:net.TcpStream" || n == "std:net.TcpListener" || n == "std:browser.Handle" || n == "std:tls.TlsStream" }
 
 /// 最後の `.` の位置（なければ -1）
 fn i64 last_dot(str s) {
@@ -2533,9 +2533,10 @@ pub struct Checker {
             require_mut(recv, rt, span, "資源を `{name}` で使おうとした")?;
             return Ok(ty.Ty.Enum("Result", own [ty.Ty.Res("std:net.TcpStream"), ty.Ty.Str]));
         }
-        if n == "std:net.TcpStream" && name == "set_timeout" {
+        let stream = n == "std:net.TcpStream" || n == "std:tls.TlsStream";
+        if stream && name == "set_timeout" {
             params.push(ty.i64t());
-        } else if n == "std:net.TcpStream" && name == "read_text" {
+        } else if stream && name == "read_text" {
             return Err(diag.make("`{ty.show(r)}` にメソッド `{name}` はありません").at(span, "`read(n)`・`write(bytes)`・`write_text(s)`・`set_timeout(ms)` です"));
         } else if name == "read" {
             params.push(ty.i64t());
@@ -2819,11 +2820,11 @@ pub struct Checker {
             expect(argv[4], ty.i64t())?;
             return Ok(ty.Ty.Enum("Result", own [ty.Ty.Res("std:browser.Handle"), ty.Ty.Str]));
         }
-        if name == "__res_close" || name == "__net_connect" || name == "__net_listen" {
+        if name == "__res_close" || name == "__net_connect" || name == "__net_listen" || name == "__tls_connect" {
             // 標準ライブラリの中だけで使う（資源を作る・閉じる内部の操作）
-            let home = if name == "__res_close" { cur_mod.starts_with("std:") } else { cur_mod == "std:net" };
+            let home = if name == "__res_close" { cur_mod.starts_with("std:") } else if name == "__tls_connect" { cur_mod == "std:tls" } else { cur_mod == "std:net" };
             if !home {
-                return Err(diag.make("`{name}` は標準ライブラリの中だけで使えます").at(span, "std.fs・std.net の関数を使ってください"));
+                return Err(diag.make("`{name}` は標準ライブラリの中だけで使えます").at(span, "std.fs・std.net・std.tls の関数を使ってください"));
             }
             if name == "__res_close" {
                 if argv.len() != 1 { return Err(arity_error(name, 1, argv.len(), span)); }
@@ -2834,7 +2835,7 @@ pub struct Checker {
             if argv.len() != 2 { return Err(arity_error(name, 2, argv.len(), span)); }
             expect(argv[0], ty.Ty.Str)?;
             expect(argv[1], ty.i64t())?;
-            let rn = if name == "__net_connect" { "std:net.TcpStream" } else { "std:net.TcpListener" };
+            let rn = if name == "__net_connect" { "std:net.TcpStream" } else if name == "__tls_connect" { "std:tls.TlsStream" } else { "std:net.TcpListener" };
             return Ok(ty.Ty.Enum("Result", own [ty.Ty.Res(rn), ty.Ty.Str]));
         }
         if name == "__fs_open" || name == "__fs_exists" || name == "__fs_list" || name == "__fs_make_dir" || name == "__fs_remove" || name == "__fs_rename" {

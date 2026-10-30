@@ -2488,6 +2488,7 @@ int32_t jw_run_command(WStr *cmd, WList *args, int64_t *code, WStr **err) {{
 #define RES_TCP 2
 #define RES_LISTENER 3
 #define RES_BROWSER 4
+#define RES_TLS 5
 
 typedef struct WRes {{
     uint64_t gen;
@@ -2678,10 +2679,12 @@ static int sock_close(int64_t fd);
 
 // 種類ごとに OS の資源を手放す。失敗したら 0（それでも手放したとみなす。同じ番号をもう一度閉じない）
 static int browser_free(void *p);
+static int tls_free(WRes *r);
 
 static int res_free_os(WRes *r) {{
     if (r->kind == RES_FILE) return fclose(r->fp) == 0;
     if (r->kind == RES_BROWSER) return browser_free(r->ptr);
+    if (r->kind == RES_TLS) return tls_free(r);
     return sock_close(r->fd);
 }}
 
@@ -3270,8 +3273,7 @@ int32_t jw_tcp_write_text(void *h, WStr *text, WStr **err, const WSite *at) {{
 }}
 
 // 受け取り・送りの待ち時間（ミリ秒。0 なら待ち続ける）
-int32_t jw_tcp_set_timeout(void *h, int64_t ms, WStr **err, const WSite *at) {{
-    WRes *r = res_get((uint64_t)(uintptr_t)h, RES_TCP, at);
+static int32_t sock_timeout(WRes *r, int64_t ms, WStr **err, const WSite *at) {{
     if (ms < 0) {{
         begin_error("待ち時間が負です");
         finish_error(at, "set_timeout(ms) の ms は 0 以上", NULL);
@@ -3284,6 +3286,10 @@ int32_t jw_tcp_set_timeout(void *h, int64_t ms, WStr **err, const WSite *at) {{
         return 0;
     }}
     return 1;
+}}
+
+int32_t jw_tcp_set_timeout(void *h, int64_t ms, WStr **err, const WSite *at) {{
+    return sock_timeout(res_get((uint64_t)(uintptr_t)h, RES_TCP, at), ms, err, at);
 }}
 
 int32_t jw_listener_accept(void *h, void **out, WStr **err, const WSite *at) {{
@@ -3446,8 +3452,7 @@ int32_t jw_tcp_write_text(void *h, WStr *text, WStr **err, const WSite *at) {{
 }}
 
 // 受け取り・送りの待ち時間（ミリ秒。0 なら待ち続ける）
-int32_t jw_tcp_set_timeout(void *h, int64_t ms, WStr **err, const WSite *at) {{
-    WRes *r = res_get((uint64_t)(uintptr_t)h, RES_TCP, at);
+static int32_t sock_timeout(WRes *r, int64_t ms, WStr **err, const WSite *at) {{
     if (ms < 0) {{
         begin_error("待ち時間が負です");
         finish_error(at, "set_timeout(ms) の ms は 0 以上", NULL);
@@ -3461,6 +3466,10 @@ int32_t jw_tcp_set_timeout(void *h, int64_t ms, WStr **err, const WSite *at) {{
         return 0;
     }}
     return 1;
+}}
+
+int32_t jw_tcp_set_timeout(void *h, int64_t ms, WStr **err, const WSite *at) {{
+    return sock_timeout(res_get((uint64_t)(uintptr_t)h, RES_TCP, at), ms, err, at);
 }}
 
 int32_t jw_listener_accept(void *h, void **out, WStr **err, const WSite *at) {{
@@ -3493,6 +3502,658 @@ int64_t jw_listener_port(void *h, const WSite *at) {{
     if (ss.ss_family == AF_INET) return ntohs(((struct sockaddr_in *)&ss)->sin_port);
     if (ss.ss_family == AF_INET6) return ntohs(((struct sockaddr_in6 *)&ss)->sin6_port);
     return -1;
+}}
+#endif
+
+// ---------------------------------------------------------------- TLS のクライアント（std.tls）
+//
+// TLS そのものは作らない。Linux は OS の OpenSSL（libssl.so.3）を初めて使うときに dlopen で読み込む（ヘッダーもリンクの指定も要らない）。
+// 証明書は OS の信頼の置き場所（OpenSSL の既定。環境変数 SSL_CERT_FILE / SSL_CERT_DIR も効く）で確かめ、接続先の名前（または IP）と照らす。
+// 最低の版は TLS 1.2。確かめられなければ接続しない（弱めて続ける道はない）。macOS は今は使えない（Err）。
+// 資源の中身: fd はソケット、ptr は SSL*。
+
+#ifndef _WIN32
+#include <dlfcn.h>
+#include <signal.h>
+#include <arpa/inet.h>
+
+static struct {{
+    int ready; // 0: まだ、1: 使える、-1: 使えない
+    const void *(*client_method)(void);
+    void *(*ctx_new)(const void *);
+    void (*ctx_free)(void *);
+    int (*ctx_default_paths)(void *);
+    void (*ctx_set_verify)(void *, int, void *);
+    long (*ctx_ctrl)(void *, int, long, void *);
+    void *(*ssl_new)(void *);
+    void (*ssl_free)(void *);
+    int (*set_fd)(void *, int);
+    long (*ssl_ctrl)(void *, int, long, void *);
+    int (*set1_host)(void *, const char *);
+    void *(*get0_param)(void *);
+    int (*param_set1_ip_asc)(void *, const char *);
+    int (*do_connect)(void *);
+    int (*do_read)(void *, void *, int);
+    int (*do_write)(void *, const void *, int);
+    int (*do_shutdown)(void *);
+    int (*get_error)(const void *, int);
+    long (*verify_result)(const void *);
+    const char *(*verify_text)(long);
+    void *ctx;
+}} g_tls;
+
+// 初めてなら libssl を読み込んで、確かめ方を決めた SSL_CTX を 1 つ作る。使えれば 1
+static int tls_ready(void) {{
+    lock(&g_lock);
+    if (g_tls.ready == 0) {{
+        g_tls.ready = -1;
+        void *m = dlopen("libssl.so.3", RTLD_NOW | RTLD_LOCAL);
+        if (!m) m = dlopen("libssl.so", RTLD_NOW | RTLD_LOCAL);
+        if (m) {{
+#define TLS_GET(f, n) *(void **)&g_tls.f = dlsym(m, n)
+            TLS_GET(client_method, "TLS_client_method");
+            TLS_GET(ctx_new, "SSL_CTX_new");
+            TLS_GET(ctx_free, "SSL_CTX_free");
+            TLS_GET(ctx_default_paths, "SSL_CTX_set_default_verify_paths");
+            TLS_GET(ctx_set_verify, "SSL_CTX_set_verify");
+            TLS_GET(ctx_ctrl, "SSL_CTX_ctrl");
+            TLS_GET(ssl_new, "SSL_new");
+            TLS_GET(ssl_free, "SSL_free");
+            TLS_GET(set_fd, "SSL_set_fd");
+            TLS_GET(ssl_ctrl, "SSL_ctrl");
+            TLS_GET(set1_host, "SSL_set1_host");
+            TLS_GET(get0_param, "SSL_get0_param");
+            TLS_GET(param_set1_ip_asc, "X509_VERIFY_PARAM_set1_ip_asc");
+            TLS_GET(do_connect, "SSL_connect");
+            TLS_GET(do_read, "SSL_read");
+            TLS_GET(do_write, "SSL_write");
+            TLS_GET(do_shutdown, "SSL_shutdown");
+            TLS_GET(get_error, "SSL_get_error");
+            TLS_GET(verify_result, "SSL_get_verify_result");
+            TLS_GET(verify_text, "X509_verify_cert_error_string");
+#undef TLS_GET
+            if (g_tls.client_method && g_tls.ctx_new && g_tls.ctx_free && g_tls.ctx_default_paths && g_tls.ctx_set_verify &&
+                g_tls.ctx_ctrl && g_tls.ssl_new && g_tls.ssl_free && g_tls.set_fd && g_tls.ssl_ctrl && g_tls.set1_host &&
+                g_tls.get0_param && g_tls.param_set1_ip_asc && g_tls.do_connect && g_tls.do_read && g_tls.do_write &&
+                g_tls.do_shutdown && g_tls.get_error && g_tls.verify_result && g_tls.verify_text) {{
+                void *ctx = g_tls.ctx_new(g_tls.client_method());
+                // SSL_VERIFY_PEER（1）・SSL_CTX_set_min_proto_version（123）を TLS1_2_VERSION（0x0303）
+                if (ctx && g_tls.ctx_default_paths(ctx) == 1 && g_tls.ctx_ctrl(ctx, 123, 0x0303, NULL) == 1) {{
+                    g_tls.ctx_set_verify(ctx, 1, NULL);
+                    g_tls.ctx = ctx;
+                    g_tls.ready = 1;
+                }} else if (ctx) {{
+                    g_tls.ctx_free(ctx);
+                }}
+            }}
+        }}
+    }}
+    int ok = g_tls.ready == 1;
+    unlock(&g_lock);
+    return ok;
+}}
+
+// 相手が閉じたソケットへ書いても SIGPIPE でプログラムを止めない。OpenSSL は write を使うので、
+// 書く間だけこのスレッドの SIGPIPE を止め、出たものは捨てる
+static void pipe_hold(sigset_t *old) {{
+    sigset_t pipe;
+    sigemptyset(&pipe);
+    sigaddset(&pipe, SIGPIPE);
+    pthread_sigmask(SIG_BLOCK, &pipe, old);
+}}
+
+static void pipe_release(sigset_t *old) {{
+    sigset_t pend, pipe;
+    sigemptyset(&pipe);
+    sigaddset(&pipe, SIGPIPE);
+    if (sigpending(&pend) == 0 && sigismember(&pend, SIGPIPE) && !sigismember(old, SIGPIPE)) {{
+        struct timespec zero = {{0, 0}};
+        sigtimedwait(&pipe, NULL, &zero);
+    }}
+    pthread_sigmask(SIG_SETMASK, old, NULL);
+}}
+
+int32_t jw_tls_connect(WStr *host, int64_t port, void **out, WStr **err) {{
+    if (res_fail("connect")) {{
+        *err = message("接続できません: ", host);
+        return 0;
+    }}
+    if (!tls_ready()) {{
+        *err = message("TLS が使えません（OpenSSL の libssl.so.3 が見つかりません）: ", host);
+        return 0;
+    }}
+    if (host->len == 0 || memchr(host->data, 0, (size_t)host->len)) {{
+        *err = message("接続先の名前が正しくありません: ", host);
+        return 0;
+    }}
+    int fd = net_open(host, port, 0);
+    if (fd < 0) {{
+        *err = message("接続できません: ", host);
+        return 0;
+    }}
+    char *hc = c_str(host);
+    unsigned char ip[16];
+    int is_ip = inet_pton(AF_INET, hc, ip) == 1 || inet_pton(AF_INET6, hc, ip) == 1;
+    void *ssl = g_tls.ssl_new(g_tls.ctx);
+    int ok = ssl && g_tls.set_fd(ssl, fd) == 1;
+    // 名前なら SNI（SSL_set_tlsext_host_name: 55, TLSEXT_NAMETYPE_host_name: 0）と名前の照合、IP なら IP の照合
+    if (ok) ok = is_ip ? g_tls.param_set1_ip_asc(g_tls.get0_param(ssl), hc) == 1
+                       : g_tls.ssl_ctrl(ssl, 55, 0, hc) == 1 && g_tls.set1_host(ssl, hc) == 1;
+    int done = ok && g_tls.do_connect(ssl) == 1;
+    free(hc);
+    if (!done) {{
+        long v = ssl ? g_tls.verify_result(ssl) : 0;
+        if (ssl) g_tls.ssl_free(ssl);
+        close(fd);
+        if (v != 0) {{
+            const char *why = g_tls.verify_text(v);
+            char buf[256];
+            snprintf(buf, sizeof buf, "TLS の証明書を確かめられません（%s）: ", why ? why : "?");
+            *err = message(buf, host);
+        }} else {{
+            *err = message("TLS で接続できません: ", host);
+        }}
+        return 0;
+    }}
+    uint64_t tok = res_new(RES_TLS, NULL, fd);
+    if (!tok) {{
+        g_tls.ssl_free(ssl);
+        close(fd);
+        *err = message("開いている資源が多すぎます: ", host);
+        return 0;
+    }}
+    res_at(res_slot(tok))->ptr = ssl;
+    *out = (void *)(uintptr_t)tok;
+    return 1;
+}}
+
+// 閉じる: close_notify を 1 回送ってみて（返事は待たない）、手放す
+static int tls_free(WRes *r) {{
+    if (r->ptr) {{
+        sigset_t old;
+        pipe_hold(&old);
+        g_tls.do_shutdown(r->ptr);
+        pipe_release(&old);
+        g_tls.ssl_free(r->ptr);
+    }}
+    return close((int)r->fd) == 0;
+}}
+
+// 最大 n バイト受け取る（相手が閉じたら空のリスト）
+int32_t jw_tls_read(void *h, int64_t n, WList *out, WStr **err, const WSite *at) {{
+    WRes *r = res_get((uint64_t)(uintptr_t)h, RES_TLS, at);
+    if (n < 0) {{
+        begin_error("読む大きさが負です");
+        finish_error(at, "read(n) の n は 0 以上", NULL);
+    }}
+    if (n == 0) return 1;
+    int want = n < 65536 ? (int)n : 65536;
+    jw_list_reserve(out, 1, want);
+    errno = 0;
+    int got = res_fail("read") ? -1 : g_tls.do_read(r->ptr, out->data, want);
+    if (got > 0) {{
+        out->len = got;
+        return 1;
+    }}
+    int e = res_fail("read") ? 1 : g_tls.get_error(r->ptr, got);
+    // 6: SSL_ERROR_ZERO_RETURN（相手が閉じた）。5: SSL_ERROR_SYSCALL で errno が 0 なら close_notify なしで閉じた
+    if (e == 6 || (e == 5 && errno == 0)) {{
+        out->len = 0;
+        return 1;
+    }}
+    jw_list_free(out, 1, NULL);
+    *err = err_text((e == 2 || e == 5) && (errno == EAGAIN || errno == EWOULDBLOCK) ? "時間切れです" : "受け取れません");
+    return 0;
+}}
+
+static int32_t tls_send(WRes *r, const char *p, int64_t n, WStr **err) {{
+    sigset_t old;
+    pipe_hold(&old);
+    int ok = 1;
+    while (n > 0 && ok) {{
+        int chunk = n > 0x40000000 ? 0x40000000 : (int)n;
+        errno = 0;
+        int k = res_fail("write") ? -1 : g_tls.do_write(r->ptr, p, chunk);
+        if (k <= 0) {{
+            int e = res_fail("write") ? 1 : g_tls.get_error(r->ptr, k);
+            *err = err_text((e == 3 || e == 5) && (errno == EAGAIN || errno == EWOULDBLOCK) ? "時間切れです" : "送れません");
+            ok = 0;
+        }} else {{
+            p += k;
+            n -= k;
+        }}
+    }}
+    pipe_release(&old);
+    return ok;
+}}
+
+int32_t jw_tls_write(void *h, WList *data, WStr **err, const WSite *at) {{
+    WRes *r = res_get((uint64_t)(uintptr_t)h, RES_TLS, at);
+    int32_t ok = tls_send(r, data->data, data->len, err);
+    jw_list_free(data, 1, NULL);
+    return ok;
+}}
+
+int32_t jw_tls_write_text(void *h, WStr *text, WStr **err, const WSite *at) {{
+    WRes *r = res_get((uint64_t)(uintptr_t)h, RES_TLS, at);
+    return tls_send(r, text->data, text->len, err);
+}}
+
+int32_t jw_tls_set_timeout(void *h, int64_t ms, WStr **err, const WSite *at) {{
+    WRes *r = res_get((uint64_t)(uintptr_t)h, RES_TLS, at);
+    return sock_timeout(r, ms, err, at);
+}}
+#endif
+
+#ifdef _WIN32
+// Windows は Schannel（secur32.dll。初めて使うときに読み込む）。版は TLS 1.2。
+// 証明書は握手のあとに自分で確かめる（SCH_CRED_MANUAL_CRED_VALIDATION）。crypt32.dll で Windows の信頼の置き場所までの鎖を作り、
+// SSL の決まり（CERT_CHAIN_POLICY_SSL）で接続先の名前と照らす。自動で確かめる指定は実装によって確かめないことがある（wine）ため使わない。
+typedef struct {{ unsigned long cb, type; void *p; }} WSecBuf;
+typedef struct {{ unsigned long version, count; WSecBuf *bufs; }} WSecDesc;
+typedef struct {{ uintptr_t lower, upper; }} WSecHandle;
+typedef struct {{
+    unsigned long version, ncreds;
+    void *creds, *root_store;
+    unsigned long nmappers;
+    void *mappers;
+    unsigned long nalgs;
+    void *algs;
+    unsigned long protocols, min_strength, max_strength, lifespan, flags, format;
+}} WSchannelCred;
+typedef struct {{ unsigned long header, trailer, max_message, nbuffers, block; }} WStreamSizes;
+
+static struct {{
+    int ready;
+    long(__stdcall *acquire)(wchar_t *, wchar_t *, unsigned long, void *, void *, void *, void *, WSecHandle *, int64_t *);
+    long(__stdcall *init)(WSecHandle *, WSecHandle *, wchar_t *, unsigned long, unsigned long, unsigned long, WSecDesc *,
+                          unsigned long, WSecHandle *, WSecDesc *, unsigned long *, int64_t *);
+    long(__stdcall *delete_ctx)(WSecHandle *);
+    long(__stdcall *free_buf)(void *);
+    long(__stdcall *query)(WSecHandle *, unsigned long, void *);
+    long(__stdcall *encrypt)(WSecHandle *, unsigned long, WSecDesc *, unsigned long);
+    long(__stdcall *decrypt)(WSecHandle *, WSecDesc *, unsigned long, unsigned long *);
+    long(__stdcall *control)(WSecHandle *, WSecDesc *);
+    // crypt32.dll
+    int(__stdcall *get_chain)(void *, void *, void *, void *, void *, unsigned long, void *, void **);
+    int(__stdcall *verify_chain)(const char *, void *, void *, void *);
+    void(__stdcall *free_chain)(void *);
+    int(__stdcall *free_cert)(void *);
+    WSecHandle cred;
+}} g_tls;
+
+// 証明書を確かめるときの形（wincrypt.h の CERT_CONTEXT・CERT_CHAIN_PARA・SSL_EXTRA_CERT_CHAIN_POLICY_PARA など）
+typedef struct {{
+    unsigned long encoding;
+    unsigned char *data;
+    unsigned long len;
+    void *info, *store;
+}} WCertCtx;
+typedef struct {{
+    unsigned long size, error, info; // CERT_CHAIN_CONTEXT の頭（cbSize と TrustStatus）
+}} WChainCtx;
+typedef struct {{
+    unsigned long size, usage_type, nusages;
+    char **usages;
+}} WChainPara;
+typedef struct {{
+    unsigned long size, auth_type, checks;
+    wchar_t *server;
+}} WSslPolicy;
+typedef struct {{
+    unsigned long size, flags;
+    void *extra;
+}} WPolicyPara;
+typedef struct {{
+    unsigned long size, error;
+    long chain_index, element_index;
+    void *extra;
+}} WPolicyStatus;
+
+#define SEC_OK 0
+#define SEC_CONTINUE 0x00090312L
+#define SEC_INCOMPLETE ((long)0x80090318L)
+#define SEC_EXPIRED 0x00090317L
+#define TLS_ISC_FLAGS (0x8 | 0x4 | 0x10 | 0x100 | 0x8000 | 0x4000) // SEQUENCE・REPLAY・CONFIDENTIALITY・ALLOCATE・STREAM・EXTENDED_ERROR
+
+static int tls_ready(void) {{
+    if (!ws_ready()) return 0;
+    lock(&g_lock);
+    if (g_tls.ready == 0) {{
+        g_tls.ready = -1;
+        void *m = LoadLibraryW(L"secur32.dll");
+        void *c = LoadLibraryW(L"crypt32.dll");
+        if (m && c) {{
+#define TLS_GET(f, n) *(void **)&g_tls.f = GetProcAddress(m, n)
+            TLS_GET(acquire, "AcquireCredentialsHandleW");
+            TLS_GET(init, "InitializeSecurityContextW");
+            TLS_GET(delete_ctx, "DeleteSecurityContext");
+            TLS_GET(free_buf, "FreeContextBuffer");
+            TLS_GET(query, "QueryContextAttributesW");
+            TLS_GET(encrypt, "EncryptMessage");
+            TLS_GET(decrypt, "DecryptMessage");
+            TLS_GET(control, "ApplyControlToken");
+#undef TLS_GET
+            *(void **)&g_tls.get_chain = GetProcAddress(c, "CertGetCertificateChain");
+            *(void **)&g_tls.verify_chain = GetProcAddress(c, "CertVerifyCertificateChainPolicy");
+            *(void **)&g_tls.free_chain = GetProcAddress(c, "CertFreeCertificateChain");
+            *(void **)&g_tls.free_cert = GetProcAddress(c, "CertFreeCertificateContext");
+            if (g_tls.acquire && g_tls.init && g_tls.delete_ctx && g_tls.free_buf && g_tls.query && g_tls.encrypt &&
+                g_tls.decrypt && g_tls.control && g_tls.get_chain && g_tls.verify_chain && g_tls.free_chain && g_tls.free_cert) {{
+                WSchannelCred cr;
+                memset(&cr, 0, sizeof cr);
+                cr.version = 4;      // SCHANNEL_CRED_VERSION
+                cr.protocols = 0x800; // SP_PROT_TLS1_2_CLIENT
+                cr.flags = 0x8 | 0x10 | 0x400000; // MANUAL_CRED_VALIDATION・NO_DEFAULT_CREDS・USE_STRONG_CRYPTO
+                int64_t exp;
+                if (g_tls.acquire(NULL, L"Microsoft Unified Security Protocol Provider", 2 /* OUTBOUND */, NULL, &cr, NULL, NULL,
+                                  &g_tls.cred, &exp) == SEC_OK)
+                    g_tls.ready = 1;
+            }}
+        }}
+    }}
+    int ok = g_tls.ready == 1;
+    unlock(&g_lock);
+    return ok;
+}}
+
+typedef struct {{
+    WSecHandle ctx;
+    WStreamSizes sizes;
+    char *in;       // 受け取って、まだ解いていない分
+    int inlen, incap;
+    char *plain;    // 解いて、まだ渡していない分
+    int plen, poff;
+    int eof;
+}} WTls;
+
+static int tls_recv_more(WSock fd, WTls *t) {{
+    if (t->incap - t->inlen < 16384) {{
+        t->incap = t->incap ? t->incap * 2 : 32768;
+        t->in = realloc(t->in, (size_t)t->incap);
+        if (!t->in) jw_oom();
+    }}
+    return g_ws.recv(fd, t->in + t->inlen, t->incap - t->inlen, 0);
+}}
+
+static int tls_send_all(WSock fd, const char *p, int n) {{
+    while (n > 0) {{
+        int k = g_ws.send(fd, p, n, 0);
+        if (k <= 0) return 0;
+        p += k;
+        n -= k;
+    }}
+    return 1;
+}}
+
+static void tls_drop(WTls *t) {{
+    g_tls.delete_ctx(&t->ctx);
+    free(t->in);
+    free(t->plain);
+    free(t);
+}}
+
+// 握手。できたら 1
+static int tls_handshake(WSock fd, WTls *t, wchar_t *target) {{
+    WSecBuf out = {{0, 2 /* TOKEN */, NULL}};
+    WSecDesc od = {{0, 1, &out}};
+    unsigned long attr = 0;
+    long st = g_tls.init(&g_tls.cred, NULL, target, TLS_ISC_FLAGS, 0, 0, NULL, 0, &t->ctx, &od, &attr, NULL);
+    if (out.p) {{
+        int sent = tls_send_all(fd, out.p, (int)out.cb);
+        g_tls.free_buf(out.p);
+        if (!sent) return 0;
+    }}
+    while (st == SEC_CONTINUE || st == SEC_INCOMPLETE) {{
+        if (t->inlen == 0 || st == SEC_INCOMPLETE) {{
+            int k = tls_recv_more(fd, t);
+            if (k <= 0) return 0;
+            t->inlen += k;
+        }}
+        WSecBuf in[2] = {{{{(unsigned long)t->inlen, 2, t->in}}, {{0, 0, NULL}}}};
+        WSecDesc id = {{0, 2, in}};
+        WSecBuf o = {{0, 2, NULL}};
+        WSecDesc odesc = {{0, 1, &o}};
+        st = g_tls.init(&g_tls.cred, &t->ctx, target, TLS_ISC_FLAGS, 0, 0, &id, 0, NULL, &odesc, &attr, NULL);
+        if (st == SEC_INCOMPLETE) continue;
+        if (o.p) {{
+            int sent = o.cb == 0 || tls_send_all(fd, o.p, (int)o.cb);
+            g_tls.free_buf(o.p);
+            if (!sent) return 0;
+        }}
+        if (in[1].type == 5 /* EXTRA */) {{
+            memmove(t->in, t->in + t->inlen - in[1].cb, in[1].cb);
+            t->inlen = (int)in[1].cb;
+        }} else {{
+            t->inlen = 0;
+        }}
+    }}
+    return st == SEC_OK && g_tls.query(&t->ctx, 4 /* STREAM_SIZES */, &t->sizes) == SEC_OK;
+}}
+
+// 相手の証明書を、信頼の置き場所までの鎖と接続先の名前で確かめる。0 なら良し、そうでなければ理由の番号（HRESULT）
+static unsigned long tls_verify(WTls *t, wchar_t *target) {{
+    WCertCtx *cert = NULL;
+    if (g_tls.query(&t->ctx, 0x53 /* SECPKG_ATTR_REMOTE_CERT_CONTEXT */, &cert) != SEC_OK || !cert) return 0x800B010AUL; // CERT_E_CHAINING
+    char *server_auth = "1.3.6.1.5.5.7.3.1"; // szOID_PKIX_KP_SERVER_AUTH
+    WChainPara cp = {{sizeof cp, 0 /* USAGE_MATCH_TYPE_AND */, 1, &server_auth}};
+    WChainCtx *chain = NULL;
+    unsigned long why = 0x800B010AUL;
+    // 途中の証明書は、相手が送ってきたもの（cert->store）からも探す
+    if (g_tls.get_chain(NULL, cert, NULL, cert->store, &cp, 0, NULL, &chain) && chain) {{
+        WSslPolicy ssl = {{sizeof ssl, 2 /* AUTHTYPE_SERVER */, 0, target}};
+        WPolicyPara pp = {{sizeof pp, 0, &ssl}};
+        WPolicyStatus ps;
+        memset(&ps, 0, sizeof ps);
+        ps.size = sizeof ps;
+        why = g_tls.verify_chain((const char *)4 /* CERT_CHAIN_POLICY_SSL */, chain, &pp, &ps) ? ps.error : 0x800B010AUL;
+        // 鎖そのものの問題も見る（SSL の決まりが鎖の途切れを見逃す実装がある: wine）。取り消しは調べていないので、その印は除く
+        unsigned long bad = chain->error & ~(0x40UL | 0x1000000UL); // REVOCATION_STATUS_UNKNOWN・OFFLINE_REVOCATION
+        if (why == 0 && bad != 0) {{
+            why = bad & 0x1UL ? 0x800B0101UL /* 期限 */ : bad & 0x4UL ? 0x800B010CUL /* 取り消し */ : 0x800B010AUL;
+        }}
+        g_tls.free_chain(chain);
+    }}
+    g_tls.free_cert(cert);
+    return why;
+}}
+
+int32_t jw_tls_connect(WStr *host, int64_t port, void **out, WStr **err) {{
+    if (res_fail("connect")) {{
+        *err = message("接続できません: ", host);
+        return 0;
+    }}
+    if (!tls_ready()) {{
+        *err = message("TLS が使えません（Schannel を読み込めません）: ", host);
+        return 0;
+    }}
+    if (host->len == 0 || memchr(host->data, 0, (size_t)host->len)) {{
+        *err = message("接続先の名前が正しくありません: ", host);
+        return 0;
+    }}
+    int64_t fd = net_open(host, port, 0);
+    if (fd < 0) {{
+        *err = message("接続できません: ", host);
+        return 0;
+    }}
+    WTls *t = jw_checked_calloc(1, sizeof(WTls));
+    char *hc = c_str(host);
+    wchar_t *target = to_wide(hc);
+    free(hc);
+    int ok = tls_handshake((WSock)fd, t, target);
+    unsigned long why = ok ? tls_verify(t, target) : 0;
+    free(target);
+    if (!ok || why != 0) {{
+        tls_drop(t);
+        sock_close(fd);
+        if (!ok) {{
+            *err = message("TLS で接続できません（相手が TLS 1.2 を使えないなど）: ", host);
+        }} else {{
+            const char *text = why == 0x800B0109UL || why == 0x800B010AUL ? "信頼できる発行元につながりません"
+                               : why == 0x800B010FUL ? "名前が合いません"
+                               : why == 0x800B0101UL ? "期限が切れています"
+                               : why == 0x800B010CUL ? "取り消されています"
+                                                     : NULL;
+            char buf[256];
+            if (text) {{
+                snprintf(buf, sizeof buf, "TLS の証明書を確かめられません（%s）: ", text);
+            }} else {{
+                snprintf(buf, sizeof buf, "TLS の証明書を確かめられません（0x%08lx）: ", why);
+            }}
+            *err = message(buf, host);
+        }}
+        return 0;
+    }}
+    uint64_t tok = res_new(RES_TLS, NULL, fd);
+    if (!tok) {{
+        tls_drop(t);
+        sock_close(fd);
+        *err = message("開いている資源が多すぎます: ", host);
+        return 0;
+    }}
+    res_at(res_slot(tok))->ptr = t;
+    *out = (void *)(uintptr_t)tok;
+    return 1;
+}}
+
+// 閉じる: 終わりの知らせ（close_notify）を 1 回送ってみて、手放す
+static int tls_free(WRes *r) {{
+    WTls *t = r->ptr;
+    if (t) {{
+        unsigned long kind = 1; // SCHANNEL_SHUTDOWN
+        WSecBuf b = {{sizeof kind, 2, &kind}};
+        WSecDesc d = {{0, 1, &b}};
+        if (g_tls.control(&t->ctx, &d) == SEC_OK) {{
+            WSecBuf o = {{0, 2, NULL}};
+            WSecDesc od = {{0, 1, &o}};
+            unsigned long attr = 0;
+            if (g_tls.init(&g_tls.cred, &t->ctx, NULL, TLS_ISC_FLAGS, 0, 0, NULL, 0, NULL, &od, &attr, NULL) >= 0 && o.p) {{
+                tls_send_all((WSock)r->fd, o.p, (int)o.cb);
+            }}
+            if (o.p) g_tls.free_buf(o.p);
+        }}
+        tls_drop(t);
+    }}
+    return sock_close(r->fd);
+}}
+
+int32_t jw_tls_read(void *h, int64_t n, WList *out, WStr **err, const WSite *at) {{
+    WRes *r = res_get((uint64_t)(uintptr_t)h, RES_TLS, at);
+    WTls *t = r->ptr;
+    if (n < 0) {{
+        begin_error("読む大きさが負です");
+        finish_error(at, "read(n) の n は 0 以上", NULL);
+    }}
+    if (n == 0) return 1;
+    if (res_fail("read")) {{
+        *err = err_text("受け取れません");
+        return 0;
+    }}
+    while (t->poff >= t->plen && !t->eof) {{
+        if (t->inlen > 0) {{
+            WSecBuf b[4] = {{{{(unsigned long)t->inlen, 1 /* DATA */, t->in}}, {{0, 0, NULL}}, {{0, 0, NULL}}, {{0, 0, NULL}}}};
+            WSecDesc d = {{0, 4, b}};
+            unsigned char rtype = (unsigned char)t->in[0]; // 記録の種類（21 は知らせ）
+            long st = g_tls.decrypt(&t->ctx, &d, 0, NULL);
+            if (st == SEC_OK) {{
+                WSecBuf *data = NULL, *extra = NULL;
+                for (int i = 0; i < 4; i++) {{
+                    if (b[i].type == 1 && !data) data = &b[i];
+                    if (b[i].type == 5 && !extra) extra = &b[i];
+                }}
+                free(t->plain);
+                t->plain = NULL;
+                t->plen = t->poff = 0;
+                if (data && data->cb > 0) {{
+                    t->plain = malloc(data->cb);
+                    if (!t->plain) jw_oom();
+                    memcpy(t->plain, data->p, data->cb);
+                    t->plen = (int)data->cb;
+                }}
+                if (extra) {{
+                    memmove(t->in, extra->p, extra->cb);
+                    t->inlen = (int)extra->cb;
+                }} else {{
+                    t->inlen = 0;
+                }}
+                // 終わりの知らせ（close_notify）は SEC_I_CONTEXT_EXPIRED で返るが、中身のない OK で返す実装もある（wine）。
+                // TLS 1.2 で握手のあとに来る知らせ（警告）は実際には終わりの知らせだけなので、終わりとして扱う
+                if (t->plen == 0 && rtype == 21) t->eof = 1;
+                continue;
+            }}
+            if (st == SEC_EXPIRED) {{
+                t->eof = 1;
+                break;
+            }}
+            if (st != SEC_INCOMPLETE) {{
+                *err = err_text("受け取れません（TLS の記録を解けません）");
+                return 0;
+            }}
+        }}
+        int k = tls_recv_more((WSock)r->fd, t);
+        if (k == 0) {{
+            t->eof = 1;
+        }} else if (k < 0) {{
+            *err = sock_error("受け取れません");
+            return 0;
+        }} else {{
+            t->inlen += k;
+        }}
+    }}
+    int64_t give = t->plen - t->poff;
+    if (give > n) give = n;
+    if (give > 65536) give = 65536;
+    if (give > 0) {{
+        jw_list_reserve(out, 1, give);
+        memcpy(out->data, t->plain + t->poff, (size_t)give);
+        t->poff += (int)give;
+    }}
+    out->len = give;
+    return 1;
+}}
+
+static int32_t tls_send(WRes *r, const char *p, int64_t n, WStr **err) {{
+    WTls *t = r->ptr;
+    if (res_fail("write")) {{
+        *err = err_text("送れません");
+        return 0;
+    }}
+    int max = (int)t->sizes.max_message;
+    char *buf = malloc((size_t)t->sizes.header + (size_t)max + (size_t)t->sizes.trailer);
+    if (!buf) jw_oom();
+    int ok = 1;
+    while (n > 0 && ok) {{
+        int chunk = n > max ? max : (int)n;
+        memcpy(buf + t->sizes.header, p, (size_t)chunk);
+        WSecBuf b[4] = {{{{t->sizes.header, 7 /* STREAM_HEADER */, buf}},
+                        {{(unsigned long)chunk, 1, buf + t->sizes.header}},
+                        {{t->sizes.trailer, 6 /* STREAM_TRAILER */, buf + t->sizes.header + chunk}},
+                        {{0, 0, NULL}}}};
+        WSecDesc d = {{0, 4, b}};
+        ok = g_tls.encrypt(&t->ctx, 0, &d, 0) == SEC_OK && tls_send_all((WSock)r->fd, buf, (int)(b[0].cb + b[1].cb + b[2].cb));
+        if (!ok) *err = sock_error("送れません");
+        p += chunk;
+        n -= chunk;
+    }}
+    free(buf);
+    return ok;
+}}
+
+int32_t jw_tls_write(void *h, WList *data, WStr **err, const WSite *at) {{
+    WRes *r = res_get((uint64_t)(uintptr_t)h, RES_TLS, at);
+    int32_t ok = tls_send(r, data->data, data->len, err);
+    jw_list_free(data, 1, NULL);
+    return ok;
+}}
+
+int32_t jw_tls_write_text(void *h, WStr *text, WStr **err, const WSite *at) {{
+    WRes *r = res_get((uint64_t)(uintptr_t)h, RES_TLS, at);
+    return tls_send(r, text->data, text->len, err);
+}}
+
+int32_t jw_tls_set_timeout(void *h, int64_t ms, WStr **err, const WSite *at) {{
+    WRes *r = res_get((uint64_t)(uintptr_t)h, RES_TLS, at);
+    return sock_timeout(r, ms, err, at);
 }}
 #endif
 
