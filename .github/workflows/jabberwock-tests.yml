@@ -14,6 +14,9 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
+  # 証拠の一覧（SHA-256）に Sigstore の署名を付ける（actions/attest-build-provenance）
+  id-token: write
+  attestations: write
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -129,6 +132,18 @@ jobs:
         timeout-minutes: 55
         run: |
           python3 scripts/safety_linux.py --compiler ${{ matrix.compiler }} --output target/safety-linux-${{ matrix.compiler }}-report.json
+      - name: Seal Linux safety evidence (SHA-256 manifest)
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          find target/safety-linux-${{ matrix.compiler }}* -type f ! -name '*.sha256' -print0 | sort -z | xargs -0 -r sha256sum > target/safety-linux-${{ matrix.compiler }}-evidence.sha256
+          wc -l target/safety-linux-${{ matrix.compiler }}-evidence.sha256
+      - name: Attest Linux safety evidence manifest (Sigstore, GitHub OIDC)
+        if: always()
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: extracted/jabberwock-safety-ci-resume/target/safety-linux-${{ matrix.compiler }}-evidence.sha256
       - name: Upload Linux safety evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -208,6 +223,18 @@ jobs:
         timeout-minutes: 10
         working-directory: extracted/jabberwock-safety-ci-resume/scripts
         run: python -m unittest -v test_formal_tool
+      - name: Seal specification judgement evidence (SHA-256 manifest)
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          find target/formal-tool -type f ! -name '*.sha256' -print0 | sort -z | xargs -0 -r sha256sum > target/formal-tool/evidence.sha256
+          wc -l target/formal-tool/evidence.sha256
+      - name: Attest specification judgement evidence manifest (Sigstore, GitHub OIDC)
+        if: always()
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: extracted/jabberwock-safety-ci-resume/target/formal-tool/evidence.sha256
       - name: Upload specification judgement evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -269,10 +296,24 @@ jobs:
           with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as out:
               out.write(f"Elided checks: **{d['status']}** ({d['checked']} programs checked, {d['skipped']} did not reach IR)\n")
           PY
+      - name: Seal elision evidence (SHA-256 manifest)
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          find target/elision-check/summary.json -type f ! -name '*.sha256' -print0 | sort -z | xargs -0 -r sha256sum > target/elision-check/evidence.sha256
+          wc -l target/elision-check/evidence.sha256
+      - name: Attest elision evidence manifest (Sigstore, GitHub OIDC)
+        if: always()
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: extracted/jabberwock-safety-ci-resume/target/elision-check/evidence.sha256
       - name: Upload elision evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: elision-certificate-evidence
-          path: extracted/jabberwock-safety-ci-resume/target/elision-check/summary.json
+          path: |
+            extracted/jabberwock-safety-ci-resume/target/elision-check/summary.json
+            extracted/jabberwock-safety-ci-resume/target/elision-check/evidence.sha256
           if-no-files-found: warn
