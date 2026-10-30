@@ -738,3 +738,10 @@ let x = pick(true, 1, 2);
   エラーや print で標準ライブラリの型を `std:json.Json` ではなく `json.Json` と見せるようにした（`ty.std_name`）。
 - std の節（spec.md 1.2〜1.6）の見直し（2026-10-30、オーナー了承）: `formal/safety-scope-policy.json` の spec.md のハッシュを今の版にした。std は安全性の条件（conditions）を変えていない。
   `tests/spec_coverage.json` では 1.2〜1.6 を除外に入れた。std は jwc だけで、Rust 版を正解にして比べる表の仕組みに乗らないため。確かめるのは tests/jwc.rs の jwc_std_*。
+- std.url・std.fs の安全な上書き・std.time.unix_ms（2026-10-30、ブラウザ試作の第 1 段階で足りないもの）:
+  std.url は .jw だけで、std.http の中にあった URL の分解を移して公開した（http はそれを使う）。利用者情報（`user@`）は見た目と行き先が食い違うので受け付けない。
+  安全な上書きは「`path + ".tmp"` に書いて閉じ、rename」。読む側に半端な中身を見せないことだけを約束し、fsync はしない（電源断まで耐えるとは約束しない）。
+  Windows の rename は MoveFileExW（置き換えを許す）。壁時計は単調な時計と分け、`unix_ms` という名前にした（差を測るのは now）。
+- spec.md の std の節の見直し（2026-10-30、オーナーの決めごと）: std の節（1.2〜1.x の「jwc だけ」の標準ライブラリ）だけが変わったときは、
+  `formal/safety-scope-policy.json` の spec.md のハッシュの更新と、`tests/spec_coverage.json` の除外への追加を、そのつど聞かずにしてよい（報告はする）。
+  言語の節（std の節の外）が変わったときは、今までどおりオーナーに聞く。今回の 1.3・1.5・1.6・1.7 の変更はこれで記録した。

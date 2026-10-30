@@ -42,8 +42,8 @@ fn bool has(ref str[] xs, str x) {
 fn bool is_builtin(str n) {
     n == "print" || n == "eprint" || n == "drop" || n == "assert" || n == "read_line" || n == "args" || n == "spawn"
         || n == "chan" || n == "exit" || n == "read_file" || n == "write_file" || n == "run_command" || n == "chr"
-        || n == "__fs_open" || n == "__res_close" || n == "__fs_exists" || n == "__fs_list" || n == "__fs_make_dir" || n == "__fs_remove"
-        || n == "__net_connect" || n == "__net_listen" || n == "__env_get" || n == "__time_now_ns" || n == "__time_sleep_ms"
+        || n == "__fs_open" || n == "__res_close" || n == "__fs_exists" || n == "__fs_list" || n == "__fs_make_dir" || n == "__fs_remove" || n == "__fs_rename"
+        || n == "__net_connect" || n == "__net_listen" || n == "__env_get" || n == "__time_now_ns" || n == "__time_unix_ms" || n == "__time_sleep_ms"
 }
 
 /// コンパイラが知っている資源の型（`resource` で書けるのはこれだけ）
@@ -2767,13 +2767,13 @@ pub struct Checker {
     }
 
     fn mut Result<ty.Ty, diag.Diag> call(str name, ref ast.Expr[] argv, i64 span, ref Hint hint) {
-        if name == "__env_get" || name == "__time_now_ns" || name == "__time_sleep_ms" {
+        if name == "__env_get" || name == "__time_now_ns" || name == "__time_unix_ms" || name == "__time_sleep_ms" {
             // 標準ライブラリ std.env・std.time の中だけで使う
             let home = if name == "__env_get" { "std:env" } else { "std:time" };
             if cur_mod != home {
                 return Err(diag.make("`{name}` は標準ライブラリの中だけで使えます").at(span, "std.env・std.time の関数を使ってください"));
             }
-            if name == "__time_now_ns" {
+            if name == "__time_now_ns" || name == "__time_unix_ms" {
                 if argv.len() > 0 { return Err(arity_error(name, 0, argv.len(), span)); }
                 return Ok(ty.i64t());
             }
@@ -2803,7 +2803,7 @@ pub struct Checker {
             let rn = if name == "__net_connect" { "std:net.TcpStream" } else { "std:net.TcpListener" };
             return Ok(ty.Ty.Enum("Result", own [ty.Ty.Res(rn), ty.Ty.Str]));
         }
-        if name == "__fs_open" || name == "__fs_exists" || name == "__fs_list" || name == "__fs_make_dir" || name == "__fs_remove" {
+        if name == "__fs_open" || name == "__fs_exists" || name == "__fs_list" || name == "__fs_make_dir" || name == "__fs_remove" || name == "__fs_rename" {
             // 標準ライブラリ std.fs の中だけで使う（資源を作る内部の操作）
             if cur_mod != "std:fs" {
                 return Err(diag.make("`{name}` は標準ライブラリの中だけで使えます").at(span, "std.fs の関数を使ってください"));
@@ -2817,6 +2817,7 @@ pub struct Checker {
                 ret = ty.cl(file);
             } else {
                 params.push(ty.Ty.Str);
+                if name == "__fs_rename" { params.push(ty.Ty.Str); }
                 if name == "__fs_list" { ret = ty.Ty.List(own ty.Ty.Str); }
             }
             if argv.len() != params.len() { return Err(arity_error(name, params.len(), argv.len(), span)); }

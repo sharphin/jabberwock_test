@@ -10,6 +10,7 @@ pub fn str[] names() {
     out.push("net");
     out.push("text");
     out.push("time");
+    out.push("url");
     out
 }
 
@@ -59,6 +60,41 @@ pub fn Result<(), str> make_dir(str path) {{ __fs_make_dir(path) }}
 
 /// ファイルか、空のディレクトリを消す
 pub fn Result<(), str> remove(str path) {{ __fs_remove(path) }}
+
+/// 名前を変える。to があれば置き換える
+pub fn Result<(), str> rename(str from, str to) {{ __fs_rename(from, to) }}
+
+/// 安全な上書き: `path + ".tmp"` に全部書いて閉じてから path へ名前を変える。
+/// 途中で失敗しても path は元のまま（読む側には古い中身か新しい中身のどちらかが見える）。電源断まで耐えるとは約束しない
+pub fn Result<(), str> write_atomic(str path, u8[] data) {{
+    let tmp = path + ".tmp";
+    let mut f = create(tmp)?;
+    match f.write(data) {{
+        case Ok(_) -> {{}}
+        case Err(e) -> {{
+            close(f);
+            remove(tmp);
+            return Err(e);
+        }}
+    }}
+    match close(f) {{
+        case Ok(_) -> {{}}
+        case Err(e) -> {{
+            remove(tmp);
+            return Err(e);
+        }}
+    }}
+    match rename(tmp, path) {{
+        case Ok(_) -> return Ok(());
+        case Err(e) -> {{
+            remove(tmp);
+            return Err(e);
+        }}
+    }}
+}}
+
+/// write_atomic の文字列版
+pub fn Result<(), str> write_text_atomic(str path, str s) {{ write_atomic(path, s.bytes()) }}
 """);
     }
     if name == "http" {
@@ -70,6 +106,7 @@ pub fn Result<(), str> remove(str path) {{ __fs_remove(path) }}
 // 1 回ごとにつなぎ、`Connection: close` で相手が閉じるまで読む。chunked の本文は読み解く。リダイレクトはたどらない。
 
 use std.net;
+use std.url;
 use std.text;
 
 pub struct Response {{
@@ -88,53 +125,23 @@ pub struct Response {{
 }}
 
 /// GET する
-pub fn Result<Response, str> get(str url) {{ request("GET", url, "", "") }}
+pub fn Result<Response, str> get(str target) {{ request("GET", target, "", "") }}
 
 /// POST する（content_type は `application/json` など）
-pub fn Result<Response, str> post(str url, str content_type, str body) {{ request("POST", url, content_type, body) }}
+pub fn Result<Response, str> post(str target, str content_type, str body) {{ request("POST", target, content_type, body) }}
 
-struct Url {{
-    str host;
-    i64 port;
-    str path;
+fn Result<url.Url, str> parse_url(str s) {{
+    if s.starts_with("https://") {{ return Err("https はまだ使えません: " + s); }}
+    if !s.starts_with("http://") {{ return Err("http:// で始まる URL ではありません: " + s); }}
+    url.parse(s)
 }}
 
-fn Result<Url, str> parse_url(str url) {{
-    if url.starts_with("https://") {{ return Err("https はまだ使えません: " + url); }}
-    if !url.starts_with("http://") {{ return Err("http:// で始まる URL ではありません: " + url); }}
-    let rest = url.slice(7, url.len());
-    let mut hostport = rest;
-    let mut path = "/";
-    match rest.find("/") {{
-        case Some(i) -> {{
-            hostport = rest.slice(0, i);
-            path = rest.slice(i, rest.len());
-        }}
-        case None -> {{}}
-    }}
-    let mut host = hostport;
-    let mut port = 80;
-    match hostport.find(":") {{
-        case Some(i) -> {{
-            host = hostport.slice(0, i);
-            match hostport.slice(i + 1, hostport.len()).to_int() {{
-                case Some(p) -> port = p;
-                case None -> return Err("ポートの番号が読めません: " + url);
-            }}
-        }}
-        case None -> {{}}
-    }}
-    if host == "" {{ return Err("ホストの名前がありません: " + url); }}
-    // 改行を入れて、ほかのヘッダーを足せないようにする
-    if url.contains("\\r") || url.contains("\\n") || url.contains(" ") {{ return Err("URL に空白や改行があります"); }}
-    Ok(Url {{ host: host, port: port, path: path }})
-}}
-
-fn Result<Response, str> request(str method, str url, str content_type, str body) {{
-    let u = parse_url(url)?;
+fn Result<Response, str> request(str method, str target, str content_type, str body) {{
+    let u = parse_url(target)?;
     if content_type.contains("\\r") || content_type.contains("\\n") {{ return Err("content_type に改行があります"); }}
-    let host = if u.port == 80 {{ u.host }} else {{ u.host + ":{{u.port}}" }};
-    let mut req = "{{method}} {{u.path}} HTTP/1.1\\r\\nHost: {{host}}\\r\\nConnection: close\\r\\nUser-Agent: jabberwock\\r\\n";
+    let name = if u.host.contains(":") {{ "[" + u.host + "]" }} else {{ u.host }};
+    let host = if u.port == 80 {{ name }} else {{ name + ":{{u.port}}" }};
+    let mut req = "{{method}} {{u.target()}} HTTP/1.1\\r\\nHost: {{host}}\\r\\nConnection: close\\r\\nUser-Agent: jabberwock\\r\\n";
     if method == "POST" {{ req += "Content-Type: {{content_type}}\\r\\nContent-Length: {{body.byte_len()}}\\r\\n"; }}
     req += "\\r\\n" + body;
     let mut c = net.connect(u.host, u.port)?;
@@ -842,7 +849,8 @@ pub fn Option<str> from_utf8(ref u8[] b) {{
 //   let t = time.now();
 //   time.sleep(100);
 //   print(t.elapsed_ms() >= 100);
-// 時計は壁時計の修正に影響されない（始まりの位置は決めないので、2 つの Instant の差だけに意味がある）。日付・時刻はまだない。
+// now の時計は壁時計の修正に影響されない（始まりの位置は決めないので、2 つの Instant の差だけに意味がある）。
+// 日時を残したいときは unix_ms（壁時計）を使う。暦（年月日）への直しはまだない。
 
 /// 時計の読み（ナノ秒）
 pub struct Instant {{
@@ -860,6 +868,157 @@ pub fn Instant now() {{ Instant {{ ns: __time_now_ns() }} }}
 
 /// ms ミリ秒待つ（負なら実行時エラー）。待つ前に print の出力を書き出す
 pub fn sleep(i64 ms) {{ __time_sleep_ms(ms); }}
+
+/// 壁時計: 1970-01-01 UTC からのミリ秒。時刻の修正で戻ることがあるので、かかった時間を測るには now を使う
+pub fn i64 unix_ms() {{ __time_unix_ms() }}
+""");
+    }
+    if name == "url" {
+        return Some("""
+// 標準ライブラリ std.url: URL の分解と %エンコード。`use std.url;` と書いて使う
+//   let u = url.parse("http://example.com:8080/a/b?q=1#top")?;
+//   print(u.host);                 // example.com
+//   print(url.encode("a b&c"));    // a%20b%26c
+// 分けるのは scheme://host[:port]/path?query#fragment の形だけ。利用者情報（user@）は紛らわしいので受け付けない。
+
+use std.text;
+
+/// 分けた URL。port は書いていなければ http なら 80、https なら 443、ほかは 0
+pub struct Url {{
+    str scheme;
+    str host;
+    i64 port;
+    str path;
+    str query;
+    str fragment;
+
+    /// サーバーへ送る部分（path と、あれば ?query）
+    fn str target() {{ if query == "" {{ path }} else {{ path + "?" + query }} }}
+}}
+
+/// URL を分ける。scheme は小文字にする。path がなければ "/"
+pub fn Result<Url, str> parse(str s) {{
+    for c in [" ", "\\r", "\\n", "\\t"] {{
+        if s.contains(c) {{ return Err("URL に空白や改行があります"); }}
+    }}
+    let mut rest = s;
+    let mut scheme = "";
+    match s.find("://") {{
+        case Some(i) -> {{
+            scheme = s.slice(0, i).to_lower();
+            rest = s.slice(i + 3, s.len());
+        }}
+        case None -> return Err("scheme:// で始まる URL ではありません: " + s);
+    }}
+    if scheme == "" {{ return Err("scheme がありません: " + s); }}
+    let mut fragment = "";
+    match rest.find("#") {{
+        case Some(i) -> {{
+            fragment = rest.slice(i + 1, rest.len());
+            rest = rest.slice(0, i);
+        }}
+        case None -> {{}}
+    }}
+    let mut query = "";
+    match rest.find("?") {{
+        case Some(i) -> {{
+            query = rest.slice(i + 1, rest.len());
+            rest = rest.slice(0, i);
+        }}
+        case None -> {{}}
+    }}
+    let mut hostport = rest;
+    let mut path = "/";
+    match rest.find("/") {{
+        case Some(i) -> {{
+            hostport = rest.slice(0, i);
+            path = rest.slice(i, rest.len());
+        }}
+        case None -> {{}}
+    }}
+    if hostport.contains("@") {{ return Err("URL に利用者情報（@）は使えません: " + s); }}
+    let mut host = hostport;
+    let mut tail = "";
+    if hostport.starts_with("[") {{
+        // [::1]:8080 のような IPv6 の書き方
+        match hostport.find("]") {{
+            case Some(i) -> {{
+                host = hostport.slice(1, i);
+                tail = hostport.slice(i + 1, hostport.len());
+            }}
+            case None -> return Err("] がありません: " + s);
+        }}
+        if tail != "" && !tail.starts_with(":") {{ return Err("] のあとが読めません: " + s); }}
+    }} else {{
+        match hostport.find(":") {{
+            case Some(i) -> {{
+                host = hostport.slice(0, i);
+                tail = hostport.slice(i, hostport.len());
+            }}
+            case None -> {{}}
+        }}
+    }}
+    let mut port = if scheme == "http" {{ 80 }} else if scheme == "https" {{ 443 }} else {{ 0 }};
+    if tail != "" {{
+        let digits = tail.slice(1, tail.len());
+        if !text.is_digits(digits) || digits.len() > 5 {{ return Err("ポートの番号が読めません: " + s); }}
+        match digits.to_int() {{
+            case Some(p) -> port = p;
+            case None -> return Err("ポートの番号が読めません: " + s);
+        }}
+        if port > 65535 {{ return Err("ポートの番号が読めません: " + s); }}
+    }}
+    if host == "" {{ return Err("ホストの名前がありません: " + s); }}
+    Ok(Url {{ scheme: scheme, host: host, port: port, path: path, query: query, fragment: fragment }})
+}}
+
+/// %エンコード（英数字と - . _ ~ のほかは、UTF-8 のバイトごとに %XX にする）
+pub fn str encode(str s) {{
+    let hex = "0123456789ABCDEF";
+    let mut out = "";
+    for b in s.bytes() {{
+        let n = b as i64;
+        let plain = (n >= 48 && n <= 57) || (n >= 65 && n <= 90) || (n >= 97 && n <= 122) || n == 45 || n == 46 || n == 95 || n == 126;
+        if plain {{
+            out = out + chr(n);
+        }} else {{
+            out = out + "%" + hex.slice(n / 16, n / 16 + 1) + hex.slice(n % 16, n % 16 + 1);
+        }}
+    }}
+    out
+}}
+
+/// %XX を戻す。plus が true なら + を空白にする（フォームの書き方）。%XX が壊れているか、UTF-8 にならなければ Err
+pub fn Result<str, str> decode(str s, bool plus) {{
+    let b = s.bytes();
+    let u8[] mut out = [];
+    let mut i = 0;
+    while i < b.len() {{
+        let n = b[i] as i64;
+        if n == 37 {{
+            if i + 2 >= b.len() {{ return Err("% のあとに 2 桁の 16 進数がありません: " + s); }}
+            let hi = digit(b[i + 1] as i64);
+            let lo = digit(b[i + 2] as i64);
+            if hi < 0 || lo < 0 {{ return Err("% のあとに 2 桁の 16 進数がありません: " + s); }}
+            out.push((hi * 16 + lo) as u8);
+            i = i + 3;
+        }} else {{
+            if plus && n == 43 {{ out.push(32 as u8); }} else {{ out.push(b[i]); }}
+            i = i + 1;
+        }}
+    }}
+    match text.from_utf8(ref out) {{
+        case Some(t) -> return Ok(t);
+        case None -> return Err("戻した結果が UTF-8 になりません: " + s);
+    }}
+}}
+
+fn i64 digit(i64 n) {{
+    if n >= 48 && n <= 57 {{ return n - 48; }}
+    if n >= 65 && n <= 70 {{ return n - 55; }}
+    if n >= 97 && n <= 102 {{ return n - 87; }}
+    -1
+}}
 """);
     }
     None

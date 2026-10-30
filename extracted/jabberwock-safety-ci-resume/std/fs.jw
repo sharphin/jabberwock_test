@@ -33,3 +33,38 @@ pub fn Result<(), str> make_dir(str path) { __fs_make_dir(path) }
 
 /// ファイルか、空のディレクトリを消す
 pub fn Result<(), str> remove(str path) { __fs_remove(path) }
+
+/// 名前を変える。to があれば置き換える
+pub fn Result<(), str> rename(str from, str to) { __fs_rename(from, to) }
+
+/// 安全な上書き: `path + ".tmp"` に全部書いて閉じてから path へ名前を変える。
+/// 途中で失敗しても path は元のまま（読む側には古い中身か新しい中身のどちらかが見える）。電源断まで耐えるとは約束しない
+pub fn Result<(), str> write_atomic(str path, u8[] data) {
+    let tmp = path + ".tmp";
+    let mut f = create(tmp)?;
+    match f.write(data) {
+        case Ok(_) -> {}
+        case Err(e) -> {
+            close(f);
+            remove(tmp);
+            return Err(e);
+        }
+    }
+    match close(f) {
+        case Ok(_) -> {}
+        case Err(e) -> {
+            remove(tmp);
+            return Err(e);
+        }
+    }
+    match rename(tmp, path) {
+        case Ok(_) -> return Ok(());
+        case Err(e) -> {
+            remove(tmp);
+            return Err(e);
+        }
+    }
+}
+
+/// write_atomic の文字列版
+pub fn Result<(), str> write_text_atomic(str path, str s) { write_atomic(path, s.bytes()) }

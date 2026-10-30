@@ -14,7 +14,7 @@
 | aliceのローカル依存 | `alice.toml`、path依存、`src/lib.jw`、パッケージごとの名前空間 | [現在のパッケージ仕様](packages.md)、`src/project.rs` |
 | aliceのbuild/run/test | 現在はRust実装のコンパイル・実行APIを使用 | `src/alice.rs` |
 | ファイルの一括入出力 | 組み込みの `read_file` / `write_file` | [言語仕様](spec.md) |
-| 標準ライブラリ（jwcのみ） | `use std.math;` / `use std.text;` / `use std.fs;` / `use std.net;` / `use std.http;` / `use std.env;` / `use std.time;` / `use std.json;`。jwc に埋め込む。資源型は File・TcpStream・TcpListener（[1.3](spec.md#13-資源と-stdfsjwc-だけ)、[1.4](spec.md#14-stdnetjwc-だけ)）。std.net は Linux・macOS だけ。std.http は http:// のクライアントだけ。カタログ・`as`・TLS・PostgreSQL は未実装 | [言語仕様 1.2](spec.md#12-標準ライブラリjwc-だけ)、`std/`、`jwc/stdlib.jw` |
+| 標準ライブラリ（jwcのみ） | `use std.math;` / `use std.text;` / `use std.fs;` / `use std.net;` / `use std.http;` / `use std.env;` / `use std.time;` / `use std.json;` / `use std.url;`。jwc に埋め込む。資源型は File・TcpStream・TcpListener（[1.3](spec.md#13-資源と-stdfsjwc-だけ)、[1.4](spec.md#14-stdnetjwc-だけ)）。std.net は Linux・macOS だけ。std.http は http:// のクライアントだけ。カタログ・`as`・TLS・PostgreSQL は未実装 | [言語仕様 1.2](spec.md#12-標準ライブラリjwc-だけ)、`std/`、`jwc/stdlib.jw` |
 
 `alice package-map`からjwcへのローカル依存の受け渡しを実装した（[手順](packages.md#jwcでローカルライブラリを使う)）。
 aliceのbuild/run/testがjwcを呼ぶ接続は未実装。マップを生成してjwcで直接コンパイルすることと、

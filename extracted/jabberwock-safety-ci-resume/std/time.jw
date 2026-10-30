@@ -2,7 +2,8 @@
 //   let t = time.now();
 //   time.sleep(100);
 //   print(t.elapsed_ms() >= 100);
-// 時計は壁時計の修正に影響されない（始まりの位置は決めないので、2 つの Instant の差だけに意味がある）。日付・時刻はまだない。
+// now の時計は壁時計の修正に影響されない（始まりの位置は決めないので、2 つの Instant の差だけに意味がある）。
+// 日時を残したいときは unix_ms（壁時計）を使う。暦（年月日）への直しはまだない。
 
 /// 時計の読み（ナノ秒）
 pub struct Instant {
@@ -20,3 +21,6 @@ pub fn Instant now() { Instant { ns: __time_now_ns() } }
 
 /// ms ミリ秒待つ（負なら実行時エラー）。待つ前に print の出力を書き出す
 pub fn sleep(i64 ms) { __time_sleep_ms(ms); }
+
+/// 壁時計: 1970-01-01 UTC からのミリ秒。時刻の修正で戻ることがあるので、かかった時間を測るには now を使う
+pub fn i64 unix_ms() { __time_unix_ms() }

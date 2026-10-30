@@ -724,6 +724,54 @@ fn main() {
 }
 "#;
 
+#[test]
+fn jwc_std_url_fs_time() {
+    if !have_clang() { return; }
+    let dir = std::env::temp_dir().join(format!("jw-jwc-url-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("main.jw");
+    std::fs::write(&path, URL_SRC).unwrap();
+    let exe = dir.join("main");
+    let out = Command::new(jwc()).args(["build", "--clang", &native::clang(), "-o"]).arg(&exe).arg(&path).output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let got = Command::new(&exe).current_dir(&dir).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&got.stdout), "http Example.com 8080 /a/b q=1&r=2 top /a/b?q=1&r=2\n::1 443 /x\nURL に利用者情報（@）は使えません: http://a@b/\nポートの番号が読めません: http://h:99999/\nscheme:// で始まる URL ではありません: nope\nホストの名前がありません: http://:80/\nポートの番号が読めません: http://h:8x/\nホストの名前がありません: file:///tmp/a\na%20b%26c%3D%E6%97%A5%E6%9C%AC~\na b&c=日本~ x\n% のあとに 2 桁の 16 進数がありません: %\n% のあとに 2 桁の 16 進数がありません: %2\n% のあとに 2 桁の 16 進数がありません: %zz\n戻した結果が UTF-8 になりません: %FF\n二回目\n\nfalse\nファイルを書くために開けません: nodir/a.txt.tmp\n名前を変えられません: none\ntrue\n");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+const URL_SRC: &str = r##"use std.url;
+use std.fs;
+use std.time;
+
+fn main() {
+    match url.parse("HTTP://Example.com:8080/a/b?q=1&r=2#top") {
+        case Ok(u) -> print(u.scheme, u.host, u.port, u.path, u.query, u.fragment, u.target());
+        case Err(e) -> print(e);
+    }
+    match url.parse("https://[::1]/x") { case Ok(u) -> print(u.host, u.port, u.path); case Err(e) -> print(e); }
+    for s in ["http://a@b/", "http://h:99999/", "nope", "http://:80/", "http://h:8x/", "file:///tmp/a"] {
+        match url.parse(s) { case Ok(u) -> print("ok", u.host, u.port); case Err(e) -> print(e); }
+    }
+    print(url.encode("a b&c=日本~"));
+    match url.decode("a%20b%26c%3D%E6%97%A5%E6%9C%AC~+x", true) { case Ok(t) -> print(t); case Err(e) -> print(e); }
+    for s in ["%", "%2", "%zz", "%FF"] {
+        match url.decode(s, false) { case Ok(t) -> print("ok", t); case Err(e) -> print(e); }
+    }
+    match fs.write_text_atomic("a.txt", "一回目\n") { case Ok(_) -> {} case Err(e) -> print(e); }
+    match fs.write_text_atomic("a.txt", "二回目\n") { case Ok(_) -> {} case Err(e) -> print(e); }
+    match fs.open("a.txt") {
+        case Ok(f) -> { let mut g = f; match g.read_text() { case Ok(t) -> print(t); case Err(e) -> print(e); } }
+        case Err(e) -> print(e);
+    }
+    print(fs.exists("a.txt.tmp"));
+    match fs.write_text_atomic("nodir/a.txt", "x") { case Ok(_) -> print("?"); case Err(e) -> print(e); }
+    match fs.rename("none", "b") { case Ok(_) -> print("?"); case Err(e) -> print(e); }
+    let t = time.unix_ms();
+    print(t > 1700000000000 && t < 4000000000000);
+}
+"##;
+
+
 /// `jwc build` で作った実行ファイルが、interp と同じものを出す
 #[test]
 fn jwc_build_makes_an_executable() {

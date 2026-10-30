@@ -85,11 +85,12 @@ fn main() {
 |---|---|
 | `std.math` | `gcd(a, b)`・`lcm(a, b)`・`pow(base, exp)`（exp は 0 以上）・`clamp(x, lo, hi)`（どれも i64）、`pi()`・`floor(x)`・`ceil(x)`・`round(x)`（f64。round はちょうど半分なら 0 から遠い方） |
 | `std.text` | `pad_left(s, width, fill)`・`pad_right(s, width, fill)`（fill は 1 文字）・`reverse(s)`・`count(s, sub)`（重ならずに数える。sub が空なら実行時エラー）・`is_digits(s)`（空でなく全部 0〜9）・`from_utf8(ref bytes)`（`Option<str>`。正しい UTF-8 でなければ None） |
-| `std.fs` | `open(path)`・`create(path)`・`append(path)`・`close(f)` と資源の型 `File`、`exists(path)`・`list_dir(path)`・`make_dir(path)`・`remove(path)`（[1.3](#13-資源と-stdfsjwc-だけ)） |
+| `std.fs` | `open(path)`・`create(path)`・`append(path)`・`close(f)` と資源の型 `File`、`exists(path)`・`list_dir(path)`・`make_dir(path)`・`remove(path)`・`rename(from, to)`・`write_atomic(path, bytes)`・`write_text_atomic(path, s)`（[1.3](#13-資源と-stdfsjwc-だけ)） |
 | `std.env` | `get(name)`（`Option<str>`）（[1.6](#16-stdenvstdtimestdjsonjwc-だけ)） |
-| `std.time` | `now()`・`sleep(ms)` と `Instant`（[1.6](#16-stdenvstdtimestdjsonjwc-だけ)） |
+| `std.time` | `now()`・`sleep(ms)`・`unix_ms()` と `Instant`（[1.6](#16-stdenvstdtimestdjsonjwc-だけ)） |
 | `std.json` | `parse(s)`・`stringify(ref v)`・`quote(s)` と `Json`（[1.6](#16-stdenvstdtimestdjsonjwc-だけ)） |
 | `std.http` | `get(url)`・`post(url, content_type, body)` と `Response`（[1.5](#15-stdhttpjwc-だけ)） |
+| `std.url` | `parse(s)`・`encode(s)`・`decode(s, plus)` と `Url`（[1.7](#17-stdurljwc-だけ)） |
 | `std.net` | `connect(host, port)`・`listen(host, port)`・`close(s)`・`stop(l)` と資源の型 `TcpStream`・`TcpListener`（[1.4](#14-stdnetjwc-だけ)） |
 
 - 詳しい動き（一周・実行時エラーになる条件）は `std/*.jw` の各関数の説明に書いてある。
@@ -121,9 +122,12 @@ fn Result<(), str> save() {
 - 書いた内容は、close するか持ち主がいなくなるまで、ほかの開き方からは見えないことがある（まとめて書くため）。
 - ディレクトリ: `fs.exists(path)`（`bool`。ファイルでもディレクトリでも）・`fs.list_dir(path)`（`Result<str[], str>`。`.` と `..` を除き、名前の順。UTF-8 でない名前があれば Err）・
   `fs.make_dir(path)`（親はあること。もうあれば Err）・`fs.remove(path)`（ファイルか空のディレクトリ）。
+- `fs.rename(from, to)`: 名前を変える。to があれば置き換える。
+- 安全な上書き: `fs.write_atomic(path, bytes)`・`fs.write_text_atomic(path, s)`。`path + ".tmp"` に全部書いて閉じてから path へ名前を変える。
+  途中で失敗すれば path は元のまま（一時ファイルは消す）。読む側には古い中身か新しい中身のどちらかが見える。電源断まで耐えるとは約束しない。
 - 実行時ライブラリは資源を表で持ち、値は「札」（場所の番号と世代）。閉じた札を使うと実行時エラー（型検査を通ったプログラムでは起きないはずの、念のための検査）。
   場所を使い回すときは世代を進め、世代が上限に達した場所は退役させる。
-- テスト用: 環境変数 `JW_RES_FAIL=open` / `read` / `write` / `close` / `list` / `make_dir` / `remove`（std.net は `connect` / `listen` / `accept` も）で、
+- テスト用: 環境変数 `JW_RES_FAIL=open` / `read` / `write` / `close` / `list` / `make_dir` / `remove` / `rename`（std.net は `connect` / `listen` / `accept` も）で、
   その操作をわざと失敗させる（`--release` で作った実行ファイルでは効かない）。
 
 ### 1.4 std.net（jwc だけ）
@@ -157,7 +161,7 @@ let p = http.post("http://127.0.0.1:8080/p", "application/json", "{{}}")?;
 - 1 回ごとにつなぎ、`Connection: close` を送って、相手が閉じるまで読む。本文は chunked なら読み解き、`Content-Length` があればその長さにする（足りなければ Err）。
   リダイレクトはたどらない。状態の番号が 404 などでも Ok（`status` を見る）。
 - `Response`: `status`（`i64`）・`headers`（`str[str]`。名前は小文字。同じ名前が二つ以上なら `", "` でつなぐ）・`body`（`u8[]`）・`text()`（本文を `str` に。UTF-8 でなければ Err）。
-- URL に空白・改行、content_type に改行があれば Err（ヘッダーを足されないように）。
+- URL は std.url の `parse` で分ける（同じ規則で Err）。URL に空白・改行、content_type に改行があれば Err（ヘッダーを足されないように）。
 
 ### 1.6 std.env・std.time・std.json（jwc だけ）
 
@@ -175,13 +179,32 @@ print(v.get("a").at(1).as_str(), json.stringify(ref v));   // Some(x) {"a":[1,"x
 
 - `env.get(name)`: 環境変数（名前が空・`=` や NUL を含む・値が UTF-8 でないなら None）。設定する関数はまだない。
 - `time.now()`: 単調な時計の読み（`Instant { ns }`）。壁時計の修正に影響されず、差だけに意味がある。`t.elapsed_ns()`・`t.elapsed_ms()`。
-  `time.sleep(ms)`（負なら実行時エラー。待つ前に print の出力を書き出す）。日付・時刻はまだない。
+  `time.sleep(ms)`（負なら実行時エラー。待つ前に print の出力を書き出す）。
+- `time.unix_ms()`: 壁時計（1970-01-01 UTC からのミリ秒）。時刻の修正で戻ることがあるので、かかった時間は now で測る。暦（年月日）への直しはまだない。
 - `Json` は enum: `Null`・`Bool(b)`・`Num(n)`（いつも f64）・`Str(s)`・`Arr(own Json[] items)`・`Obj(own Json[str] fields)`（キーは書いた順。同じキーは後ろの値）。
   メソッド: `get(key)`・`at(i)`（写しを返す。なければ Null）・`len()`・`keys()`・`is_null()`・`as_bool()`・`as_num()`・`as_str()`（`Option`）・`clone()`。
   中を借りて読むなら `match ref v { case Obj(fields) -> ... }`。
 - `json.parse(s)`（`Result<Json, str>`）: RFC 8259 のとおり（前後の空白はよい。余分な文字・先頭の 0・制御文字・対になっていないサロゲートは Err）。
   入れ子は 512 段まで。Err の文には何文字目かが入る。
 - `json.stringify(ref v)`: 空白なしで書く。整数の値（2^53 未満）は `3`、ほかは小数の表示。NaN・inf は `null`。`json.quote(s)` は文字列 1 つ。
+
+### 1.7 std.url（jwc だけ）
+
+```
+use std.url;
+let u = url.parse("http://example.com:8080/a?q=1#top")?;   // url.Url
+print(u.scheme, u.host, u.port, u.path, u.query, u.fragment, u.target());
+// http example.com 8080 /a q=1 top /a?q=1
+print(url.encode("a b&日"));                               // a%20b%26%E6%97%A5
+print(url.decode("a%20b+c", true)?);                       // a b c
+```
+
+- `url.parse(s)`（`Result<Url, str>`）: `scheme://host[:port]/path?query#fragment` の形だけ分ける。scheme は小文字にする。path がなければ `/`。
+  port を書いていなければ http は 80、https は 443、ほかは 0。`[::1]` の書き方の host は角かっこを外す。
+  空白・改行・タブ、利用者情報（`user@`）、0〜65535 でない port、空の host（`file:///...` も）は Err。
+- `Url`: `scheme`・`host`・`port`（`i64`）・`path`・`query`・`fragment`（なければ空の文字列）と `target()`（path と、あれば `?query`）。
+- `url.encode(s)`: 英数字と `-` `.` `_` `~` のほかは、UTF-8 のバイトごとに `%XX`（大文字）にする。
+- `url.decode(s, plus)`: `%XX` を戻す（plus が true なら `+` を空白にする）。`%` のあとが 2 桁の 16 進数でない・戻した結果が UTF-8 でないなら Err。
 
 ## 2. 字句
 

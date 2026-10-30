@@ -2707,6 +2707,8 @@ void *jw_res_view(void *h) {{ return (void *)((uintptr_t)h | 1); }}
 #ifdef _WIN32
 __declspec(dllimport) int __stdcall QueryPerformanceCounter(int64_t *);
 __declspec(dllimport) int __stdcall QueryPerformanceFrequency(int64_t *);
+__declspec(dllimport) void __stdcall GetSystemTimeAsFileTime(uint64_t *);
+__declspec(dllimport) int __stdcall MoveFileExW(const wchar_t *, const wchar_t *, unsigned long);
 __declspec(dllimport) void __stdcall Sleep(unsigned long);
 __declspec(dllimport) int __stdcall WideCharToMultiByte(unsigned, unsigned long, const wchar_t *, int, char *, int, const char *, int *);
 wchar_t *_wgetenv(const wchar_t *);
@@ -2757,6 +2759,19 @@ int64_t jw_time_now_ns(void) {{
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (int64_t)ts.tv_sec * 1000000000 + ts.tv_nsec;
+#endif
+}}
+
+// 壁時計（1970-01-01 UTC からのミリ秒。時刻の修正で戻ることがある）
+int64_t jw_time_unix_ms(void) {{
+#ifdef _WIN32
+    uint64_t t = 0; // FILETIME（1601 年からの 100 ナノ秒）と同じ並び
+    GetSystemTimeAsFileTime(&t);
+    return (int64_t)((t - 116444736000000000ULL) / 10000);
+#else
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 #endif
 }}
 
@@ -3133,6 +3148,26 @@ int32_t jw_fs_remove(WStr *path, WStr **err) {{
 #endif
     free(cp);
     if (!ok) *err = message("消せません: ", path);
+    return ok;
+}}
+
+// 名前を変える。to があれば置き換える（同じファイルシステムの中なら、読む側には古いか新しいかのどちらかが見える）
+int32_t jw_fs_rename(WStr *from, WStr *to, WStr **err) {{
+    if (!path_ok(from, err) || !path_ok(to, err)) return 0;
+    char *cf = c_str(from);
+    char *ct = c_str(to);
+#ifdef _WIN32
+    wchar_t *wf = to_wide(cf);
+    wchar_t *wt = to_wide(ct);
+    int ok = !res_fail("rename") && MoveFileExW(wf, wt, 0x1 | 0x8) != 0 /* REPLACE_EXISTING | WRITE_THROUGH */;
+    free(wf);
+    free(wt);
+#else
+    int ok = !res_fail("rename") && rename(cf, ct) == 0;
+#endif
+    free(cf);
+    free(ct);
+    if (!ok) *err = message("名前を変えられません: ", from);
     return ok;
 }}
 

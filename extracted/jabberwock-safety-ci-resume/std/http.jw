@@ -5,6 +5,7 @@
 // 1 回ごとにつなぎ、`Connection: close` で相手が閉じるまで読む。chunked の本文は読み解く。リダイレクトはたどらない。
 
 use std.net;
+use std.url;
 use std.text;
 
 pub struct Response {
@@ -23,53 +24,23 @@ pub struct Response {
 }
 
 /// GET する
-pub fn Result<Response, str> get(str url) { request("GET", url, "", "") }
+pub fn Result<Response, str> get(str target) { request("GET", target, "", "") }
 
 /// POST する（content_type は `application/json` など）
-pub fn Result<Response, str> post(str url, str content_type, str body) { request("POST", url, content_type, body) }
+pub fn Result<Response, str> post(str target, str content_type, str body) { request("POST", target, content_type, body) }
 
-struct Url {
-    str host;
-    i64 port;
-    str path;
+fn Result<url.Url, str> parse_url(str s) {
+    if s.starts_with("https://") { return Err("https はまだ使えません: " + s); }
+    if !s.starts_with("http://") { return Err("http:// で始まる URL ではありません: " + s); }
+    url.parse(s)
 }
 
-fn Result<Url, str> parse_url(str url) {
-    if url.starts_with("https://") { return Err("https はまだ使えません: " + url); }
-    if !url.starts_with("http://") { return Err("http:// で始まる URL ではありません: " + url); }
-    let rest = url.slice(7, url.len());
-    let mut hostport = rest;
-    let mut path = "/";
-    match rest.find("/") {
-        case Some(i) -> {
-            hostport = rest.slice(0, i);
-            path = rest.slice(i, rest.len());
-        }
-        case None -> {}
-    }
-    let mut host = hostport;
-    let mut port = 80;
-    match hostport.find(":") {
-        case Some(i) -> {
-            host = hostport.slice(0, i);
-            match hostport.slice(i + 1, hostport.len()).to_int() {
-                case Some(p) -> port = p;
-                case None -> return Err("ポートの番号が読めません: " + url);
-            }
-        }
-        case None -> {}
-    }
-    if host == "" { return Err("ホストの名前がありません: " + url); }
-    // 改行を入れて、ほかのヘッダーを足せないようにする
-    if url.contains("\r") || url.contains("\n") || url.contains(" ") { return Err("URL に空白や改行があります"); }
-    Ok(Url { host: host, port: port, path: path })
-}
-
-fn Result<Response, str> request(str method, str url, str content_type, str body) {
-    let u = parse_url(url)?;
+fn Result<Response, str> request(str method, str target, str content_type, str body) {
+    let u = parse_url(target)?;
     if content_type.contains("\r") || content_type.contains("\n") { return Err("content_type に改行があります"); }
-    let host = if u.port == 80 { u.host } else { u.host + ":{u.port}" };
-    let mut req = "{method} {u.path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\nUser-Agent: jabberwock\r\n";
+    let name = if u.host.contains(":") { "[" + u.host + "]" } else { u.host };
+    let host = if u.port == 80 { name } else { name + ":{u.port}" };
+    let mut req = "{method} {u.target()} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\nUser-Agent: jabberwock\r\n";
     if method == "POST" { req += "Content-Type: {content_type}\r\nContent-Length: {body.byte_len()}\r\n"; }
     req += "\r\n" + body;
     let mut c = net.connect(u.host, u.port)?;
