@@ -21,7 +21,7 @@
   },
   "isolated_runner_and_sealed_logs": {
     "state": "PARTIAL",
-    "evidence": "Code audit: scripts/formal_tool.py runs stages separately with timeouts, stdin disabled, per-stage stdout/stderr logs, stale-report removal, and atomic summary writing. Logs are not cryptographically sealed or authenticated as immutable artifacts. Update 2026-10-30: per-stage log and report SHA-256 are re-checked before the verdict, and test_formal_tool.py covers replaced logs and rewritten reports. This is tamper evidence within one run, not a signature by an independent key, so the capability stays PARTIAL."
+    "evidence": "Code audit: scripts/formal_tool.py runs stages separately with timeouts, stdin disabled, per-stage stdout/stderr logs, stale-report removal, and atomic summary writing. Logs are not cryptographically sealed or authenticated as immutable artifacts. Update 2026-10-30: per-stage log and report SHA-256 are re-checked before the verdict, and test_formal_tool.py covers replaced logs and rewritten reports. This is tamper evidence within one run, not a signature by an independent key, so the capability stays PARTIAL. Update 2026-10-30 (later): in jabberwock_test CI (run 26, 18d356c, all jobs green) the Linux safety (jwc, rust), specification judgement and elision jobs write a SHA-256 manifest of their evidence and attest it with actions/attest-build-provenance (Sigstore, GitHub OIDC), so CI evidence is signed by a key outside the run. It stays PARTIAL: local runs (formal_tool.py, safety_report.py on the owner's machines, including Windows) are unsigned, and no judging script verifies an attestation before using evidence."
   },
   "explainable_machine_readable_reports": {
     "state": "IMPLEMENTED",

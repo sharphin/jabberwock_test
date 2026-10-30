@@ -302,10 +302,11 @@ jobs:
         env:
           JW_CLANG: /usr/bin/clang
         run: |
-          set -uo pipefail
+          set -euo pipefail
           python3 scripts/elision_bridge.py --rust target/release/jabberwock --output target/elision-check/bridge-evidence.json
-          python3 scripts/refinement_transition.py --evidence target/elision-check/bridge-evidence.json --output target/elision-check/refinement.json
-          code=$?
+          # 未証明（NOT_PROVEN）は終了コード 1 で返るのが正しいので、ここでは止めずに下で確かめる
+          code=0
+          python3 scripts/refinement_transition.py --evidence target/elision-check/bridge-evidence.json --output target/elision-check/refinement.json || code=$?
           python3 - "$code" <<'PY'
           import json, os, sys
           d = json.load(open('target/elision-check/refinement.json'))
