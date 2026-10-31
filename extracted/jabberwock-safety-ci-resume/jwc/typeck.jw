@@ -544,6 +544,8 @@ pub struct Checker {
     LambdaScope[] lstack;
     diag.Diag[] warns;
     str[] mods;
+    // モジュールごとに use した名前（空白でつなぐ）
+    str[str] mod_uses;
     str[] cnames;
     // 今調べている関数のモジュール（最初のファイルなら ""）
     str cur_mod;
@@ -1339,7 +1341,26 @@ pub struct Checker {
         Ok(())
     }
 
-    /// 変数に関数と同じ名前はつけられない（`f(x)` がどちらの呼び出しか分からなくなるため）
+    /// main（最初のファイル）の名前か（モジュールの中の名前は `モジュール.` で始まる）
+    fn bool in_main(str name) {
+        for m in mods {
+            if name.starts_with(m + ".") { return false; }
+        }
+        true
+    }
+
+    /// モジュールの中から main の関数は使えない（名前はモジュールごとに閉じる）
+    fn Result<(), diag.Diag> not_main_fn(str name, i64 span) {
+        if cur_mod != "" && in_main(name) {
+            return Err(diag.make("`{name}` は最初のファイル（main）の関数です")
+                .at(span, "モジュールの中からは、最初のファイルの関数を使えない")
+                .with_note("使う関数はモジュールの中に置くか、関数の値として引数で渡してください"));
+        }
+        Ok(())
+    }
+
+    /// 変数に関数と同じ名前はつけられない（`f(x)` がどちらの呼び出しか分からなくなるため）。
+    /// 見るのは、今のモジュールの関数・そのモジュールが use したモジュール・組み込み関数だけ（ほかのモジュールの名前とは関係しない）
     fn Result<(), diag.Diag> not_a_fn_name(str name, i64 span) {
         let full = if cur_mod != "" { cur_mod + "." + name } else { name };
         if has(cnames, full) {
@@ -1347,14 +1368,18 @@ pub struct Checker {
                 .at(span, "変数や引数に、定数と同じ名前はつけられない")
                 .with_note("別の名前をつけてください"));
         }
-        if has(mods, name) {
+        let used = match mod_uses.get(cur_mod) {
+            case Some(s) -> s.split(" ");
+            case None -> "".split(" ");
+        };
+        if has(used, name) {
             return Err(diag.make("`{name}` はモジュールの名前です")
                 .at(span, "変数や引数に、モジュールと同じ名前はつけられない")
                 .with_note("別の名前をつけてください"));
         }
-        // モジュールの中では、モジュール名をつける前の関数の名前も同じ
-        let in_module = cur_mod != "" && is_fn(cur_mod + "." + name);
-        if is_fn(name) || in_module || is_builtin(name) {
+        // モジュールの中では、モジュール名をつける前の関数の名前で比べる
+        let own_fn = if cur_mod != "" { is_fn(cur_mod + "." + name) } else { is_fn(name) };
+        if own_fn || is_builtin(name) {
             return Err(diag.make("`{name}` は関数の名前です")
                 .at(span, "変数や引数に、関数と同じ名前はつけられない")
                 .with_note("別の名前をつけてください"));
@@ -1937,6 +1962,7 @@ pub struct Checker {
                 }
                 // 名前のある関数を値として使う（`v.sort_by(less)`）
                 if is_fn(name) {
+                    not_main_fn(name, e.span)?;
                     let si = f_at[name];
                     if sigs[si].method || sigs[si].tparams.len() > 0 {
                         return Err(diag.make("`{name}` は値として使えません")
@@ -2940,6 +2966,7 @@ pub struct Checker {
             if name == "range" { return Err(d.with_note("range(...) は `for i in range(...)` の中でだけ使えます")); }
             return Err(d);
         }
+        not_main_fn(name, span)?;
         let si = f_at[name];
         if sigs[si].method {
             let dot2 = last_dot(name);
@@ -3348,10 +3375,12 @@ fn bool is_unit_expr(ref ast.Expr a) {
 
 /// プログラム全体の型を調べる。よければ、警告と記録を持った Checker を返す
 pub fn Result<Checker, diag.Diag> check(ref ast.Program prog) {
+    let str[str] mut uses = [];
+    for (k, v) in prog.mod_uses { uses[k] = v; }
     let mut c = Checker {
         sdefs: [], s_at: [], edefs: [], e_at: [], sigs: [], f_at: [], idefs: [], i_at: [], scopes: [],
         cur_ret: ty.Ty.Unit, cur_tps: [], b_names: [], b_vals: [], cur_fields: [], lstack: [], warns: [],
-        mods: prog.modules.map((x) -> x), cnames: prog.consts.map((x) -> x), cur_mod: "",
+        mods: prog.modules.map((x) -> x), mod_uses: uses, cnames: prog.consts.map((x) -> x), cur_mod: "",
         has_pending: false, pending: ty.tmap(), borrow_spans: prog.borrow_lambdas.map((x) -> x), info: new_info(prog.nodes),
         resources: prog.resources.map((x) -> x),
     };

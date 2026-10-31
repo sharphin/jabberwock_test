@@ -5,6 +5,7 @@ pub fn str[] names() {
     out.push("browser");
     out.push("env");
     out.push("fs");
+    out.push("gzip");
     out.push("http");
     out.push("json");
     out.push("math");
@@ -274,6 +275,416 @@ pub fn Result<(), str> write_atomic(str path, u8[] data) {{
 
 /// write_atomic の文字列版
 pub fn Result<(), str> write_text_atomic(str path, str s) {{ write_atomic(path, s.bytes()) }}
+""");
+    }
+    if name == "gzip" {
+        return Some("""
+// 標準ライブラリ std.gzip: gzip（RFC 1952。中身は deflate、RFC 1951）の展開と圧縮。`use std.gzip;` と書いて使う
+//   let packed = gzip.compress(ref data);
+//   let back = gzip.decompress(ref packed, 1000000)?;    // 展開して 1000000 バイトを超えるなら Err
+//   print(gzip.crc32(ref data));
+// .jw だけで書いている。展開は deflate の 3 種類のブロックを全部読み、CRC32 と長さを確かめる（続けてつないだ gzip も読む）。
+// 圧縮は固定のハフマン符号のブロック 1 つで、同じ並びは後ろ 32768 バイトまでから探す。縮まないデータは圧縮しないブロックにする。
+
+/// 長さの符号（257〜285）の基になる長さと、足すビットの数
+fn i64[] len_base() {{ [3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31, 35, 43, 51, 59, 67, 83, 99, 115, 131, 163, 195, 227, 258] }}
+fn i64[] len_extra() {{ [0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0] }}
+/// 距離の符号（0〜29）の基になる距離と、足すビットの数
+fn i64[] dist_base() {{
+    [1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193, 257, 385, 513, 769, 1025, 1537, 2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577]
+}}
+fn i64[] dist_extra() {{ [0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13] }}
+
+/// CRC32（gzip と同じ。多項式 0xEDB88320）
+pub fn i64 crc32(ref u8[] data) {{
+    let i64[] mut table = [];
+    for n in range(256) {{
+        let mut c = n;
+        for k in range(8) {{ c = if c & 1 == 1 {{ 3988292384 ^ (c >> 1) }} else {{ c >> 1 }}; }}
+        table.push(c);
+    }}
+    let mut c = 4294967295;
+    for b in data {{ c = table[(c ^ (b as i64)) & 255] ^ (c >> 8); }}
+    c ^ 4294967295
+}}
+
+// ---------------------------------------------------------------- 展開
+
+/// 正規のハフマン符号（長さごとの数と、符号の順に並べた記号）
+struct Huffman {{
+    i64[] count;
+    i64[] symbol;
+}}
+
+/// 記号ごとの符号の長さからハフマン符号を作る（長さの組み合わせがありえなければ Err）
+fn Result<Huffman, str> huffman(ref i64[] lengths) {{
+    let i64[] mut count = [];
+    for i in range(16) {{ count.push(0); }}
+    for n in lengths {{ count[n] += 1; }}
+    // 長さ 1 から順に、使える符号の数を超えていないか
+    let mut left = 1;
+    for n in range(1, 16) {{
+        left = left * 2 - count[n];
+        if left < 0 {{ return Err("ハフマン符号の長さの組み合わせが正しくありません"); }}
+    }}
+    let i64[] mut offs = [0, 0];
+    for n in range(1, 15) {{ offs.push(offs[n] + count[n]); }}
+    let i64[] mut symbol = [];
+    for i in range(lengths.len()) {{ symbol.push(0); }}
+    for (s, n) in lengths {{
+        if n != 0 {{
+            symbol[offs[n]] = s;
+            offs[n] += 1;
+        }}
+    }}
+    count[0] = 0;
+    Ok(Huffman {{ count: count, symbol: symbol }})
+}}
+
+struct Inflater {{
+    u8[] src;
+    i64 pos;
+    i64 bitbuf;
+    i64 bitcnt;
+    i64 limit;
+
+    /// n ビット読む（下位のビットから）
+    fn mut Result<i64, str> take(i64 n) {{
+        while bitcnt < n {{
+            if pos >= src.len() {{ return Err("gzip のデータが途中で切れています"); }}
+            bitbuf = bitbuf | ((src[pos] as i64) << bitcnt);
+            pos += 1;
+            bitcnt += 8;
+        }}
+        let v = bitbuf & ((1 << n) - 1);
+        bitbuf = bitbuf >> n;
+        bitcnt -= n;
+        Ok(v)
+    }}
+
+    /// 読みかけのバイトの残りのビットを捨てる
+    fn mut align() {{
+        bitbuf = 0;
+        bitcnt = 0;
+    }}
+
+    /// 記号を 1 つ読む（1 ビットずつ符号を伸ばして探す）
+    fn mut Result<i64, str> decode(ref Huffman h) {{
+        let mut code = 0;
+        let mut first = 0;
+        let mut index = 0;
+        for n in range(1, 16) {{
+            code = code | take(1)?;
+            let c = h.count[n];
+            if code - c < first {{ return Ok(h.symbol[index + code - first]); }}
+            index += c;
+            first = (first + c) << 1;
+            code = code << 1;
+        }}
+        Err("ハフマン符号が読めません")
+    }}
+
+    fn mut Result<(), str> emit(ref mut u8[] out, u8 b) {{
+        if out.len() >= limit {{ return Err("展開した大きさが上限（{{limit}} バイト）を超えます"); }}
+        out.push(b);
+        Ok(())
+    }}
+
+    /// 圧縮していないブロック
+    fn mut Result<(), str> stored(ref mut u8[] out) {{
+        align();
+        if pos + 4 > src.len() {{ return Err("gzip のデータが途中で切れています"); }}
+        let n = (src[pos] as i64) | ((src[pos + 1] as i64) << 8);
+        let check = (src[pos + 2] as i64) | ((src[pos + 3] as i64) << 8);
+        if n ^ check != 65535 {{ return Err("圧縮していないブロックの長さが正しくありません"); }}
+        pos += 4;
+        if pos + n > src.len() {{ return Err("gzip のデータが途中で切れています"); }}
+        for i in range(pos, pos + n) {{ emit(out, src[i])?; }}
+        pos += n;
+        Ok(())
+    }}
+
+    /// ハフマン符号のブロックの中身
+    fn mut Result<(), str> codes(ref mut u8[] out, ref Huffman lit, ref Huffman dist) {{
+        let lb = len_base();
+        let le = len_extra();
+        let db = dist_base();
+        let de = dist_extra();
+        loop {{
+            let s = decode(lit)?;
+            if s < 256 {{
+                emit(out, s as u8)?;
+            }} else if s == 256 {{
+                return Ok(());
+            }} else {{
+                let k = s - 257;
+                if k >= 29 {{ return Err("長さの符号が正しくありません"); }}
+                let n = lb[k] + take(le[k])?;
+                let d = decode(dist)?;
+                if d >= 30 {{ return Err("距離の符号が正しくありません"); }}
+                let back = db[d] + take(de[d])?;
+                if back > out.len() {{ return Err("距離が出力の始まりより前を指しています"); }}
+                for i in range(n) {{
+                    let b = out[out.len() - back];
+                    emit(out, b)?;
+                }}
+            }}
+        }}
+    }}
+
+    /// 固定のハフマン符号のブロック
+    fn mut Result<(), str> fixed(ref mut u8[] out) {{
+        let i64[] mut ls = [];
+        for i in range(288) {{ ls.push(if i < 144 {{ 8 }} else if i < 256 {{ 9 }} else if i < 280 {{ 7 }} else {{ 8 }}); }}
+        let i64[] mut ds = [];
+        for i in range(30) {{ ds.push(5); }}
+        let lit = huffman(ref ls)?;
+        let dist = huffman(ref ds)?;
+        codes(out, ref lit, ref dist)
+    }}
+
+    /// 符号をブロックの頭に書いてあるハフマン符号のブロック
+    fn mut Result<(), str> dynamic(ref mut u8[] out) {{
+        let nlen = take(5)? + 257;
+        let ndist = take(5)? + 1;
+        let ncode = take(4)? + 4;
+        if nlen > 286 || ndist > 30 {{ return Err("符号の数が多すぎます"); }}
+        let order = [16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15];
+        let i64[] mut cl = [];
+        for i in range(19) {{ cl.push(0); }}
+        for i in range(ncode) {{ cl[order[i]] = take(3)?; }}
+        let lencode = huffman(ref cl)?;
+        let i64[] mut lengths = [];
+        while lengths.len() < nlen + ndist {{
+            let s = decode(ref lencode)?;
+            if s < 16 {{
+                lengths.push(s);
+            }} else {{
+                let mut v = 0;
+                let mut times = 0;
+                if s == 16 {{
+                    if lengths.len() == 0 {{ return Err("繰り返す長さがありません"); }}
+                    v = lengths[lengths.len() - 1];
+                    times = 3 + take(2)?;
+                }} else if s == 17 {{
+                    times = 3 + take(3)?;
+                }} else {{
+                    times = 11 + take(7)?;
+                }}
+                if lengths.len() + times > nlen + ndist {{ return Err("符号の長さが多すぎます"); }}
+                for i in range(times) {{ lengths.push(v); }}
+            }}
+        }}
+        if lengths[256] == 0 {{ return Err("ブロックの終わりの符号がありません"); }}
+        let i64[] mut ls = [];
+        for i in range(nlen) {{ ls.push(lengths[i]); }}
+        let i64[] mut ds = [];
+        for i in range(nlen, nlen + ndist) {{ ds.push(lengths[i]); }}
+        let lit = huffman(ref ls)?;
+        let dist = huffman(ref ds)?;
+        codes(out, ref lit, ref dist)
+    }}
+
+    /// deflate のデータを最後のブロックまで読む
+    fn mut Result<(), str> inflate(ref mut u8[] out) {{
+        loop {{
+            let last = take(1)?;
+            let kind = take(2)?;
+            if kind == 0 {{
+                stored(out)?;
+            }} else if kind == 1 {{
+                fixed(out)?;
+            }} else if kind == 2 {{
+                dynamic(out)?;
+            }} else {{
+                return Err("ブロックの種類が正しくありません");
+            }}
+            if last == 1 {{ break; }}
+        }}
+        align();
+        Ok(())
+    }}
+
+    fn mut Result<i64, str> byte() {{
+        if pos >= src.len() {{ return Err("gzip のデータが途中で切れています"); }}
+        pos += 1;
+        Ok(src[pos - 1] as i64)
+    }}
+
+    fn mut Result<i64, str> le32() {{
+        let mut v = 0;
+        for i in range(4) {{ v = v | (byte()? << (8 * i)); }}
+        Ok(v)
+    }}
+
+    /// 名前・注釈（0 で終わる）を読み飛ばす
+    fn mut Result<(), str> skip_zstr() {{
+        while byte()? != 0 {{}}
+        Ok(())
+    }}
+
+    /// gzip の 1 つ分（頭・中身・CRC32 と長さ）
+    fn mut Result<(), str> member(ref mut u8[] out) {{
+        if byte()? != 31 || byte()? != 139 {{ return Err("gzip のデータではありません"); }}
+        if byte()? != 8 {{ return Err("deflate でない圧縮の方式です"); }}
+        let flags = byte()?;
+        if flags & 224 != 0 {{ return Err("gzip の頭の印が正しくありません"); }}
+        pos += 6; // 時刻・圧縮の度合い・OS
+        if flags & 4 != 0 {{
+            let n = byte()? | (byte()? << 8);
+            pos += n;
+        }}
+        if flags & 8 != 0 {{ skip_zstr()?; }}
+        if flags & 16 != 0 {{ skip_zstr()?; }}
+        if flags & 2 != 0 {{ pos += 2; }}
+        if pos > src.len() {{ return Err("gzip のデータが途中で切れています"); }}
+        let start = out.len();
+        inflate(out)?;
+        let want_crc = le32()?;
+        let want_len = le32()?;
+        let u8[] mut part = [];
+        for i in range(start, out.len()) {{ part.push(out[i]); }}
+        if crc32(ref part) != want_crc {{ return Err("CRC32 が合いません（データが壊れています）"); }}
+        if (out.len() - start) & 4294967295 != want_len {{ return Err("展開した長さが合いません"); }}
+        Ok(())
+    }}
+}}
+
+/// gzip のデータを展開する。limit は展開した大きさの上限（バイト。0 以上）。続けてつないだ gzip は順につなげて返す
+pub fn Result<u8[], str> decompress(ref u8[] data, i64 limit) {{
+    assert(limit >= 0);
+    let u8[] mut src = [];
+    for b in data {{ src.push(b); }}
+    let mut z = Inflater {{ src: src, pos: 0, bitbuf: 0, bitcnt: 0, limit: limit }};
+    let u8[] mut out = [];
+    z.member(ref mut out)?;
+    while z.pos < z.src.len() {{ z.member(ref mut out)?; }}
+    Ok(out)
+}}
+
+// ---------------------------------------------------------------- 圧縮
+
+struct BitWriter {{
+    i64 bitbuf;
+    i64 bitcnt;
+
+    /// v の下位 n ビットを、下位のビットから書く
+    fn mut put(ref mut u8[] out, i64 v, i64 n) {{
+        bitbuf = bitbuf | (v << bitcnt);
+        bitcnt += n;
+        while bitcnt >= 8 {{
+            out.push((bitbuf & 255) as u8);
+            bitbuf = bitbuf >> 8;
+            bitcnt -= 8;
+        }}
+    }}
+
+    /// ハフマン符号は上位のビットから書く
+    fn mut put_code(ref mut u8[] out, i64 code, i64 n) {{
+        let mut r = 0;
+        for i in range(n) {{ r = (r << 1) | ((code >> i) & 1); }}
+        put(out, r, n);
+    }}
+
+    /// 固定のハフマン符号で、文字か長さの記号を書く
+    fn mut symbol(ref mut u8[] out, i64 s) {{
+        if s < 144 {{ put_code(out, 48 + s, 8); }}
+        else if s < 256 {{ put_code(out, 400 + s - 144, 9); }}
+        else if s < 280 {{ put_code(out, s - 256, 7); }}
+        else {{ put_code(out, 192 + s - 280, 8); }}
+    }}
+
+    fn mut flush(ref mut u8[] out) {{
+        if bitcnt > 0 {{ out.push((bitbuf & 255) as u8); }}
+        bitbuf = 0;
+        bitcnt = 0;
+    }}
+}}
+
+/// 3 バイトの並びの手がかり（0〜65535）
+fn i64 hash3(ref u8[] d, i64 i) {{
+    (((d[i] as i64) << 10) ^ ((d[i + 1] as i64) << 5) ^ (d[i + 2] as i64)) & 65535
+}}
+
+/// gzip にする（固定のハフマン符号のブロック 1 つ。縮まなければ圧縮しないブロック）
+pub fn u8[] compress(ref u8[] data) {{
+    let u8[] mut out = [31, 139, 8, 0, 0, 0, 0, 0, 0, 255];
+    let mut w = BitWriter {{ bitbuf: 0, bitcnt: 0 }};
+    w.put(ref mut out, 1, 1); // 最後のブロック
+    w.put(ref mut out, 1, 2); // 固定のハフマン符号
+    let lb = len_base();
+    let le = len_extra();
+    let db = dist_base();
+    let de = dist_extra();
+    let i64[] mut head = [];
+    for i in range(65536) {{ head.push(-1); }}
+    let i64[] mut prev = [];
+    let n = data.len();
+    let mut i = 0;
+    while i < n {{
+        let mut best = 0;
+        let mut best_back = 0;
+        if i + 2 < n {{
+            let h = hash3(data, i);
+            let mut j = head[h];
+            let mut tries = 0;
+            while j >= 0 && i - j <= 32768 && tries < 64 {{
+                let mut k = 0;
+                while k < 258 && i + k < n && data[j + k] == data[i + k] {{ k += 1; }}
+                if k > best {{
+                    best = k;
+                    best_back = i - j;
+                    if k == 258 {{ break; }}
+                }}
+                j = prev[j];
+                tries += 1;
+            }}
+        }}
+        let step = if best >= 3 {{ best }} else {{ 1 }};
+        if best >= 3 {{
+            let mut c = 28;
+            while lb[c] > best {{ c -= 1; }}
+            w.symbol(ref mut out, 257 + c);
+            w.put(ref mut out, best - lb[c], le[c]);
+            let mut d = 29;
+            while db[d] > best_back {{ d -= 1; }}
+            w.put_code(ref mut out, d, 5);
+            w.put(ref mut out, best_back - db[d], de[d]);
+        }} else {{
+            w.symbol(ref mut out, data[i] as i64);
+        }}
+        // 通ったところを全部、手がかりの表に入れる
+        for p in range(i, i + step) {{
+            if p + 2 < n {{
+                let h = hash3(data, p);
+                prev.push(head[h]);
+                head[h] = p;
+            }} else {{
+                prev.push(-1);
+            }}
+        }}
+        i += step;
+    }}
+    w.symbol(ref mut out, 256);
+    w.flush(ref mut out);
+    // 縮まないデータ（圧縮ずみなど）は、圧縮しないブロックに並べ直す（1 ブロックは 65535 バイトまで）
+    if out.len() > n + 10 + 5 * (n / 65535 + 1) {{
+        out = [31, 139, 8, 0, 0, 0, 0, 0, 0, 255];
+        let mut at = 0;
+        loop {{
+            let size = if n - at > 65535 {{ 65535 }} else {{ n - at }};
+            out.push(if at + size == n {{ 1 }} else {{ 0 }});
+            for v in [size & 255, size >> 8, (size ^ 65535) & 255, (size ^ 65535) >> 8] {{ out.push(v as u8); }}
+            for k in range(at, at + size) {{ out.push(data[k]); }}
+            at += size;
+            if at == n {{ break; }}
+        }}
+    }}
+    let c = crc32(data);
+    for k in range(4) {{ out.push(((c >> (8 * k)) & 255) as u8); }}
+    for k in range(4) {{ out.push(((n >> (8 * k)) & 255) as u8); }}
+    out
+}}
 """);
     }
     if name == "http" {

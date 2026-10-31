@@ -372,6 +372,22 @@ fn local_packages_with_jwc() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// Rust 版（凍結）が、古い名前の決まり（モジュールの中の変数に、最初のファイルの関数と同じ名前をつけられない）だけで断るファイルか。
+/// jwc では名前をモジュールごとに閉じたので、このファイルは比べられない（docs/design-decisions.md）。jwc が通すことだけ確かめる
+fn rust_rejects_by_old_name_rule(path: &Path) -> bool {
+    let src = std::fs::read_to_string(path).unwrap();
+    let name = path.to_str().unwrap();
+    let dir = path.parent().unwrap().to_path_buf();
+    let read = move |m: &str| std::fs::read_to_string(dir.join(format!("{}.jw", m))).ok();
+    let n = name.to_string();
+    let want = big(move || jabberwock::typed_dump(&src, &read, &n));
+    let old_rule = want.starts_with("error: `") && want.contains("変数や引数に、関数と同じ名前はつけられない");
+    if old_rule {
+        assert!(!run_jwc(&["--typed", name]).starts_with("error"), "jwc も {} を断りました", name);
+    }
+    old_rule
+}
+
 /// `--typed` の出力が Rust 版（`typed_dump`）と同じか
 fn same_typed(path: &Path) {
     let src = std::fs::read_to_string(path).unwrap();
@@ -422,6 +438,7 @@ fn typed_and_ir_of_the_repository_files() {
     }
     for dir in ["examples", "jwc"] {
         for p in jw_files(&root().join(dir)) {
+            if rust_rejects_by_old_name_rule(&p) { continue; }
             same_typed(&p);
             same_irs(&p);
             same_ll(&p);
@@ -785,6 +802,90 @@ fn main() {
     }
     match direct(port) { case Ok(_) -> print("ok"); case Err(e) -> print(e); }
 }
+"#;
+
+/// std.gzip。gzip のコマンドが作ったもの（動的なハフマン符号のブロックを含む）を展開し、作ったものを gzip のコマンドで戻す
+#[cfg(unix)]
+#[test]
+fn jwc_std_gzip() {
+    if !have_clang() { return; }
+    let dir = std::env::temp_dir().join(format!("jw-jwc-gzip-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("main.jw");
+    std::fs::write(&path, GZIP_SRC).unwrap();
+    let exe = dir.join("main");
+    let out = Command::new(jwc()).args(["build", "--clang", &native::clang(), "-o"]).arg(&exe).arg(&path).output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    // 縮む部分（文章）と縮まない部分（擬似乱数）をつないだデータ
+    let mut data = Vec::new();
+    for i in 0..3000 { data.extend_from_slice(format!("行 {} の内容は {} です。\n", i, i * 7 % 13).as_bytes()); }
+    let mut x: u32 = 12345;
+    for _ in 0..40000 {
+        x = x.wrapping_mul(1103515245).wrapping_add(12345);
+        data.push((x >> 16) as u8);
+    }
+    std::fs::write(dir.join("in.bin"), &data).unwrap();
+    let gz = Command::new("gzip").args(["-9", "-c"]).arg(dir.join("in.bin")).output().expect("この試験には gzip のコマンドが要ります");
+    assert!(gz.status.success());
+    std::fs::write(dir.join("in.gz"), &gz.stdout).unwrap();
+    let got = Command::new(&exe).current_dir(&dir).output().unwrap();
+    let mut crc: u32 = !0;
+    for b in &data {
+        crc ^= *b as u32;
+        for _ in 0..8 { crc = if crc & 1 == 1 { 0xEDB8_8320 ^ (crc >> 1) } else { crc >> 1 }; }
+    }
+    assert_eq!(String::from_utf8_lossy(&got.stdout), format!("{} {} true\n0 0\n\
+        gzip のデータが途中で切れています\n展開した大きさが上限（10 バイト）を超えます\ngzip のデータではありません\nCRC32 が合いません（データが壊れています）\nok\n", data.len(), !crc));
+    let back = Command::new("gzip").args(["-d", "-c"]).arg(dir.join("my.gz")).output().unwrap();
+    assert!(back.status.success(), "{}", String::from_utf8_lossy(&back.stderr));
+    assert!(back.stdout == data, "gzip -d で戻したものが元と違います");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+const GZIP_SRC: &str = r#"use std.gzip;
+use std.fs;
+
+fn Result<u8[], str> slurp(str p) {
+    let mut f = fs.open(p)?;
+    let u8[] mut all = [];
+    loop {
+        let got = f.read(65536)?;
+        if got.len() == 0 { break; }
+        for x in got { all.push(x); }
+    }
+    Ok(all)
+}
+
+fn show(Result<u8[], str> r) {
+    match r { case Ok(b) -> print("ok", b.len()); case Err(e) -> print(e); }
+}
+
+fn Result<(), str> run() {
+    let packed = slurp("in.gz")?;
+    let plain = slurp("in.bin")?;
+    let got = gzip.decompress(ref packed, 100000000)?;
+    let mut same = got.len() == plain.len();
+    for (i, b) in got { if b != plain[i] { same = false; } }
+    print(got.len(), gzip.crc32(ref got), same);
+    let mut f = fs.create("my.gz")?;
+    f.write(gzip.compress(ref plain))?;
+    fs.close(f)?;
+    let u8[] empty = [];
+    let e = gzip.compress(ref empty);
+    match gzip.decompress(ref e, 0) { case Ok(b) -> print(b.len(), gzip.crc32(ref b)); case Err(m) -> print(m); }
+    let u8[] mut cut = [];
+    for i in range(packed.len() / 2) { cut.push(packed[i]); }
+    show(gzip.decompress(ref cut, 100000000));
+    show(gzip.decompress(ref packed, 10));
+    show(gzip.decompress(ref plain, 100000000));
+    let mut bad = gzip.compress(ref plain);
+    let at = bad.len() - 6;
+    bad[at] = bad[at] ^ 1;
+    show(gzip.decompress(ref bad, 100000000));
+    Ok(())
+}
+
+fn main() { match run() { case Ok(_) -> print("ok"); case Err(e) -> print(e); } }
 "#;
 
 #[test]

@@ -23,7 +23,7 @@ fn bool is_ref_slot(i64 f) { f >= 4 && f % 3 == 1 }
 
 fn bool is_ref_elem(i64 f) { f >= 5 && f % 3 == 2 }
 
-fn i64 target(i64 f) { (f - 3) / 3 }
+fn i64 ref_target(i64 f) { (f - 3) / 3 }
 
 /// 分かっている事実（変数の番号の小さい順）
 struct Facts {
@@ -185,7 +185,7 @@ fn kill_value(ref mut Facts facts, i64 x) {
 /// この事実を持つ値は、今、借りた先が生きている ref か
 fn bool is_live(ref Facts facts, i64 f) {
     if f == PINNED || is_ref_slot(f) { return true; }
-    if is_ref_to(f) { return get(facts, target(f)) == OWN; }
+    if is_ref_to(f) { return get(facts, ref_target(f)) == OWN; }
     false
 }
 
@@ -240,7 +240,7 @@ struct Cx {
                         default -> false;
                     };
                     if l_own[x] && !copied { f = OWN; }
-                    let self_ref = (is_ref_to(f) || is_ref_slot(f)) && target(f) == x;
+                    let self_ref = (is_ref_to(f) || is_ref_slot(f)) && ref_target(f) == x;
                     if f != 0 && !self_ref { put(ref mut facts, x, f); }
                 }
             }

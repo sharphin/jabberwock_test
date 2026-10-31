@@ -25,6 +25,12 @@ fn str[] strs(ref str[] xs) {
     out
 }
 
+fn str[str] smap(ref str[str] m) {
+    let str[str] mut out = [];
+    for (k, v) in m { out[k] = v; }
+    out
+}
+
 fn bool[] bools(ref bool[] xs) {
     let bool[] mut out = [];
     for x in xs { out.push(x); }
@@ -148,6 +154,8 @@ pub struct Loader {
     str[] libs;
     // 読み終わったモジュール
     str[] done;
+    // モジュールごとに use した名前（ast.Program の mod_uses）
+    str[str] uses_of;
     Info[] infos;
     // 今読んでいる途中のモジュール（輪を見つけるため）
     str[] loading;
@@ -170,7 +178,7 @@ pub struct Loader {
         }
         let mut all = ast.Program {
             structs: [], enums: [], interfaces: [], fns: [], uses: [], use_spans: [], public: [], modules: mods,
-            consts: [], borrow_lambdas: [], nodes: 0, resources: [], resource_spans: [],
+            mod_uses: smap(uses_of), consts: [], borrow_lambdas: [], nodes: 0, resources: [], resource_spans: [],
         };
         for p in parts.drain() {
             let mut q = p;
@@ -300,6 +308,7 @@ pub struct Loader {
                 }
             }
         }
+        uses_of[name] = mods.join(" ");
         let merged = merge_paths(toks, mods, targets, which, infos)?;
         let mut prog = parser.parse_with(merged, structs, enums, variants)?;
         if prog.resources.len() > 0 && !name.starts_with("std:") {
@@ -324,7 +333,7 @@ pub fn Loader new_package_loader(str dir, ref packages.Map package) {
     let str[str] mut paths = [];
     for (k, v) in package.paths { paths[k] = v; }
     Loader { dir: dir, names: [], srcs: [], paths: [], packaged: package.entry != "", package_paths: paths,
-        allows: strs(package.allows), libs: [], done: [], infos: [], loading: [], parts: [] }
+        allows: strs(package.allows), libs: [], done: [], uses_of: [], infos: [], loading: [], parts: [] }
 }
 
 // ---------------------------------------------------------------- モジュールの中の名前の書き換え
@@ -369,7 +378,7 @@ fn ast.Program qualify(ast.Program p, str module, ref Info info) {
     for r in p.resources { res.push(module + "." + r); }
     ast.Program {
         structs: structs, enums: enums, interfaces: ifaces, fns: fns, uses: [], use_spans: [], public: strs(p.public),
-        modules: [], consts: consts, borrow_lambdas: bl, nodes: 0, resources: res, resource_spans: ints(p.resource_spans),
+        modules: [], mod_uses: [], consts: consts, borrow_lambdas: bl, nodes: 0, resources: res, resource_spans: ints(p.resource_spans),
     }
 }
 
