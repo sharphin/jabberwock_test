@@ -801,3 +801,9 @@ let x = pick(true, 1, 2);
   サーバーが TLS を断っても平文には戻らない（libpq の prefer のように黙って弱める道は作らない）。パスワードをそのまま送る方式は TLS のときだけ受ける。
   SCRAM のチャネルバインディング（-PLUS）はまだ使わない。NULL を送るのは `query_opt`・`exec_opt`（`Option<str>[]`）にして、よく使う `query(sql, ["1"])` の書き方は残した。
   確かめたのは Linux だけ（Windows は mingw でコンパイルが通ることだけ）。
+- std.http のサーバー（2026-10-31、オーナーの選択「提案の順に進める」の 4 つ目）: 資源はほかのスレッドへ渡せないので、1 度に 1 つの要求を順に扱う形にした。
+  呼ぶ側が `loop { let mut req = srv.next()?; req.respond(...)?; }` と書き、処理の関数を渡す形にはしなかった（エラーの扱いと ? がそのまま使えるため）。
+  1 つのつながりで 1 つの要求（Connection: close）にして、keep-alive はまだ作らない。chunked の要求は 411 で断る（長さを先に知らせてもらう）。
+  遅い相手に止められないように、1 つの要求を読み終えるまで 30 秒、ヘッダー 64 KiB、本文 16 MiB を上限にした（上限はまだ変えられない）。
+  Transfer-Encoding と Content-Length の食い違いで要求を紛れ込ませる攻撃を避けるため、Transfer-Encoding があれば断り、Content-Length は数字だけを受ける。
+  答えのヘッダーは改行と NUL を断り、Content-Length などはこちらで付ける（ヘッダーを足されないように）。

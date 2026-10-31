@@ -980,7 +980,7 @@ pub fn bool equal(ref u8[] a, ref u8[] b) {{
     }
     if name == "http" {
         return Some("""
-// 標準ライブラリ std.http: HTTP/1.1 のクライアント。`use std.http;` と書いて使う
+// 標準ライブラリ std.http: HTTP/1.1 のクライアントとサーバー（サーバーは後ろの「サーバー」の節）。`use std.http;` と書いて使う
 //   let r = http.get("http://example.com/")?;
 //   print(r.status, r.headers["content-type"], r.text()?);
 // http:// と https://（std.tls。証明書と名前を確かめる）。std.net・std.tls の上に .jw だけで書いている。
@@ -992,6 +992,7 @@ use std.tls;
 use std.url;
 use std.text;
 use std.gzip;
+use std.time;
 
 /// たどるリダイレクトの数の上限
 const MAX_REDIRECTS = 10;
@@ -1222,6 +1223,278 @@ fn Result<Response, str> parse_response(ref u8[] all, str target) {{
         headers.remove("content-length");
     }}
     Ok(Response {{ status: status, url: target, headers: headers, body: body }})
+}}
+
+// ---------------------------------------------------------------- サーバー（HTTP/1.1。1 度に 1 つずつ）
+//   let mut srv = http.listen("127.0.0.1", 8080)?;
+//   loop {{
+//       let mut req = srv.next()?;                       // 受け取った要求（読めない要求には、ここで 400 などを返して次を待つ）
+//       req.respond(200, "text/plain; charset=utf-8", "こんにちは {{req.path}}")?;
+//   }}
+// 1 つの要求ごとに `Connection: close` で答え、Request がなくなるとつながりを閉じる。TLS（https）はまだない。
+
+/// ヘッダーの大きさの上限（バイト）
+const MAX_REQUEST_HEAD = 65536;
+/// 要求の本文の大きさの上限（バイト）
+const MAX_REQUEST_BODY = 16777216;
+/// 1 つの要求を読み終えるまでの時間の上限（ミリ秒）
+const REQUEST_DEADLINE_MS = 30000;
+
+/// 待ち受け
+pub struct Server {{
+    net.TcpListener l;
+
+    /// 待ち受けている番号（listen で 0 を指定したときに使う）
+    fn i64 port() {{ l.port() }}
+
+    /// 次の要求を受け取るまで待つ。読めない要求（形が違う・大きすぎる・時間切れ）にはここで答えて、次を待つ。
+    /// Err は待ち受けそのものが失敗したときだけ
+    fn mut Result<Request, str> next() {{
+        loop {{
+            let c = l.accept()?;
+            let mut req = Request {{ method: "", target: "", path: "", query: [], headers: [], body: [], conn: c, done: false }};
+            match read_request(ref mut req) {{
+                case Ok(_) -> return Ok(req);
+                case Err(f) -> {{
+                    if f.status > 0 {{
+                        let u8[] msg = f.why.bytes();
+                        let hs = ["content-type": "text/plain; charset=utf-8"];
+                        match write_response(ref mut req.conn, f.status, ref hs, ref msg, false) {{ case Ok(_) -> {{}} case Err(e) -> {{}} }}
+                    }}
+                }}
+            }}
+        }}
+    }}
+}}
+
+/// host の port で待ち受ける（port が 0 なら OS が空いている番号を選ぶ。番号は `port()`）
+pub fn Result<Server, str> listen(str host, i64 port) {{
+    let l = net.listen(host, port)?;
+    Ok(Server {{ l: l }})
+}}
+
+/// 待ち受けをやめる
+pub fn stop(Server s) {{ drop(s); }}
+
+/// 受け取った要求。答えるのは 1 回だけ
+pub struct Request {{
+    // "GET"・"POST" など（送られたまま。大文字と小文字は区別する）
+    str method;
+    // 要求の行の 2 つ目（"/a%20b?x=1" など。戻す前の形）
+    str target;
+    // target の ? の前を %XX から戻したもの（"/a b"。".." や "/" が入りうるので、ファイルの名前に使うときは確かめること）
+    str path;
+    // ? のあとを & と = で分け、%XX と + を戻したもの（同じ名前が二つ以上あれば後のもの）
+    str[str] query;
+    // 名前は小文字にする（同じ名前が二つ以上あれば ", " でつなぐ）
+    str[str] headers;
+    u8[] body;
+    net.TcpStream conn;
+    bool done;
+
+    /// 本文を文字列にする（UTF-8 でなければ Err）
+    fn Result<str, str> text() {{
+        match text.from_utf8(ref body) {{
+            case Some(s) -> Ok(s);
+            case None -> Err("本文が UTF-8 ではありません");
+        }}
+    }}
+
+    /// 文字列の本文で答える
+    fn mut Result<(), str> respond(i64 status, str content_type, str content) {{
+        let u8[] mut b = content.bytes();
+        respond_bytes(status, ["content-type": content_type], b)
+    }}
+
+    /// ヘッダーと本文を決めて答える（content-length・connection・transfer-encoding は決めない。こちらで付ける）
+    fn mut Result<(), str> respond_bytes(i64 status, str[str] hs, u8[] content) {{
+        if done {{ return Err("この要求にはもう答えました"); }}
+        if status < 100 || status > 599 {{ return Err("状態の番号は 100 から 599 までです: {{status}}"); }}
+        for (k, v) in hs {{
+            if !is_token(k) {{ return Err("ヘッダーの名前が正しくありません: " + k); }}
+            let lk = k.to_lower();
+            if lk == "content-length" || lk == "connection" || lk == "transfer-encoding" {{ return Err("このヘッダーはこちらで付けます: " + k); }}
+            if v.contains("\\r") || v.contains("\\n") || v.contains("\\0") {{ return Err("ヘッダーの値に改行か NUL 文字があります: " + k); }}
+        }}
+        done = true;
+        write_response(ref mut conn, status, ref hs, ref content, method == "HEAD")
+    }}
+}}
+
+/// 読めなかった理由（status が 0 なら答えずに閉じる）
+struct Failure {{
+    i64 status;
+    str why;
+}}
+
+fn Failure fail(i64 status, str why) {{ Failure {{ status: status, why: why }} }}
+
+/// 要求を読んで req の中身を埋める
+fn Result<(), Failure> read_request(ref mut Request req) {{
+    let start = time.now();
+    let u8[] mut buf = [];
+    let mut end = -1;
+    while end < 0 {{
+        if buf.len() > MAX_REQUEST_HEAD {{ return Err(fail(431, "ヘッダーが大きすぎます")); }}
+        // 残りの時間だけ待つ（少しずつ送ってくる相手にも、全体で上限を守る）
+        let left = REQUEST_DEADLINE_MS - start.elapsed_ms();
+        if left <= 0 {{ return Err(fail(0, "時間切れです")); }}
+        match req.conn.set_timeout(left) {{
+            case Ok(_) -> {{}}
+            case Err(e) -> return Err(fail(0, e));
+        }}
+        let got = match req.conn.read(65536) {{
+            case Ok(g) -> g;
+            case Err(e) -> return Err(fail(0, e));
+        }};
+        if got.len() == 0 {{ return Err(fail(0, "相手が閉じました")); }}
+        for x in got {{ buf.push(x); }}
+        end = header_end(ref buf);
+    }}
+    if end > MAX_REQUEST_HEAD {{ return Err(fail(431, "ヘッダーが大きすぎます")); }}
+    let raw = part(ref buf, 0, end);
+    let head = match text.from_utf8(ref raw) {{
+        case Some(s) -> s;
+        case None -> return Err(fail(400, "ヘッダーが UTF-8 ではありません"));
+    }};
+    let lines = head.split("\\r\\n");
+    let first = lines[0].split(" ");
+    if first.len() != 3 || first[0] == "" || !is_token(first[0]) {{ return Err(fail(400, "要求の行が読めません")); }}
+    if first[2] != "HTTP/1.1" && first[2] != "HTTP/1.0" {{ return Err(fail(505, "HTTP/1.1 と HTTP/1.0 だけです")); }}
+    let target = first[1];
+    if !target.starts_with("/") && !(target == "*" && first[0] == "OPTIONS") {{ return Err(fail(400, "要求の先が読めません")); }}
+    let str[str] mut headers = [];
+    for (i, line) in lines {{
+        if i == 0 {{ continue; }}
+        match line.find(":") {{
+            case Some(k) -> {{
+                let name = line.slice(0, k);
+                if !is_token(name) {{ return Err(fail(400, "ヘッダーの行が読めません")); }}
+                let lname = name.to_lower();
+                let value = line.slice(k + 1, line.len()).trim();
+                match headers.get(lname) {{
+                    case Some(old) -> headers[lname] = old + ", " + value;
+                    case None -> headers[lname] = value;
+                }}
+            }}
+            case None -> return Err(fail(400, "ヘッダーの行が読めません"));
+        }}
+    }}
+    if first[2] == "HTTP/1.1" && !headers.contains("host") {{ return Err(fail(400, "Host のヘッダーがありません")); }}
+    // 本文。chunked は受け付けない（長さを先に知らせてもらう）
+    if headers.contains("transfer-encoding") {{ return Err(fail(411, "Content-Length が要ります（chunked には対応していません）")); }}
+    let mut len = 0;
+    match headers.get("content-length") {{
+        case Some(v) -> {{
+            if !text.is_digits(v) || v.len() > 15 {{ return Err(fail(400, "Content-Length が読めません")); }}
+            len = v.to_int().unwrap_or(-1);
+            if len < 0 {{ return Err(fail(400, "Content-Length が読めません")); }}
+        }}
+        case None -> {{}}
+    }}
+    if len > MAX_REQUEST_BODY {{ return Err(fail(413, "本文が大きすぎます")); }}
+    if len > 0 && headers.get("expect").unwrap_or("").to_lower() == "100-continue" {{
+        match req.conn.write_text("HTTP/1.1 100 Continue\\r\\n\\r\\n") {{
+            case Ok(_) -> {{}}
+            case Err(e) -> return Err(fail(0, e));
+        }}
+    }}
+    while buf.len() - (end + 4) < len {{
+        // 残りの時間だけ待つ（少しずつ送ってくる相手にも、全体で上限を守る）
+        let left = REQUEST_DEADLINE_MS - start.elapsed_ms();
+        if left <= 0 {{ return Err(fail(0, "時間切れです")); }}
+        match req.conn.set_timeout(left) {{
+            case Ok(_) -> {{}}
+            case Err(e) -> return Err(fail(0, e));
+        }}
+        let got = match req.conn.read(65536) {{
+            case Ok(g) -> g;
+            case Err(e) -> return Err(fail(0, e));
+        }};
+        if got.len() == 0 {{ return Err(fail(0, "相手が閉じました")); }}
+        for x in got {{ buf.push(x); }}
+    }}
+    let body = part(ref buf, end + 4, end + 4 + len);
+    let q = match target.find("?") {{ case Some(j) -> j; case None -> target.len(); }};
+    let raw_path = target.slice(0, q);
+    let raw_query = if q < target.len() {{ target.slice(q + 1, target.len()) }} else {{ "" }};
+    let path = match url.decode(raw_path, false) {{
+        case Ok(p) -> p;
+        case Err(e) -> return Err(fail(400, "要求の先が読めません"));
+    }};
+    let str[str] mut query = [];
+    if raw_query != "" {{
+        for kv in raw_query.split("&") {{
+            if kv == "" {{ continue; }}
+            let eq = match kv.find("=") {{ case Some(j) -> j; case None -> kv.len(); }};
+            let k = kv.slice(0, eq);
+            let v = if eq < kv.len() {{ kv.slice(eq + 1, kv.len()) }} else {{ "" }};
+            let dk = match url.decode(k, true) {{ case Ok(s) -> s; case Err(e) -> return Err(fail(400, "問い合わせの部分が読めません")); }};
+            let dv = match url.decode(v, true) {{ case Ok(s) -> s; case Err(e) -> return Err(fail(400, "問い合わせの部分が読めません")); }};
+            query[dk] = dv;
+        }}
+    }}
+    req.method = first[0];
+    req.target = target;
+    req.path = path;
+    req.query = query;
+    req.headers = headers;
+    req.body = body;
+    Ok(())
+}}
+
+/// 応答を書く（head が真なら本文は送らない。content-length は本文の長さのまま）
+fn Result<(), str> write_response(ref mut net.TcpStream c, i64 status, ref str[str] hs, ref u8[] content, bool head) {{
+    let mut s = "HTTP/1.1 {{status}} {{reason(status)}}\\r\\n";
+    for (k, v) in hs {{ s += k + ": " + v + "\\r\\n"; }}
+    s += "Content-Length: {{content.len()}}\\r\\nConnection: close\\r\\n\\r\\n";
+    let u8[] mut out = s.bytes();
+    if !head {{
+        for x in content {{ out.push(x); }}
+    }}
+    c.write(out)
+}}
+
+/// HTTP のトークン（ヘッダーの名前・メソッド）に使える文字だけか
+fn bool is_token(str s) {{
+    if s == "" {{ return false; }}
+    for b in s.bytes() {{
+        let n = b as i64;
+        let ok = (n >= 48 && n <= 57) || (n >= 65 && n <= 90) || (n >= 97 && n <= 122) || "!#$%&'*+-.^_`|~".contains(chr(n));
+        if !ok {{ return false; }}
+    }}
+    true
+}}
+
+fn str reason(i64 status) {{
+    match status {{
+        case 100 -> "Continue";
+        case 200 -> "OK";
+        case 201 -> "Created";
+        case 204 -> "No Content";
+        case 301 -> "Moved Permanently";
+        case 302 -> "Found";
+        case 303 -> "See Other";
+        case 304 -> "Not Modified";
+        case 307 -> "Temporary Redirect";
+        case 308 -> "Permanent Redirect";
+        case 400 -> "Bad Request";
+        case 401 -> "Unauthorized";
+        case 403 -> "Forbidden";
+        case 404 -> "Not Found";
+        case 405 -> "Method Not Allowed";
+        case 408 -> "Request Timeout";
+        case 409 -> "Conflict";
+        case 411 -> "Length Required";
+        case 413 -> "Content Too Large";
+        case 415 -> "Unsupported Media Type";
+        case 431 -> "Request Header Fields Too Large";
+        case 500 -> "Internal Server Error";
+        case 501 -> "Not Implemented";
+        case 503 -> "Service Unavailable";
+        case 505 -> "HTTP Version Not Supported";
+        default -> "Status";
+    }}
 }}
 """);
     }

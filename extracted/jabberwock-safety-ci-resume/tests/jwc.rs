@@ -636,6 +636,104 @@ fn jwc_std_http() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// std.http のサーバー。Rust の側から生の要求を送り、答えをそのまま比べる（壊れた要求には 400 などを返して次を待つこと）
+#[test]
+fn jwc_std_http_server() {
+    use std::io::{Read, Write};
+    if !have_clang() { return; }
+    let dir = std::env::temp_dir().join(format!("jw-jwc-httpd-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("main.jw");
+    std::fs::write(&path, HTTPD_SRC).unwrap();
+    let exe = dir.join("main");
+    let out = Command::new(jwc()).args(["build", "--clang", &native::clang(), "-o"]).arg(&exe).arg(&path).output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+    let child = Command::new(&exe).arg(port.to_string()).stdout(std::process::Stdio::piped()).spawn().unwrap();
+    let ask = |raw: &str| -> String {
+        let mut tries = 0;
+        let mut c = loop {
+            match std::net::TcpStream::connect(("127.0.0.1", port)) {
+                Ok(c) => break c,
+                Err(e) => {
+                    tries += 1;
+                    assert!(tries < 200, "つながりません: {}", e);
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+            }
+        };
+        c.write_all(raw.as_bytes()).unwrap();
+        let mut got = Vec::new();
+        c.read_to_end(&mut got).unwrap();
+        String::from_utf8_lossy(&got).into_owned()
+    };
+    let got = [
+        ask("GET /a%20b/c?x=1&y=%E3%81%82+b&x=2 HTTP/1.1\r\nHost: h\r\nX-A: hi\r\n\r\n"),
+        ask("POST /p HTTP/1.1\r\nHost: h\r\nContent-Length: 15\r\n\r\nこんにちは"),
+        ask("HEAD /h HTTP/1.0\r\n\r\n"),
+        ask("GARBAGE\r\n\r\n"),
+        ask("GET / HTTP/1.1\r\n\r\n"),
+        ask("POST / HTTP/1.1\r\nHost: h\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n"),
+        ask("GET /%zz HTTP/1.1\r\nHost: h\r\n\r\n"),
+        ask("POST / HTTP/1.1\r\nHost: h\r\nContent-Length: 99999999999\r\n\r\n"),
+        ask("GET /bad HTTP/1.1\r\nHost: h\r\n\r\n"),
+        ask("GET /stop HTTP/1.1\r\nHost: h\r\n\r\n"),
+    ]
+    .join("|");
+    let done = child.wait_with_output().unwrap();
+    let _ = std::fs::remove_dir_all(dir);
+    let head = |status: &str, n: usize| format!("HTTP/1.1 {}\r\ncontent-type: text/plain; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", status, n);
+    let body = |status: &str, b: &str| head(status, b.len()) + b;
+    let want = [
+        body("200 OK", "GET /a%20b/c?x=1&y=%E3%81%82+b&x=2 /a b/c [x: 2, y: あ b] Some(hi) "),
+        body("200 OK", "POST /p /p [] None こんにちは"),
+        head("200 OK", "HEAD /h /h [] None ".len()),
+        body("400 Bad Request", "要求の行が読めません"),
+        body("400 Bad Request", "Host のヘッダーがありません"),
+        body("411 Length Required", "Content-Length が要ります（chunked には対応していません）"),
+        body("400 Bad Request", "要求の先が読めません"),
+        body("413 Content Too Large", "本文が大きすぎます"),
+        body("500 Internal Server Error", "このヘッダーはこちらで付けます: Content-Length"),
+        body("200 OK", "bye"),
+    ]
+    .join("|");
+    assert_eq!(got, want);
+    assert_eq!(String::from_utf8_lossy(&done.stdout), "ok\n");
+}
+
+const HTTPD_SRC: &str = r#"use std.http;
+
+fn Result<(), str> run(i64 port) {
+    let mut srv = http.listen("127.0.0.1", port)?;
+    loop {
+        let mut req = srv.next()?;
+        if req.path == "/stop" {
+            req.respond(200, "text/plain; charset=utf-8", "bye")?;
+            break;
+        }
+        if req.path == "/bad" {
+            // 自分で付けてはいけないヘッダーは Err で、答えはまだ送っていない
+            match req.respond_bytes(200, ["Content-Length": "1"], [65]) {
+                case Ok(_) -> req.respond(200, "text/plain; charset=utf-8", "?")?;
+                case Err(e) -> req.respond(500, "text/plain; charset=utf-8", e)?;
+            }
+            continue;
+        }
+        let a = req.headers.get("x-a");
+        let t = req.text()?;
+        let body = "{req.method} {req.target} {req.path} {req.query} {a} {t}";
+        req.respond(200, "text/plain; charset=utf-8", body)?;
+    }
+    http.stop(srv);
+    Ok(())
+}
+
+fn main() {
+    let a = args();
+    match run(a[0].to_int().unwrap_or(0)) { case Ok(_) -> print("ok"); case Err(e) -> print("Err", e); }
+}
+"#;
+
 const HTTP_SRC: &str = r#"use std.net;
 use std.http;
 use std.text;

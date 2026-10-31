@@ -93,7 +93,7 @@ fn main() {
 | `std.env` | `get(name)`（`Option<str>`）（[1.6](#16-stdenvstdtimestdjsonjwc-だけ)） |
 | `std.time` | `now()`・`sleep(ms)`・`unix_ms()` と `Instant`（[1.6](#16-stdenvstdtimestdjsonjwc-だけ)） |
 | `std.json` | `parse(s)`・`stringify(ref v)`・`quote(s)` と `Json`（[1.6](#16-stdenvstdtimestdjsonjwc-だけ)） |
-| `std.http` | `get(url)`・`post(url, content_type, body)` と `Response`（[1.5](#15-stdhttpjwc-だけ)） |
+| `std.http` | `get(url)`・`post(url, content_type, body)` と `Response`、サーバーの `listen(host, port)`・`stop(srv)` と `Server`・`Request`（[1.5](#15-stdhttpjwc-だけ)） |
 | `std.url` | `parse(s)`・`encode(s)`・`decode(s, plus)` と `Url`（[1.7](#17-stdurljwc-だけ)） |
 | `std.browser` | `open(cfg)`・`close(e)` と `Engine`・`Config`・`Event`・`KeyCode`・`Info`（[1.8](#18-stdbrowserjwc-だけ)） |
 | `std.net` | `connect(host, port)`・`listen(host, port)`・`close(s)`・`stop(l)` と資源の型 `TcpStream`・`TcpListener`（[1.4](#14-stdnetjwc-だけ)） |
@@ -185,6 +185,29 @@ let p = http.post("http://127.0.0.1:8080/p", "application/json", "{{}}")?;
   https から http へのリダイレクトもたどる。
 - `Response`: `status`（`i64`）・`url`（たどったあとの URL。たどらなければ頼んだ URL）・`headers`（`str[str]`。名前は小文字。同じ名前が二つ以上なら `", "` でつなぐ）・`body`（`u8[]`）・`text()`（本文を `str` に。UTF-8 でなければ Err）。
 - URL は std.url の `parse` で分ける（同じ規則で Err）。URL に空白・改行、content_type に改行があれば Err（ヘッダーを足されないように）。
+
+サーバー（HTTP/1.1。1 度に 1 つの要求を順に扱う）:
+
+```
+let mut srv = http.listen("127.0.0.1", 8080)?;      // http.Server（port が 0 なら OS が選ぶ。番号は srv.port()）
+loop {
+    let mut req = srv.next()?;                       // http.Request
+    req.respond(200, "text/plain; charset=utf-8", "こんにちは {req.path}")?;
+}
+```
+
+- `srv.next()`（`Result<Request, str>`）: 次のつながりを受け、要求を 1 つ読む。読めない要求にはここで答えて（本文は理由の文）、次のつながりを待つ:
+  要求の行の形が違う・ヘッダーが UTF-8 でない・HTTP/1.1 で Host がない・target が `/` で始まらない（`OPTIONS *` はよい）・%XX が壊れている・Content-Length が数でない（二つあるときも）なら 400、
+  `Transfer-Encoding` があれば 411（chunked の要求は受けない）、ヘッダーが 64 KiB を超えれば 431、本文が 16 MiB を超えれば 413、HTTP/1.0・1.1 でなければ 505。
+  1 つの要求を読み終えるまでの上限は 30 秒（受け取るたびに残りの時間だけ待つ）で、超えたり相手が途中で閉じたりしたら、答えずに閉じる。Err は待ち受けそのものが失敗したときだけ。
+  `Expect: 100-continue` には本文を読む前に `100 Continue` を送る。
+- `Request`: `method`（送られたまま）・`target`（要求の行のまま）・`path`（target の `?` の前を %XX から戻したもの。`..` や `/` も入りうる）・
+  `query`（`str[str]`。`?` のあとを `&` と `=` で分け、%XX と `+` を戻したもの。同じ名前は後のもの）・`headers`（名前は小文字。同じ名前は `", "` でつなぐ）・`body`（`u8[]`）・`text()`。
+  資源の TcpStream を持つ（ムーブだけ。持ち主がいなくなるとつながりを閉じる）。
+- `req.respond(status, content_type, body)`（本文は str）・`req.respond_bytes(status, headers, body)`（`str[str]` と `u8[]`）: 答えを送る。
+  いつも `Content-Length` と `Connection: close` を付ける（1 つのつながりで 1 つの要求）。HEAD の要求には本文を送らない（Content-Length は本文の長さ）。
+  答えるのは 1 回だけ（2 回目は Err）。status が 100〜599 でない・ヘッダーの名前がトークンでない・値に改行か NUL がある・`Content-Length`・`Connection`・`Transfer-Encoding` を渡したなら、送らずに Err。
+- `http.stop(srv)`: 待ち受けをやめる。TLS（https）の待ち受けはまだない。
 
 ### 1.6 std.env・std.time・std.json（jwc だけ）
 
