@@ -4165,6 +4165,50 @@ int32_t jw_tls_set_timeout(void *h, int64_t ms, WStr **err, const WSite *at) {
 }
 #endif
 
+// ---------------------------------------------------------------- OS の乱数（標準ライブラリの中だけで使う）
+
+#ifdef __APPLE__
+#include <sys/random.h> // getentropy
+#endif
+#ifdef _WIN32
+static long(__stdcall *g_gen_random)(void *, unsigned char *, unsigned long, unsigned long);
+#endif
+
+// n バイトの乱数を out に入れる（暗号に使える OS の乱数。取り出せなければ実行時エラー）
+void jw_random_bytes(int64_t n, WList *out, const WSite *at) {
+    if (n < 0) {
+        begin_error("乱数の大きさが負です");
+        finish_error(at, "n は 0 以上", NULL);
+    }
+    jw_list_reserve(out, 1, n);
+    unsigned char *p = (unsigned char *)out->data;
+    int ok = 1;
+#ifdef _WIN32
+    lock(&g_lock);
+    if (!g_gen_random) {
+        void *m = LoadLibraryW(L"bcrypt.dll");
+        if (m) *(void **)&g_gen_random = GetProcAddress(m, "BCryptGenRandom");
+    }
+    unlock(&g_lock);
+    for (int64_t i = 0; ok && i < n;) {
+        unsigned long k = n - i > 65536 ? 65536 : (unsigned long)(n - i);
+        ok = g_gen_random && g_gen_random(NULL, p + i, k, 2 /* BCRYPT_USE_SYSTEM_PREFERRED_RNG */) == 0;
+        i += k;
+    }
+#else
+    for (int64_t i = 0; ok && i < n;) {
+        size_t k = n - i > 256 ? 256 : (size_t)(n - i); // getentropy は 1 回に 256 バイトまで
+        ok = getentropy(p + i, k) == 0;
+        i += (int64_t)k;
+    }
+#endif
+    if (!ok) {
+        begin_error("OS の乱数を取り出せません");
+        finish_error(at, "ここで乱数を使った", NULL);
+    }
+    out->len = n;
+}
+
 // ---------------------------------------------------------------- ディレクトリ（std.fs）
 
 #ifdef _WIN32

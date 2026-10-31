@@ -1932,6 +1932,13 @@ struct FnGen {
             b.op("call void @jw_time_sleep_ms(i64 " + vals[0].v + ", ptr " + site + ")");
             return Ok(llvm.vt("0", ty.Ty.Unit));
         }
+        if name == "__random_bytes" {
+            let out = b.alloca("%list");
+            b.op("store %list zeroinitializer, ptr " + out);
+            let site = m.site(span, "");
+            b.op("call void @jw_random_bytes(i64 " + vals[0].v + ", ptr " + out + ", ptr " + site + ")");
+            return Ok(llvm.vt(b.val("load %list, ptr " + out), ty.Ty.List(own ty.Ty.Int("u8"))));
+        }
         if name == "__fs_exists" {
             let ok = b.val("call i32 @jw_fs_exists(ptr " + vals[0].v + ")");
             release(vals, all);

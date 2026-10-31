@@ -780,3 +780,10 @@ let x = pick(true, 1, 2);
   jwc 自身のファイルを最初のファイルにして Rust 版と比べるテスト（typed_and_ir_of_the_repository_files）は、Rust 版がこの古い決まりだけで断るファイル
   （astdump・ircert・llvm・llvmfn）を比べずに、jwc が通すことだけ確かめる。前は両方が同じエラーを出して一致していただけで、中身は比べていなかった。
   analyze.jw は関数 target を ref_target にして、比べられるようにした。
+- std.pg（2026-10-31、オーナーの選択「RDB は PostgreSQL のサーバーへ std.net でつなぐクライアントを .jw で書く」）: SQLite を OS から読み込む案は、
+  Windows に標準で入っていないため選ばなかった。手順は版 3.0 で、問い合わせはいつも拡張問い合わせ（Parse・Bind・Describe・Execute・Sync）にして、
+  値を SQL に埋め込む道を作らない（SQL インジェクションを起こさない）。値はテキスト形式の文字列だけ（型ごとの形はまだ）で、NULL のパラメータはまだ送れない。
+  ログインは SCRAM-SHA-256・md5・trust。TLS をまだ使わないので、パスワードをそのまま送る方式は断る（弱めて続ける道は作らない）。
+  SCRAM の nonce のために、OS の乱数を取り出す内部の関数 `__random_bytes(n)`（標準ライブラリの中だけ。Linux は getentropy、Windows は BCryptGenRandom。
+  取り出せなければ実行時エラー）を足した。SHA-256・HMAC・PBKDF2・MD5・base64 は std/pg.jw の中に書いた（公開はしない）。
+  テストは Linux だけで、その場で initdb・pg_ctl で試験用のサーバーを立てる（root なら postgres の利用者で立てる）。

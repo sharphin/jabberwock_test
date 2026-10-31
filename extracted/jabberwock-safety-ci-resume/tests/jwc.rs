@@ -900,6 +900,166 @@ fn Result<(), str> run() {
 fn main() { match run() { case Ok(_) -> print("ok"); case Err(e) -> print(e); } }
 "#;
 
+/// std.pg。試験用の PostgreSQL をその場で立て（initdb・pg_ctl）、ログインの方式ごとと、問い合わせ・エラー・トランザクションを見る。
+/// root で動かすときは postgres の利用者で立てる（PostgreSQL は root では動かない）
+#[cfg(unix)]
+#[test]
+fn jwc_std_pg() {
+    if !have_clang() { return; }
+    let bin = pg_bindir().expect("この試験には PostgreSQL（initdb・pg_ctl）が要ります");
+    let dir = std::env::temp_dir().join(format!("jw-jwc-pg-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("main.jw");
+    std::fs::write(&path, PG_SRC).unwrap();
+    let exe = dir.join("main");
+    let out = Command::new(jwc()).args(["build", "--clang", &native::clang(), "-o"]).arg(&exe).arg(&path).output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let as_root = Command::new("id").arg("-u").output().map(|o| String::from_utf8_lossy(&o.stdout).trim() == "0").unwrap_or(false);
+    let run = |cmd: String| {
+        let st = if as_root {
+            Command::new("su").args(["postgres", "-s", "/bin/sh", "-c"]).arg(&cmd).status()
+        } else {
+            Command::new("sh").arg("-c").arg(&cmd).status()
+        };
+        assert!(st.map(|s| s.success()).unwrap_or(false), "うまく動きません: {}", cmd);
+    };
+    let data = dir.join("data");
+    if as_root {
+        run_ok(Command::new("chown").arg("postgres").arg(&dir));
+    }
+    run(format!("{}/initdb -D {} -A trust -U postgres -E UTF8 --no-sync >/dev/null", bin.display(), data.display()));
+    std::fs::write(
+        data.join("pg_hba.conf"),
+        "host all postgres 127.0.0.1/32 trust\nhost all t_trust 127.0.0.1/32 trust\nhost all t_md5 127.0.0.1/32 md5\n\
+         host all t_scram 127.0.0.1/32 scram-sha-256\nhost all t_plain 127.0.0.1/32 password\n",
+    )
+    .unwrap();
+    let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+    let ctl = format!("{}/pg_ctl -D {}", bin.display(), data.display());
+    run(format!(
+        "{} -w -l {}/log -o '-p {} -k {} -c listen_addresses=127.0.0.1 -c fsync=off' start >/dev/null",
+        ctl, dir.display(), port, dir.display()
+    ));
+    let got = Command::new(&exe).arg(port.to_string()).output();
+    run(format!("{} -m immediate stop >/dev/null", ctl));
+    let got = got.unwrap();
+    assert_eq!(String::from_utf8_lossy(&got.stderr), "");
+    assert_eq!(
+        String::from_utf8_lossy(&got.stdout),
+        "t_trust [x, n, s] [[Some(42), None, Some(こんにちは)]] 1 Some(こんにちは) None\n\
+         t_md5 [x, n, s] [[Some(42), None, Some(こんにちは)]] 1 Some(こんにちは) None\n\
+         t_scram [x, n, s] [[Some(42), None, Some(こんにちは)]] 1 Some(こんにちは) None\n\
+         t_scram Err PostgreSQL のエラー（FATAL 28P01）: password authentication failed for user \"t_scram\"\n\
+         t_plain Err PostgreSQL のサーバーがパスワードをそのまま送るよう求めています（TLS なしでは送りません。md5 か scram-sha-256 にしてください）\n\
+         nobody Err PostgreSQL のエラー（FATAL 28000）: no pg_hba.conf entry for host \"127.0.0.1\", user \"nobody\", database \"tdb\", no encryption\n\
+         0 2\n\
+         Err PostgreSQL のエラー（ERROR 23505）: duplicate key value violates unique constraint \"t_pkey\"（Key (id)=(1) already exists.）\n\
+         Err PostgreSQL のエラー（ERROR 42601）: syntax error at or near \"SELEC\"\n\
+         Err PostgreSQL のエラー（ERROR 08P01）: bind message supplies 0 parameters, but prepared statement \"\" requires 1\n\
+         1 0\n\
+         [id, name] [[Some(1), Some(a'; DROP TABLE t; --)], [Some(2), Some(b)]] 2\n\
+         5000 5000 1000\n\
+         0 0\n\
+         2\n\
+         ok\n"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[cfg(unix)]
+fn run_ok(c: &mut Command) {
+    assert!(c.status().map(|s| s.success()).unwrap_or(false), "うまく動きません: {:?}", c);
+}
+
+/// PostgreSQL のコマンドの置き場所（pg_config か、Debian 系の /usr/lib/postgresql/版/bin。新しい版を選ぶ）
+#[cfg(unix)]
+fn pg_bindir() -> Option<PathBuf> {
+    if let Ok(o) = Command::new("pg_config").arg("--bindir").output() {
+        let p = PathBuf::from(String::from_utf8_lossy(&o.stdout).trim());
+        if o.status.success() && p.join("initdb").exists() { return Some(p); }
+    }
+    let mut best: Option<(u32, PathBuf)> = None;
+    for e in std::fs::read_dir("/usr/lib/postgresql").ok()?.flatten() {
+        let v: u32 = match e.file_name().to_string_lossy().parse() { Ok(v) => v, Err(_) => continue };
+        let p = e.path().join("bin");
+        if p.join("initdb").exists() && best.as_ref().map(|b| v > b.0).unwrap_or(true) { best = Some((v, p)); }
+    }
+    best.map(|b| b.1)
+}
+
+#[cfg(unix)]
+const PG_SRC: &str = r#"use std.pg;
+
+fn pg.Config cfg(i64 port, str user, str pw) { pg.Config { host: "127.0.0.1", port: port, user: user, password: pw, database: "tdb" } }
+
+fn Result<(), str> setup(i64 port) {
+    let mut db = pg.connect(pg.Config { host: "127.0.0.1", port: port, user: "postgres", password: "", database: "postgres" })?;
+    db.exec("CREATE USER t_trust", [])?;
+    db.exec("SET password_encryption = 'md5'", [])?;
+    db.exec("CREATE USER t_md5 PASSWORD 'md5pw'", [])?;
+    db.exec("SET password_encryption = 'scram-sha-256'", [])?;
+    db.exec("CREATE USER t_scram PASSWORD 'scrampw'", [])?;
+    db.exec("CREATE USER t_plain PASSWORD 'plainpw'", [])?;
+    db.exec("CREATE DATABASE tdb OWNER t_scram", [])?;
+    pg.close(db)?;
+    Ok(())
+}
+
+fn Result<(), str> login(i64 port, str user, str pw) {
+    let mut db = pg.connect(cfg(port, user, pw))?;
+    let r = db.query("SELECT 1 + $1::int AS x, NULL::text AS n, 'こんにちは' AS s", ["41"])?;
+    print(user, r.columns, r.rows, r.affected, r.get(0, "s"), r.get(0, "nope"));
+    pg.close(db)?;
+    Ok(())
+}
+
+fn Result<(), str> work(i64 port) {
+    let mut db = pg.connect(cfg(port, "t_scram", "scrampw"))?;
+    let made = db.exec("CREATE TABLE t (id int PRIMARY KEY, name text)", [])?;
+    // 値は SQL に埋め込まずに送るので、引用符などはそのまま値になる
+    print(made, db.exec("INSERT INTO t VALUES ($1, $2), ($3, $4)", ["1", "a'; DROP TABLE t; --", "2", "b"])?);
+    // エラーのあとも同じつながりを使える
+    match db.exec("INSERT INTO t VALUES ($1, $2)", ["1", "dup"]) {
+        case Ok(n) -> print("?", n);
+        case Err(e) -> print("Err", e);
+    }
+    match db.query("SELEC 1", []) {
+        case Ok(r) -> print("?", r.rows.len());
+        case Err(e) -> print("Err", e);
+    }
+    match db.query("SELECT $1::int", []) {
+        case Ok(r) -> print("?", r.rows.len());
+        case Err(e) -> print("Err", e);
+    }
+    db.exec("BEGIN", [])?;
+    let changed = db.exec("UPDATE t SET name = $1 WHERE id = $2", ["c", "2"])?;
+    print(changed, db.exec("ROLLBACK", [])?);
+    let r = db.query("SELECT id, name FROM t ORDER BY id", [])?;
+    print(r.columns, r.rows, r.affected);
+    let big = db.query("SELECT g, repeat('x', 1000) FROM generate_series(1, 5000) g", [])?;
+    let last = match big.get(4999, "repeat") { case Some(v) -> v.len(); case None -> -1; };
+    print(big.rows.len(), big.affected, last);
+    let empty = db.query("", [])?;
+    print(empty.rows.len(), empty.affected);
+    print(db.exec("DELETE FROM t", [])?);
+    pg.close(db)?;
+    Ok(())
+}
+
+fn main() {
+    let a = args();
+    let port = a[0].to_int().unwrap_or(0);
+    match setup(port) { case Ok(_) -> {} case Err(e) -> print("setup", e); }
+    let us = ["t_trust", "t_md5", "t_scram", "t_scram", "t_plain", "nobody"];
+    let ps = ["", "md5pw", "scrampw", "wrong", "plainpw", ""];
+    for (i, u) in us {
+        match login(port, u, ps[i]) { case Ok(_) -> {} case Err(e) -> print(u, "Err", e); }
+    }
+    match work(port) { case Ok(_) -> print("ok"); case Err(e) -> print("Err", e); }
+}
+"#;
+
 #[test]
 fn jwc_std_url_fs_time() {
     if !have_clang() { return; }

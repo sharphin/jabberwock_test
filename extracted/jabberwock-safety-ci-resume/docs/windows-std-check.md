@@ -11,7 +11,7 @@ cargo test --release --test jwc -- jwc_std_net jwc_std_http
 ```
 
 - 2 件とも `ok` なら成功。jwc を作るところから始まるので、数分かかる。
-- std.tls と std.gzip のテストは Linux だけで動く（試験用の発行元を Windows の信頼の置き場所に入れずには試せないため）。
+- std.tls・std.gzip・std.pg のテストは Linux だけで動く（std.tls は試験用の発行元を Windows の信頼の置き場所に入れずには試せないため。std.gzip は gzip のコマンド、std.pg は PostgreSQL のコマンドを使うため）。
 
 ## 2. 本物のサイトへの https（std.tls）
 

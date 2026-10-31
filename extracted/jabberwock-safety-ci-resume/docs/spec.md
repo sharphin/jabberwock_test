@@ -99,6 +99,7 @@ fn main() {
 | `std.net` | `connect(host, port)`・`listen(host, port)`・`close(s)`・`stop(l)` と資源の型 `TcpStream`・`TcpListener`（[1.4](#14-stdnetjwc-だけ)） |
 | `std.tls` | `connect(host, port)`・`close(s)` と資源の型 `TlsStream`（[1.9](#19-stdtlsjwc-だけ)） |
 | `std.gzip` | `decompress(ref data, limit)`・`compress(ref data)`・`crc32(ref data)`（[1.10](#110-stdgzipjwc-だけ)） |
+| `std.pg` | `connect(cfg)`・`close(db)` と `Config`・`Conn`・`Rows`（[1.11](#111-stdpgjwc-だけ)） |
 
 - 詳しい動き（一周・実行時エラーになる条件）は `std/*.jw` の各関数の説明に書いてある。
 
@@ -287,6 +288,32 @@ print(gzip.crc32(ref data));                           // i64（0〜4294967295�
 - `compress(ref data)`（`u8[]`）: 固定の符号のブロック 1 つにする（同じ並びは後ろ 32768 バイトまでから探す）。縮まないデータは圧縮しないブロックにする。
   頭の時刻は 0、OS は 255（不明）。同じ入力からはいつも同じ出力。
 - `crc32(ref data)`: gzip と同じ CRC32。
+
+### 1.11 std.pg（jwc だけ）
+
+```
+use std.pg;
+let mut db = pg.connect(pg.Config { host: "localhost", port: 5432, user: "app", password: "secret", database: "mydb" })?;
+let r = db.query("SELECT id, name FROM t WHERE id = $1", ["1"])?;   // Rows
+for row in r.rows { print(row[0], row[1]); }                         // 値は Option<str>（NULL なら None）
+let n = db.exec("UPDATE t SET name = $1 WHERE id = $2", ["a", "1"])?; // 変わった行の数
+pg.close(db)?;
+```
+
+- PostgreSQL のクライアント（フロントエンド・バックエンドの手順の版 3.0）。std.net の上に .jw だけで書いている（`std/pg.jw`）。同期だけ。
+- `pg.connect(cfg)`（`Result<Conn, str>`）: `Config` の host・port・user・password・database でつなぎ、ログインする。database が空なら user と同じ名前（サーバーの決まり）。
+  文字の符号は UTF8 にする。ログインの方式は SCRAM-SHA-256（サーバーの署名も確かめ、合わなければ Err）・md5・パスワードなし（trust）。
+  パスワードをそのまま送る方式（password）をサーバーが求めたら Err（TLS を使わないため）。サーバーのエラーは `Err("PostgreSQL のエラー（重さ SQLSTATE）: 本文")`。
+  設定に NUL 文字があるか、user が空なら Err。
+- `Conn` は資源の TcpStream を持つ構造体（ムーブだけ。ほかのスレッドへは渡せない。持ち主がいなくなると黙って閉じる）。メソッドは持ち主が mut であること。
+  - `query(sql, params)`（`Result<Rows, str>`）: params（`str[]`）を `$1`・`$2`… の値として SQL とは別に送る（拡張問い合わせ。SQL に埋め込まない）。
+    値は文字列で送り、型はサーバーが決める。NULL は送れない。結果の値も文字列（テキスト形式）で、NULL は None。文は 1 つだけ。
+    サーバーのエラー（構文・制約など）は Err で、そのあとも同じ Conn を使える。トランザクションは `exec("BEGIN", [])` などで書く。
+  - `exec(sql, params)`（`Result<i64, str>`）: query と同じで、変わった行の数を返す。
+- `Rows`: `columns`（`str[]`。列の名前）・`rows`（`Option<str>[][]`）・`affected`（INSERT・UPDATE・DELETE・SELECT などの行の数。数のない命令なら 0）。
+  `get(row, col)`（`Option<str>`）は row 行目の名前が col の列の値（その列がなければ None）。
+- `pg.close(db)`（`Result<(), str>`）: 終わりの知らせ（Terminate）を送ってから閉じる。送れなければ Err だが、どちらでも閉じる。
+- TLS ではつながない（同じ機械か、信頼できるネットワークの中で使う）。パスワードは SASLprep（Unicode の正規化）をせずにそのまま使う。
 
 ## 2. 字句
 

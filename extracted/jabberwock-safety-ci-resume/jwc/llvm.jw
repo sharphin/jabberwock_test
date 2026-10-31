@@ -54,7 +54,8 @@ const RES_DECLS = "declare i32 @jw_fs_open(ptr, i64, ptr, ptr)\n" +
     "declare ptr @jw_browser_event_text(ptr, ptr)\n" +
     "declare i64 @jw_browser_caps(ptr, ptr)\n" +
     "declare ptr @jw_browser_name(ptr, ptr)\n" +
-    "declare void @jw_time_sleep_ms(i64, ptr)\n";
+    "declare void @jw_time_sleep_ms(i64, ptr)\n" +
+    "declare void @jw_random_bytes(i64, ptr, ptr)\n";
 
 const PRELUDE = "; jabberwock が書き出した LLVM IR\n" +
     "%ref = type {{ ptr, ptr, i64, ptr }}\n" +
