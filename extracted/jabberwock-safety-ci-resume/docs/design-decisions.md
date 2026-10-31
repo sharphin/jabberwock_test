@@ -848,3 +848,8 @@ let x = pick(true, 1, 2);
   秘密の印は、Windows 10 以降の決まった形式名（ExcludeClipboardContentFromMonitorProcessing・CanIncludeInClipboardHistory・CanUploadToCloudClipboard）を一緒に置く。
   「30 秒で消す」のために、置いたあとの番号（GetClipboardSequenceNumber）を返し、clear_if(番号) で「だれも変えていなければ消す」にした（秘密をもう一度読んで比べずに済む）。
   user32.dll は初めて使うときに読み込む（使わないプログラムのリンクの指定を増やさない）。
+- 標準入力を待ち時間つきで読む std.io.read_line_for（2026-10-31、ブラウザの金庫の頼み。金庫はエンジンのイベントを待ちながら、親からの行も受け取る）:
+  スレッドと chan で read_line を回す形ではなく、待ち時間つきの読み方を足した（スレッドが要らず、使う側が簡単なため）。
+  これに合わせて、実行ファイルの read_line は stdio（getchar）をやめ、実行時ライブラリの自前の入れ物で読むようにした（read_line と read_line_for が同じ入れ物を使う。
+  stdio にたまった分は待ち時間つきで読むときに見えないため）。行の切り方（改行と、その前の \r を取る。最後の行に改行がなくてもよい）と、読む前に出力を書き出すのは今までどおり。
+  Linux は poll、Windows はパイプなら PeekNamedPipe、端末なら WaitForSingleObject、ファイルならすぐ読む。

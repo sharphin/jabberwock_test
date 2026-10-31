@@ -515,9 +515,12 @@ pub struct Module {
         let body = code.join("");
         let res = if body.contains("@jw_res_") || body.contains("@jw_fs_") || body.contains("@jw_file_") || body.contains("@jw_net_")
             || body.contains("@jw_tcp_") || body.contains("@jw_listener_") || body.contains("@jw_udp_") || body.contains("@jw_process_") || body.contains("@jw_child_") || body.contains("@jw_clip_") || body.contains("@jw_env_get(") || body.contains("@jw_time_") || body.contains("@jw_browser_") || body.contains("@jw_tls_") || body.contains("@jw_random_") { RES_DECLS } else { "" };
-        // wipe は jwc だけのメソッド（Rust 版と突き合わせる出力を変えないよう、使ったときだけ宣言する）
-        let wipe = if body.contains("@jw_list_wipe(") { "declare void @jw_list_wipe(ptr, i64, ptr)\n" } else { "" };
-        PRELUDE + res + wipe + types.join("") + "\n" + globals.join("") + "\n" + body + TBAA
+        // jwc だけの関数（Rust 版と突き合わせる出力を変えないよう、使ったときだけ宣言する）
+        let mut only = "";
+        if body.contains("@jw_list_wipe(") { only += "declare void @jw_list_wipe(ptr, i64, ptr)\n"; }
+        if body.contains("@jw_read_line_for(") { only += "declare i64 @jw_read_line_for(i64, ptr, ptr)\n"; }
+        if body.contains("@jw_stdin_ended(") { only += "declare i32 @jw_stdin_ended()\n"; }
+        PRELUDE + res + only + types.join("") + "\n" + globals.join("") + "\n" + body + TBAA
     }
 
     fn mut i64 fresh() {

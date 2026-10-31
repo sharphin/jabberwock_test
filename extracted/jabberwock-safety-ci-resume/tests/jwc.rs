@@ -790,14 +790,14 @@ fn jwc_std_clipboard_unix() {
     assert_eq!(String::from_utf8_lossy(&got.stdout), format!("{e} {e} {e}\n"));
 }
 
-// std.process: 子を起こして読む・書く・時間切れ・終了コード・入力を閉じる・止める・起こせないコマンド（子も jwc で作る）
+// std.process: 子を起こして読む・書く・時間切れ・終了コード・入力を閉じる・止める・起こせないコマンド（子も jwc で作る）。std.io も
 #[test]
 fn jwc_std_process() {
     if !have_clang() { return; }
     let dir = std::env::temp_dir().join(format!("jw-jwc-proc-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let mut exes = Vec::new();
-    for (name, src) in [("child", PROC_CHILD_SRC), ("parent", PROC_PARENT_SRC)] {
+    for (name, src) in [("child", PROC_CHILD_SRC), ("parent", PROC_PARENT_SRC), ("child2", PROC_CHILD2_SRC), ("parent2", PROC_PARENT2_SRC)] {
         let path = dir.join(format!("{name}.jw"));
         std::fs::write(&path, src).unwrap();
         let exe = dir.join(name);
@@ -806,7 +806,10 @@ fn jwc_std_process() {
         exes.push(exe);
     }
     let got = Command::new(&exes[1]).arg(&exes[0]).output().unwrap();
+    // 子の側で std.io.read_line_for（待ち時間つきで 1 行読む。行の途中で間があいてもまとまる。\r\n の \r は取る）
+    let got2 = Command::new(&exes[3]).arg(&exes[2]).output().unwrap();
     let _ = std::fs::remove_dir_all(dir);
+    assert_eq!(String::from_utf8_lossy(&got2.stdout), "line a\nline bc\nline last\neof waited true\ncode Ok(0)\n");
     assert_eq!(
         String::from_utf8_lossy(&got.stdout),
         "read 'got: hello'\nread: 時間切れです\nexited false\ncode 3\nexited true\nafter exit len 0\nwrite after exit: Err\nkill ok\n\
@@ -826,6 +829,55 @@ fn main() {
             }
         }
     }
+}
+"#;
+
+const PROC_CHILD2_SRC: &str = r#"use std.io;
+
+// 子: 待ち時間つきで読む。時間切れを数え、行が来たら返し、入力の終わりで数を出して終わる
+fn main() {
+    let mut waits = 0;
+    loop {
+        match io.read_line_for(30) {
+            case Ok(Some(l)) -> print("line {l}");
+            case Ok(None) -> { print("eof waited {waits > 0}"); return; }
+            case Err(e) -> waits += 1;
+        }
+    }
+}
+"#;
+
+const PROC_PARENT2_SRC: &str = r#"use std.process;
+use std.time;
+
+fn str text(ref u8[] b) {
+    let mut s = "";
+    for x in b { s += chr(x as i64); }
+    s
+}
+
+fn main() {
+    let a = args();
+    let mut c = match process.start(a[0], []) { case Ok(x) -> x; case Err(e) -> { print("start: {e}"); return; } };
+    let w1 = c.write_text("a\n");
+    match c.read(100) { case Ok(b) -> print(text(b).trim()); case Err(e) -> print("read: {e}"); }
+    time.sleep(200);
+    // 行の途中で間があいても、1 行にまとまる
+    let w2 = c.write_text("b");
+    time.sleep(100);
+    let w3 = c.write_text("c\r\n");
+    match c.read(100) { case Ok(b) -> print(text(b).trim()); case Err(e) -> print("read: {e}"); }
+    let w4 = c.write_text("last");
+    c.close_input();
+    let mut all = "";
+    loop {
+        match c.read(100) {
+            case Ok(b) -> { if b.len() == 0 { break; } all += text(b); }
+            case Err(e) -> { print("read: {e}"); break; }
+        }
+    }
+    print(all.trim());
+    print("code", c.wait());
 }
 "#;
 

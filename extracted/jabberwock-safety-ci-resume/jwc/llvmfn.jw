@@ -1905,6 +1905,30 @@ struct FnGen {
             let f = if name == "browser.name" { "@jw_browser_name" } else { "@jw_browser_event_text" };
             return Ok(llvm.vt(b.val("call ptr " + f + "(ptr " + vals[0].v + ", ptr " + site + ")"), ty.Ty.Str));
         }
+        if name == "__read_line_for" {
+            let out = b.alloca("ptr");
+            let site = m.site(span, "");
+            let r = b.val("call i64 @jw_read_line_for(i64 " + vals[0].v + ", ptr " + out + ", ptr " + site + ")");
+            let none = b.val("icmp ne i64 " + r + ", 1");
+            let lt = m.lt(want)?;
+            let res = b.alloca(lt);
+            let no = b.if_true(none);
+            let nv = make_enum(m, want, "None", [])?;
+            b.op("store " + lt + " " + nv + ", ptr " + res);
+            let done = b.l();
+            b.br(done);
+            b.label(no);
+            let line = b.val("load ptr, ptr " + out);
+            let sv = make_enum(m, want, "Some", [llvm.vt(line, ty.Ty.Str)])?;
+            b.op("store " + lt + " " + sv + ", ptr " + res);
+            b.br(done);
+            b.label(done);
+            return Ok(llvm.vt(b.val("load " + lt + ", ptr " + res), ty.cl(want)));
+        }
+        if name == "__stdin_ended" {
+            let r = b.val("call i32 @jw_stdin_ended()");
+            return Ok(llvm.vt(b.val("icmp ne i32 " + r + ", 0"), ty.Ty.Bool));
+        }
         if name == "__clip_set" {
             let out = b.alloca("i64");
             let err = b.alloca("ptr");

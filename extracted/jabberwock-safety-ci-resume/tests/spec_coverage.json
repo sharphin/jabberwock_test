@@ -57,6 +57,7 @@
     {"section": "1.13", "reason": "std.date・std.csv・std.regexは jwc だけの機能で、Rust 版を正解にして比べられない。確かめるのは tests/jwc.rs の jwc_std_*"},
     {"section": "1.14", "reason": "std.processは jwc だけの機能で、Rust 版を正解にして比べられない。確かめるのは tests/jwc.rs の jwc_std_*"},
     {"section": "1.15", "reason": "std.clipboardは jwc だけの機能で、Rust 版を正解にして比べられない。確かめるのは tests/jwc.rs の jwc_std_*"},
+    {"section": "1.16", "reason": "std.ioは jwc だけの機能で、Rust 版を正解にして比べられない。確かめるのは tests/jwc.rs の jwc_std_*"},
     {"section": "11", "reason": "未実装の機能の一覧で、言語の機能ではない"}
   ]
 }

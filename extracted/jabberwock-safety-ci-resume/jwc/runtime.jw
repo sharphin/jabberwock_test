@@ -2285,24 +2285,155 @@ void jw_map_unshare_keys(WMap *m) {{
 static int g_argc;
 static char **g_argv;
 
+// 標準入力は自前の入れ物で読む（read_line と、待ち時間つきの std.io.read_line_for が同じ入れ物を使う。
+// stdio の入れ物は使わない。stdio にたまった分は、待ち時間つきで読むときに見えないため）。読むのは 1 度に 1 スレッドだけ
+static WLock g_in_lock = WLOCK_INIT;
+int64_t jw_time_now_ns(void);
+static char *g_in;
+static int64_t g_in_pos, g_in_len, g_in_cap;
+static int g_in_eof;
+
+#ifdef _WIN32
+int _read(int, void *, unsigned);
+__declspec(dllimport) void *__stdcall GetStdHandle(unsigned long);
+__declspec(dllimport) unsigned long __stdcall GetFileType(void *);
+__declspec(dllimport) int __stdcall PeekNamedPipe(void *, void *, unsigned long, unsigned long *, unsigned long *, unsigned long *);
+__declspec(dllimport) void __stdcall Sleep(unsigned long);
+#define in_read_os(p, n) _read(0, p, (unsigned)(n))
+#else
+#include <unistd.h>
+#include <poll.h>
+#include <errno.h>
+static int64_t in_read_os(char *p, int64_t n) {{
+    ssize_t k;
+    do {{
+        k = read(0, p, (size_t)n);
+    }} while (k < 0 && errno == EINTR);
+    return k;
+}}
+#endif
+
+// 入れ物に足す（待つ）。足せなければ（入力の終わり・読めない）0
+static int in_fill(void) {{
+    if (g_in_eof) return 0;
+    if (g_in_pos > 0) {{
+        memmove(g_in, g_in + g_in_pos, (size_t)(g_in_len - g_in_pos));
+        g_in_len -= g_in_pos;
+        g_in_pos = 0;
+    }}
+    if (g_in_cap - g_in_len < 4096) {{
+        g_in_cap = g_in_cap ? g_in_cap * 2 : 65536;
+        g_in = jw_checked_realloc(g_in, (size_t)g_in_cap);
+        if (!g_in) jw_oom();
+    }}
+    int64_t want = g_in_cap - g_in_len;
+    int64_t k = in_read_os(g_in + g_in_len, want > 0x40000000 ? 0x40000000 : want);
+    if (k <= 0) {{
+        g_in_eof = 1;
+        return 0;
+    }}
+    g_in_len += k;
+    return 1;
+}}
+
+// 入れ物の中の改行の位置（なければ -1）
+static int64_t in_newline(void) {{
+    char *p = memchr(g_in + g_in_pos, '\\n', (size_t)(g_in_len - g_in_pos));
+    return p ? p - g_in : -1;
+}}
+
+// 入れ物から 1 行取り出す（終わりの改行と、その前の \\r は取る）。nl が -1 なら残り全部（入力の終わりの最後の行）
+static WStr *in_take(int64_t nl) {{
+    int64_t end = nl < 0 ? g_in_len : nl;
+    int64_t len = end - g_in_pos;
+    if (len > 0 && g_in[g_in_pos + len - 1] == '\\r') len--;
+    WStr *s = jw_str_new(g_in + g_in_pos, len);
+    g_in_pos = nl < 0 ? g_in_len : nl + 1;
+    return s;
+}}
+
+// 待たずに読めるか、ms ミリ秒まで待つ。読めそう（入力の終わりも）なら 1
+static int in_ready(int64_t ms) {{
+#ifdef _WIN32
+    void *h = GetStdHandle((unsigned long)-10 /* STD_INPUT_HANDLE */);
+    unsigned long t = GetFileType(h);
+    if (t == 3 /* FILE_TYPE_PIPE */) {{
+        int64_t end = jw_time_now_ns() + ms * 1000000;
+        for (;;) {{
+            unsigned long avail = 0;
+            if (!PeekNamedPipe(h, NULL, 0, NULL, &avail, NULL) || avail > 0) return 1; // 失敗は相手が閉じたとき（入力の終わり）
+            if (jw_time_now_ns() >= end) return 0;
+            Sleep(2);
+        }}
+    }}
+    // 端末は、キーのほかの出来事（マウスなど）でも知らせが来るので、知らせが来たら読みに行く（そのときは待つことがある）
+    if (t == 2 /* FILE_TYPE_CHAR */) return WaitForSingleObject(h, ms > 0xFFFFFFFELL ? 0xFFFFFFFEul : (unsigned long)ms) == 0;
+    return 1; // ファイル（いつでも読める）
+#else
+    int64_t end = jw_time_now_ns() + ms * 1000000;
+    for (;;) {{
+        int64_t left = (end - jw_time_now_ns()) / 1000000;
+        if (left < 0) left = 0;
+        struct pollfd pf = {{0, POLLIN, 0}};
+        int r = poll(&pf, 1, (int)(left > 0x7fffffff ? 0x7fffffff : left));
+        if (r > 0) return 1;
+        if (r == 0) return 0;
+        if (errno != EINTR) return 1; // 読んでみて、失敗なら入力の終わりにする
+    }}
+#endif
+}}
+
 // 1 行読む（終わりの改行は取る）。入力が終わっていれば 0
 int32_t jw_read_line(WStr **out) {{
     jw_flush();
-    WSb *b = jw_sb_new();
-    int c, any = 0;
-    while ((c = getchar()) != EOF) {{
-        any = 1;
-        if (c == '\\n') break;
-        char ch = (char)c;
-        jw_sb_push(b, &ch, 1);
+    lock(&g_in_lock);
+    int64_t nl;
+    while ((nl = in_newline()) < 0 && in_fill()) {{}}
+    int32_t ok = 1;
+    if (nl >= 0 || g_in_len > g_in_pos) *out = in_take(nl);
+    else ok = 0;
+    unlock(&g_in_lock);
+    return ok;
+}}
+
+// 待ち時間つきで 1 行読む（std.io.read_line_for）。1: 読めた（*out）、0: 入力の終わり、-1: 時間切れ（読みかけの行は残す）
+int64_t jw_read_line_for(int64_t ms, WStr **out, const WSite *at) {{
+    if (ms < 0) {{
+        begin_error("待ち時間が負です");
+        finish_error(at, "read_line_for(ms) の ms は 0 以上", NULL);
     }}
-    if (!any) {{
-        sb_drop(b);
-        return 0;
+    jw_flush();
+    lock(&g_in_lock);
+    int64_t end = jw_time_now_ns() + ms * 1000000;
+    int64_t nl, r = -1;
+    for (;;) {{
+        nl = in_newline();
+        if (nl >= 0) break;
+        int64_t left = (end - jw_time_now_ns()) / 1000000;
+        if (g_in_eof || !in_ready(left > 0 ? left : 0)) break;
+        if (!in_fill()) break;
     }}
-    if (b->len > 0 && b->p[b->len - 1] == '\\r') b->len--;
-    *out = jw_sb_finish(b);
-    return 1;
+    if (nl >= 0) {{
+        *out = in_take(nl);
+        r = 1;
+    }} else if (g_in_eof) {{
+        if (g_in_len > g_in_pos) {{
+            *out = in_take(-1);
+            r = 1;
+        }} else {{
+            r = 0;
+        }}
+    }}
+    unlock(&g_in_lock);
+    return r;
+}}
+
+// 入力が終わっていて、残りもないか（std.io で、時間切れと入力の終わりを分けるため）
+int32_t jw_stdin_ended(void) {{
+    lock(&g_in_lock);
+    int32_t r = g_in_eof && g_in_len == g_in_pos;
+    unlock(&g_in_lock);
+    return r;
 }}
 
 // コマンドライン引数（プログラムの名前は除く）

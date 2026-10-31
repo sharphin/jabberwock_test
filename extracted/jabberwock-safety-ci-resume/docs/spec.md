@@ -108,6 +108,7 @@ fn main() {
 | `std.csv` | `parse(s)`・`format(ref rows)`・`quote(v)`（[1.13](#113-stddatestdcsvstdregexjwc-だけ)） |
 | `std.regex` | `compile(pattern)`・`escape(s)` と `Regex`・`Match`（[1.13](#113-stddatestdcsvstdregexjwc-だけ)） |
 | `std.process` | `start(cmd, argv)` と資源の型 `Child`（[1.14](#114-stdprocessjwc-だけ)） |
+| `std.io` | `read_line_for(ms)`（[1.16](#116-stdiojwc-だけ)） |
 | `std.clipboard` | `set_text(s, secret)`・`get_text()`・`clear_if(n)`・`clear()`（[1.15](#115-stdclipboardjwc-だけwindows-だけ)） |
 
 - 詳しい動き（一周・実行時エラーになる条件）は `std/*.jw` の各関数の説明に書いてある。
@@ -470,6 +471,21 @@ clipboard.clear()?;
   `get_text()`（`Result<str, str>`）・`clear_if(n)`（`Result<bool, str>`。n は set_text の番号で、負なら実行時エラー）・`clear()`。
 - ほかのプログラムがクリップボードを開いたままなら、少し待って何度か試し、だめなら Err。s に文字 0 があれば Err。
 - Linux・macOS では、どれも `Err("この OS ではまだクリップボードを使えません（Windows だけ）")`。
+
+### 1.16 std.io（jwc だけ）
+
+```
+use std.io;
+match io.read_line_for(50) {        // 50 ミリ秒まで待って 1 行
+    case Ok(Some(line)) -> ...;
+    case Ok(None) -> ...;           // 入力の終わり
+    case Err(e) -> ...;             // "時間切れです"（読みかけの行は次に回す）
+}
+```
+
+- `read_line_for(ms)`（`Result<Option<str>, str>`）: 標準入力を ms ミリ秒まで待って 1 行読む（0 なら待たずに今ある分だけ。負なら実行時エラー）。
+  行の切り方は read_line と同じ（終わりの改行と、その前の \r を取る。最後の行に改行がなくてもよい）。read_line と同じ入れ物から読むので、まぜて使ってよい。
+  読む前に print の出力を書き出す。Windows の端末から読むときは、キーのほかの出来事（マウスなど）でも読みに行くので、ms より長く待つことがある。
 
 ## 2. 字句
 
