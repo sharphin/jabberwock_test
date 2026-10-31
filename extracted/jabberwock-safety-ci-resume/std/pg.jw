@@ -1,15 +1,18 @@
 // 標準ライブラリ std.pg: PostgreSQL のクライアント（同期だけ）。`use std.pg;` と書いて使う
-//   let mut db = pg.connect(pg.Config { host: "localhost", port: 5432, user: "app", password: "secret", database: "mydb" })?;
+//   let mut db = pg.connect(pg.Config { host: "localhost", port: 5432, user: "app", password: "secret", database: "mydb", tls: false })?;
 //   let r = db.query("SELECT id, name FROM t WHERE id = $1", ["1"])?;
 //   for row in r.rows { print(row[0], row[1]); }          // 値は Option<str>（NULL なら None）
 //   let n = db.exec("UPDATE t SET name = $1 WHERE id = $2", ["a", "1"])?;   // 変わった行の数
+//   db.exec_opt("INSERT INTO t VALUES ($1, $2)", [Some("2"), None])?;   // NULL を入れるときは Option<str> の並びで
 //   pg.close(db)?;
 // std.net の上に .jw だけで書いている（フロントエンド・バックエンドの手順の版 3.0）。
 // パラメータは `$1` などで SQL とは別に送る（拡張問い合わせ。SQL に埋め込まない）。値はどれも文字列（テキスト形式）で送り、受け取る。
-// ログインは SCRAM-SHA-256（サーバーの署名も確かめる）・md5・パスワードなし（trust）。パスワードをそのまま送る方式は断る（TLS なしでつなぐため）。
-// TLS はまだ使わない（同じ機械か、信頼できるネットワークの中で使う）。
+// ログインは SCRAM-SHA-256（サーバーの署名も確かめる）・md5・パスワードなし（trust）・パスワードをそのまま送る方式（TLS のときだけ）。
+// tls: true なら TLS にしてからログインする（std.tls。証明書と host の名前を確かめる）。サーバーが TLS を断れば Err で、平文に戻る道はない。
+// tls: false なら平文（同じ機械か、信頼できるネットワークの中で使う）。
 
 use std.net;
+use std.tls;
 use std.text;
 use std.hash;
 use std.base64;
@@ -21,6 +24,14 @@ pub struct Config {
     str user;
     str password;
     str database;
+    // TLS でつなぐか
+    bool tls;
+}
+
+/// 平文か TLS のつながり
+enum Stream {
+    Plain(own net.TcpStream s);
+    Secure(own tls.TlsStream s);
 }
 
 /// 問い合わせの結果
@@ -43,13 +54,19 @@ pub struct Rows {
 
 /// サーバーとのつながり（持ち主がいなくなると黙って閉じる）
 pub struct Conn {
-    net.TcpStream sock;
+    Stream sock;
     // 受け取って、まだ読んでいない分
     u8[] inbuf;
     i64 pos;
 
     /// 問い合わせる（params は `$1`・`$2`… に入る値）
     fn mut Result<Rows, str> query(str sql, str[] params) {
+        let Option<str>[] ps = params.map((v) -> Some(v));
+        query_opt(sql, ps)
+    }
+
+    /// 問い合わせる（params の None は NULL として送る）
+    fn mut Result<Rows, str> query_opt(str sql, Option<str>[] params) {
         if sql.contains("\0") { return Err("SQL に NUL 文字があります"); }
         if params.len() > 65535 { return Err("パラメータが多すぎます（65535 個まで）"); }
         let u8[] mut out = [];
@@ -66,9 +83,14 @@ pub struct Conn {
         put_i16(ref mut b, 0);
         put_i16(ref mut b, params.len());
         for v in params {
-            let bs = v.bytes();
-            put_i32(ref mut b, bs.len());
-            for x in bs { b.push(x); }
+            match v {
+                case Some(t) -> {
+                    let bs = t.bytes();
+                    put_i32(ref mut b, bs.len());
+                    for x in bs { b.push(x); }
+                }
+                case None -> put_i32(ref mut b, -1);
+            }
         }
         put_i16(ref mut b, 0);
         put_msg(ref mut out, 66, ref b);
@@ -82,7 +104,7 @@ pub struct Conn {
         put_msg(ref mut out, 69, ref e);
         let u8[] empty = [];
         put_msg(ref mut out, 83, ref empty);
-        sock.write(out)?;
+        write(out)?;
 
         let str[] mut columns = [];
         let Option<str>[][] mut rows = [];
@@ -147,6 +169,12 @@ pub struct Conn {
         Ok(r.affected)
     }
 
+    /// 行を返さない命令を送る（params の None は NULL）。変わった行の数を返す
+    fn mut Result<i64, str> exec_opt(str sql, Option<str>[] params) {
+        let r = query_opt(sql, params)?;
+        Ok(r.affected)
+    }
+
     /// 知らせを 1 つ受け取る（種類の 1 バイトと、長さのあとの中身）
     fn mut Result<Reader, str> next() {
         fill(5)?;
@@ -167,7 +195,7 @@ pub struct Conn {
             pos = 0;
         }
         while inbuf.len() - pos < n {
-            let got = sock.read(65536)?;
+            let got = read(65536)?;
             if got.len() == 0 { return Err("PostgreSQL のサーバーが接続を閉じました"); }
             for x in got { inbuf.push(x); }
         }
@@ -178,8 +206,28 @@ pub struct Conn {
     fn mut Result<(), str> send(i64 kind, ref u8[] body) {
         let u8[] mut out = [];
         put_msg(ref mut out, kind, body);
-        sock.write(out)?;
-        Ok(())
+        write(out)
+    }
+
+    fn mut Result<u8[], str> read(i64 n) {
+        match ref mut sock {
+            case Plain(t) -> t.read(n);
+            case Secure(t) -> t.read(n);
+        }
+    }
+
+    fn mut Result<(), str> write(u8[] bs) {
+        match ref mut sock {
+            case Plain(t) -> t.write(bs);
+            case Secure(t) -> t.write(bs);
+        }
+    }
+
+    fn bool secure() {
+        match ref sock {
+            case Plain(t) -> false;
+            case Secure(t) -> true;
+        }
     }
 }
 
@@ -300,8 +348,21 @@ pub fn Result<Conn, str> connect(Config cfg) {
         if s.contains("\0") { return Err("接続の設定に NUL 文字があります"); }
     }
     if cfg.user == "" { return Err("ユーザー名が空です"); }
-    let sock = net.connect(cfg.host, cfg.port)?;
-    let mut c = Conn { sock: sock, inbuf: [], pos: 0 };
+    let mut plain = net.connect(cfg.host, cfg.port)?;
+    let st = if cfg.tls {
+        // SSLRequest（長さ 8・番号 80877103）。返事は 1 バイト: S なら TLS にする、N なら断られた
+        let u8[] mut req = [];
+        put_i32(ref mut req, 8);
+        put_i32(ref mut req, 80877103);
+        plain.write(req)?;
+        let ans = plain.read(1)?;
+        if ans.len() == 0 { return Err("PostgreSQL のサーバーが接続を閉じました"); }
+        if ans[0] != 83 { return Err("PostgreSQL のサーバーが TLS を使えません（tls: true なので平文ではつなぎません）"); }
+        Stream.Secure(own tls.upgrade(plain, cfg.host)?)
+    } else {
+        Stream.Plain(own plain)
+    };
+    let mut c = Conn { sock: st, inbuf: [], pos: 0 };
     // StartupMessage（種類の 1 バイトはない。版 3.0）
     let u8[] mut body = [];
     put_i32(ref mut body, 196608);
@@ -317,7 +378,7 @@ pub fn Result<Conn, str> connect(Config cfg) {
     let u8[] mut out = [];
     put_i32(ref mut out, body.len() + 4);
     for x in body { out.push(x); }
-    c.sock.write(out)?;
+    c.write(out)?;
     login(ref mut c, ref cfg)?;
     Ok(c)
 }
@@ -348,7 +409,10 @@ fn Result<(), str> login(ref mut Conn c, ref Config cfg) {
             if scram.client_first_bare != "" && scram.auth_message == "" { return Err("PostgreSQL のサーバーが SCRAM を最後まで済ませていません"); }
             authed = true;
         } else if code == 3 {
-            return Err("PostgreSQL のサーバーがパスワードをそのまま送るよう求めています（TLS なしでは送りません。md5 か scram-sha-256 にしてください）");
+            if !c.secure() { return Err("PostgreSQL のサーバーがパスワードをそのまま送るよう求めています（TLS なしでは送りません。tls: true にするか、md5 か scram-sha-256 にしてください）"); }
+            let u8[] mut p = [];
+            put_cstr(ref mut p, cfg.password);
+            c.send(112, ref p)?;
         } else if code == 5 {
             // md5: "md5" + md5(md5(password + user) + salt)
             let salt = r.take(4)?;

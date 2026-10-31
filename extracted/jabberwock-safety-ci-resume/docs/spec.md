@@ -97,7 +97,7 @@ fn main() {
 | `std.url` | `parse(s)`・`encode(s)`・`decode(s, plus)` と `Url`（[1.7](#17-stdurljwc-だけ)） |
 | `std.browser` | `open(cfg)`・`close(e)` と `Engine`・`Config`・`Event`・`KeyCode`・`Info`（[1.8](#18-stdbrowserjwc-だけ)） |
 | `std.net` | `connect(host, port)`・`listen(host, port)`・`close(s)`・`stop(l)` と資源の型 `TcpStream`・`TcpListener`（[1.4](#14-stdnetjwc-だけ)） |
-| `std.tls` | `connect(host, port)`・`close(s)` と資源の型 `TlsStream`（[1.9](#19-stdtlsjwc-だけ)） |
+| `std.tls` | `connect(host, port)`・`upgrade(s, host)`・`close(s)` と資源の型 `TlsStream`（[1.9](#19-stdtlsjwc-だけ)） |
 | `std.gzip` | `decompress(ref data, limit)`・`compress(ref data)`・`crc32(ref data)`（[1.10](#110-stdgzipjwc-だけ)） |
 | `std.pg` | `connect(cfg)`・`close(db)` と `Config`・`Conn`・`Rows`（[1.11](#111-stdpgjwc-だけ)） |
 | `std.hash` | `sha256(ref data)`・`hmac_sha256(ref key, ref msg)`・`pbkdf2_sha256(ref password, ref salt, iters)`・`hex(ref data)`・`equal(ref a, ref b)`（[1.12](#112-stdhashstdbase64stdrandomjwc-だけ)） |
@@ -278,6 +278,8 @@ tls.close(s)?;
 - OS の部品は初めて使うときに読み込む（リンクの指定は要らない。読み込めなければ connect が Err）。
   - Linux など: OpenSSL 3（`libssl.so.3`、なければ `libssl.so`）。信頼の置き場所は OpenSSL の決まりのもの（環境変数 `SSL_CERT_FILE`・`SSL_CERT_DIR` で変えられる）。理由の文は OpenSSL のもの（英語）。
   - Windows: Schannel（secur32.dll）と crypt32.dll。信頼の置き場所は Windows のもの。理由の文は「信頼できる発行元につながりません」「名前が合いません」「期限が切れています」「取り消されています」か、番号（`0x...`）。
+- `tls.upgrade(s, host)`（`Result<TlsStream, str>`）: すでにつないだ `net.TcpStream`（ムーブ）の上で握手をする（平文で少しやりとりしてから TLS にする手順のため。std.pg が使う）。
+  確かめ方とエラーは connect と同じ（host は照らす名前か IP）。だめなら Err で、TcpStream は閉じる。
 - 取り消し（失効）は調べない。
 
 ### 1.10 std.gzip（jwc だけ）
@@ -302,27 +304,31 @@ print(gzip.crc32(ref data));                           // i64（0〜4294967295�
 
 ```
 use std.pg;
-let mut db = pg.connect(pg.Config { host: "localhost", port: 5432, user: "app", password: "secret", database: "mydb" })?;
+let mut db = pg.connect(pg.Config { host: "localhost", port: 5432, user: "app", password: "secret", database: "mydb", tls: false })?;
 let r = db.query("SELECT id, name FROM t WHERE id = $1", ["1"])?;   // Rows
 for row in r.rows { print(row[0], row[1]); }                         // 値は Option<str>（NULL なら None）
 let n = db.exec("UPDATE t SET name = $1 WHERE id = $2", ["a", "1"])?; // 変わった行の数
+db.exec_opt("INSERT INTO t VALUES ($1, $2)", [Some("2"), None])?;     // None は NULL
 pg.close(db)?;
 ```
 
 - PostgreSQL のクライアント（フロントエンド・バックエンドの手順の版 3.0）。std.net の上に .jw だけで書いている（`std/pg.jw`）。同期だけ。
 - `pg.connect(cfg)`（`Result<Conn, str>`）: `Config` の host・port・user・password・database でつなぎ、ログインする。database が空なら user と同じ名前（サーバーの決まり）。
-  文字の符号は UTF8 にする。ログインの方式は SCRAM-SHA-256（サーバーの署名も確かめ、合わなければ Err）・md5・パスワードなし（trust）。
-  パスワードをそのまま送る方式（password）をサーバーが求めたら Err（TLS を使わないため）。サーバーのエラーは `Err("PostgreSQL のエラー（重さ SQLSTATE）: 本文")`。
+  文字の符号は UTF8 にする。ログインの方式は SCRAM-SHA-256（サーバーの署名も確かめ、合わなければ Err。チャネルバインディングは使わない）・md5・パスワードなし（trust）・
+  パスワードをそのまま送る方式（password）。password は TLS のときだけで、平文のつながりでサーバーが求めたら Err。
+- `tls`（`bool`）が true なら、ログインの前に SSLRequest を送り、サーバーが受けたら `tls.upgrade` で TLS にする（1.9。証明書と host の名前を確かめる）。
+  サーバーが断ったら `Err("PostgreSQL のサーバーが TLS を使えません（…）")` で、平文には戻らない。false なら平文でつなぐ。サーバーのエラーは `Err("PostgreSQL のエラー（重さ SQLSTATE）: 本文")`。
   設定に NUL 文字があるか、user が空なら Err。
-- `Conn` は資源の TcpStream を持つ構造体（ムーブだけ。ほかのスレッドへは渡せない。持ち主がいなくなると黙って閉じる）。メソッドは持ち主が mut であること。
+- `Conn` は資源の TcpStream か TlsStream を持つ構造体（ムーブだけ。ほかのスレッドへは渡せない。持ち主がいなくなると黙って閉じる）。メソッドは持ち主が mut であること。
   - `query(sql, params)`（`Result<Rows, str>`）: params（`str[]`）を `$1`・`$2`… の値として SQL とは別に送る（拡張問い合わせ。SQL に埋め込まない）。
-    値は文字列で送り、型はサーバーが決める。NULL は送れない。結果の値も文字列（テキスト形式）で、NULL は None。文は 1 つだけ。
+    値は文字列で送り、型はサーバーが決める。結果の値も文字列（テキスト形式）で、NULL は None。文は 1 つだけ。
     サーバーのエラー（構文・制約など）は Err で、そのあとも同じ Conn を使える。トランザクションは `exec("BEGIN", [])` などで書く。
   - `exec(sql, params)`（`Result<i64, str>`）: query と同じで、変わった行の数を返す。
+  - `query_opt(sql, params)`・`exec_opt(sql, params)`: params が `Option<str>[]` で、None を NULL として送る。ほかは query・exec と同じ。
 - `Rows`: `columns`（`str[]`。列の名前）・`rows`（`Option<str>[][]`）・`affected`（INSERT・UPDATE・DELETE・SELECT などの行の数。数のない命令なら 0）。
   `get(row, col)`（`Option<str>`）は row 行目の名前が col の列の値（その列がなければ None）。
 - `pg.close(db)`（`Result<(), str>`）: 終わりの知らせ（Terminate）を送ってから閉じる。送れなければ Err だが、どちらでも閉じる。
-- TLS ではつながない（同じ機械か、信頼できるネットワークの中で使う）。パスワードは SASLprep（Unicode の正規化）をせずにそのまま使う。
+- `tls: false` のつながりは暗号にしない（同じ機械か、信頼できるネットワークの中で使う）。パスワードは SASLprep（Unicode の正規化）をせずにそのまま使う。
 
 ### 1.12 std.hash・std.base64・std.random（jwc だけ）
 

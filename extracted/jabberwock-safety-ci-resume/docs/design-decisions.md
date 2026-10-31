@@ -796,3 +796,8 @@ let x = pick(true, 1, 2);
   ほかは .jw で書いた。remove_all はリンクをたどらない（リンクの先の大事なものを消さないため。lstat で見分ける）。
   copy は元と先が同じ文字列なら断る（create で元を空にしてしまうため。別の書き方で同じファイルを指す場合までは見ない）。
   確かめたのは Linux だけ（Windows は mingw でコンパイルが通ることだけ）。
+- std.pg の TLS と NULL のパラメータ（2026-10-31、オーナーの選択「提案の順に進める」の 3 つ目）: Config に `tls`（bool）を足した。true なら SSLRequest のあと
+  `tls.upgrade`（すでにつないだ TcpStream の上で握手をする。実行時ライブラリの `jw_tls_upgrade`）で TLS にし、証明書と host の名前を確かめる。
+  サーバーが TLS を断っても平文には戻らない（libpq の prefer のように黙って弱める道は作らない）。パスワードをそのまま送る方式は TLS のときだけ受ける。
+  SCRAM のチャネルバインディング（-PLUS）はまだ使わない。NULL を送るのは `query_opt`・`exec_opt`（`Option<str>[]`）にして、よく使う `query(sql, ["1"])` の書き方は残した。
+  確かめたのは Linux だけ（Windows は mingw でコンパイルが通ることだけ）。

@@ -3613,7 +3613,8 @@ static void pipe_release(sigset_t *old) {
     pthread_sigmask(SIG_SETMASK, old, NULL);
 }
 
-int32_t jw_tls_connect(WStr *host, int64_t port, void **out, WStr **err) {
+// TLS を始める前の確かめ。だめなら 0
+static int tls_checks(WStr *host, WStr **err) {
     if (res_fail("connect")) {
         *err = message("接続できません: ", host);
         return 0;
@@ -3626,11 +3627,36 @@ int32_t jw_tls_connect(WStr *host, int64_t port, void **out, WStr **err) {
         *err = message("接続先の名前が正しくありません: ", host);
         return 0;
     }
+    return 1;
+}
+
+static int32_t tls_start(int fd, WStr *host, void **out, WStr **err);
+
+int32_t jw_tls_connect(WStr *host, int64_t port, void **out, WStr **err) {
+    if (!tls_checks(host, err)) return 0;
     int fd = net_open(host, port, 0);
     if (fd < 0) {
         *err = message("接続できません: ", host);
         return 0;
     }
+    return tls_start(fd, host, out, err);
+}
+
+// つないだ TCP の上で TLS を始める（std.pg のように、平文で少しやりとりしてから TLS にする手順のため）。TcpStream はムーブされてきた
+int32_t jw_tls_upgrade(void *h, WStr *host, void **out, WStr **err, const WSite *at) {
+    uint64_t tok = (uint64_t)(uintptr_t)h;
+    WRes *r = res_get(tok, RES_TCP, at);
+    int fd = (int)r->fd;
+    res_release(r, res_slot(tok));
+    if (!tls_checks(host, err)) {
+        sock_close(fd);
+        return 0;
+    }
+    return tls_start(fd, host, out, err);
+}
+
+// fd の上で握手し、証明書と名前を確かめる。だめなら fd を閉じて 0
+static int32_t tls_start(int fd, WStr *host, void **out, WStr **err) {
     char *hc = c_str(host);
     unsigned char ip[16];
     int is_ip = inet_pton(AF_INET, hc, ip) == 1 || inet_pton(AF_INET6, hc, ip) == 1;
@@ -3966,7 +3992,8 @@ static unsigned long tls_verify(WTls *t, wchar_t *target) {
     return why;
 }
 
-int32_t jw_tls_connect(WStr *host, int64_t port, void **out, WStr **err) {
+// TLS を始める前の確かめ。だめなら 0
+static int tls_checks(WStr *host, WStr **err) {
     if (res_fail("connect")) {
         *err = message("接続できません: ", host);
         return 0;
@@ -3979,11 +4006,36 @@ int32_t jw_tls_connect(WStr *host, int64_t port, void **out, WStr **err) {
         *err = message("接続先の名前が正しくありません: ", host);
         return 0;
     }
+    return 1;
+}
+
+static int32_t tls_start(int64_t fd, WStr *host, void **out, WStr **err);
+
+int32_t jw_tls_connect(WStr *host, int64_t port, void **out, WStr **err) {
+    if (!tls_checks(host, err)) return 0;
     int64_t fd = net_open(host, port, 0);
     if (fd < 0) {
         *err = message("接続できません: ", host);
         return 0;
     }
+    return tls_start(fd, host, out, err);
+}
+
+// つないだ TCP の上で TLS を始める（std.pg のように、平文で少しやりとりしてから TLS にする手順のため）。TcpStream はムーブされてきた
+int32_t jw_tls_upgrade(void *h, WStr *host, void **out, WStr **err, const WSite *at) {
+    uint64_t tok = (uint64_t)(uintptr_t)h;
+    WRes *r = res_get(tok, RES_TCP, at);
+    int64_t fd = (int64_t)r->fd;
+    res_release(r, res_slot(tok));
+    if (!tls_checks(host, err)) {
+        sock_close(fd);
+        return 0;
+    }
+    return tls_start(fd, host, out, err);
+}
+
+// fd の上で握手し、証明書と名前を確かめる。だめなら fd を閉じて 0
+static int32_t tls_start(int64_t fd, WStr *host, void **out, WStr **err) {
     WTls *t = jw_checked_calloc(1, sizeof(WTls));
     char *hc = c_str(host);
     wchar_t *target = to_wide(hc);

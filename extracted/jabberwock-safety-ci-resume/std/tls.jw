@@ -8,7 +8,13 @@
 // TlsStream は資源（ムーブだけ。ほかのスレッドへは渡せない。持ち主がいなくなると閉じる）。
 // メソッドは std.net の TcpStream と同じ: `read(n)`・`write(bytes)`・`write_text(s)`・`set_timeout(ms)`（持ち主が mut であること）。
 
+use std.net;
+
 pub resource TlsStream;
+
+/// すでにつないだ TcpStream（ムーブされる）の上で TLS を始める（PostgreSQL のように、平文で少しやりとりしてから TLS に切り替える手順のため）。
+/// host は証明書と照らす名前（または IP）。だめなら Err で、TcpStream は閉じる
+pub fn Result<TlsStream, str> upgrade(net.TcpStream s, str host) { __tls_upgrade(s, host) }
 
 /// host の port へつなぎ、TLS を始める（証明書と名前を確かめる）
 pub fn Result<TlsStream, str> connect(str host, i64 port) { __tls_connect(host, port) }

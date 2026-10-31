@@ -43,7 +43,7 @@ fn bool is_builtin(str n) {
     n == "print" || n == "eprint" || n == "drop" || n == "assert" || n == "read_line" || n == "args" || n == "spawn"
         || n == "chan" || n == "exit" || n == "read_file" || n == "write_file" || n == "run_command" || n == "chr"
         || n == "__fs_open" || n == "__res_close" || n == "__fs_exists" || n == "__fs_list" || n == "__fs_make_dir" || n == "__fs_remove" || n == "__fs_rename" || n == "__fs_stat"
-        || n == "__net_connect" || n == "__net_listen" || n == "__env_get" || n == "__time_now_ns" || n == "__time_unix_ms" || n == "__time_sleep_ms" || n == "__browser_open" || n == "__tls_connect" || n == "__random_bytes"
+        || n == "__net_connect" || n == "__net_listen" || n == "__env_get" || n == "__time_now_ns" || n == "__time_unix_ms" || n == "__time_sleep_ms" || n == "__browser_open" || n == "__tls_connect" || n == "__tls_upgrade" || n == "__random_bytes"
 }
 
 /// コンパイラが知っている資源の型（`resource` で書けるのはこれだけ）
@@ -2897,6 +2897,17 @@ pub struct Checker {
             expect(argv[1], ty.i64t())?;
             let rn = if name == "__net_connect" { "std:net.TcpStream" } else if name == "__tls_connect" { "std:tls.TlsStream" } else { "std:net.TcpListener" };
             return Ok(ty.Ty.Enum("Result", own [ty.Ty.Res(rn), ty.Ty.Str]));
+        }
+        if name == "__tls_upgrade" {
+            // 平文でつないだ TcpStream（ムーブされる）の上で TLS を始める。std.tls の中だけで使う
+            if cur_mod != "std:tls" {
+                return Err(diag.make("`{name}` は標準ライブラリの中だけで使えます").at(span, "std.tls の関数を使ってください"));
+            }
+            if argv.len() != 2 { return Err(arity_error(name, 2, argv.len(), span)); }
+            let t = value(argv[0])?;
+            if !ty.is(t, "Res") || ty.name_of(t) != "std:net.TcpStream" { return Err(mismatch(ty.Ty.Res("std:net.TcpStream"), t, argv[0].span)); }
+            expect(argv[1], ty.Ty.Str)?;
+            return Ok(ty.Ty.Enum("Result", own [ty.Ty.Res("std:tls.TlsStream"), ty.Ty.Str]));
         }
         if name == "__fs_open" || name == "__fs_exists" || name == "__fs_list" || name == "__fs_make_dir" || name == "__fs_remove" || name == "__fs_rename" || name == "__fs_stat" {
             // 標準ライブラリ std.fs の中だけで使う（資源を作る内部の操作）

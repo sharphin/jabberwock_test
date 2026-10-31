@@ -1863,6 +1863,14 @@ struct FnGen {
             release(vals, all);
             return result_of(m, want, ok, err, "res", out);
         }
+        if name == "__tls_upgrade" {
+            let out = b.alloca("ptr");
+            let err = b.alloca("ptr");
+            let site = m.site(span, "");
+            let ok = b.val("call i32 @jw_tls_upgrade(ptr " + vals[0].v + ", ptr " + vals[1].v + ", ptr " + out + ", ptr " + err + ", ptr " + site + ")");
+            release(vals, all);
+            return result_of(m, want, ok, err, "res", out);
+        }
         if name == "listener.accept" {
             let out = b.alloca("ptr");
             let err = b.alloca("ptr");

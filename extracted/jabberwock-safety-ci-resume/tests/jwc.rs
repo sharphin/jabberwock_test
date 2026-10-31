@@ -935,33 +935,48 @@ fn jwc_std_pg() {
          host all t_scram 127.0.0.1/32 scram-sha-256\nhost all t_plain 127.0.0.1/32 password\n",
     )
     .unwrap();
+    // TLS 用の証明書と鍵（鍵は持ち主だけが読めること）
+    let tls = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/tls");
+    std::fs::copy(tls.join("server.pem"), data.join("server.crt")).unwrap();
+    std::fs::copy(tls.join("server.key"), data.join("server.key")).unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(data.join("server.key"), std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    if as_root {
+        run_ok(Command::new("chown").arg("postgres").arg(data.join("server.crt")).arg(data.join("server.key")));
+    }
     let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
     let ctl = format!("{}/pg_ctl -D {}", bin.display(), data.display());
     run(format!(
-        "{} -w -l {}/log -o '-p {} -k {} -c listen_addresses=127.0.0.1 -c fsync=off' start >/dev/null",
+        "{} -w -l {}/log -o '-p {} -k {} -c listen_addresses=127.0.0.1 -c fsync=off -c ssl=on' start >/dev/null",
         ctl, dir.display(), port, dir.display()
     ));
-    let got = Command::new(&exe).arg(port.to_string()).output();
+    let got = Command::new(&exe).arg(port.to_string()).env("SSL_CERT_FILE", tls.join("ca.pem")).output();
     run(format!("{} -m immediate stop >/dev/null", ctl));
     let got = got.unwrap();
     assert_eq!(String::from_utf8_lossy(&got.stderr), "");
     assert_eq!(
         String::from_utf8_lossy(&got.stdout),
-        "t_trust [x, n, s] [[Some(42), None, Some(こんにちは)]] 1 Some(こんにちは) None\n\
-         t_md5 [x, n, s] [[Some(42), None, Some(こんにちは)]] 1 Some(こんにちは) None\n\
-         t_scram [x, n, s] [[Some(42), None, Some(こんにちは)]] 1 Some(こんにちは) None\n\
+        "t_trust [x, n, s, tls] [[Some(42), None, Some(こんにちは), Some(false)]] 1 Some(こんにちは) None\n\
+         t_md5 [x, n, s, tls] [[Some(42), None, Some(こんにちは), Some(false)]] 1 Some(こんにちは) None\n\
+         t_scram [x, n, s, tls] [[Some(42), None, Some(こんにちは), Some(false)]] 1 Some(こんにちは) None\n\
          t_scram Err PostgreSQL のエラー（FATAL 28P01）: password authentication failed for user \"t_scram\"\n\
-         t_plain Err PostgreSQL のサーバーがパスワードをそのまま送るよう求めています（TLS なしでは送りません。md5 か scram-sha-256 にしてください）\n\
+         t_plain Err PostgreSQL のサーバーがパスワードをそのまま送るよう求めています（TLS なしでは送りません。tls: true にするか、md5 か scram-sha-256 にしてください）\n\
          nobody Err PostgreSQL のエラー（FATAL 28000）: no pg_hba.conf entry for host \"127.0.0.1\", user \"nobody\", database \"tdb\", no encryption\n\
+         t_plain [x, n, s, tls] [[Some(42), None, Some(こんにちは), Some(true)]] 1 Some(こんにちは) None\n\
+         t_scram [x, n, s, tls] [[Some(42), None, Some(こんにちは), Some(true)]] 1 Some(こんにちは) None\n\
+         t_scram Err TLS の証明書を確かめられません（IP address mismatch）: 127.0.0.1\n\
          0 2\n\
+         1\n\
          Err PostgreSQL のエラー（ERROR 23505）: duplicate key value violates unique constraint \"t_pkey\"（Key (id)=(1) already exists.）\n\
          Err PostgreSQL のエラー（ERROR 42601）: syntax error at or near \"SELEC\"\n\
          Err PostgreSQL のエラー（ERROR 08P01）: bind message supplies 0 parameters, but prepared statement \"\" requires 1\n\
          1 0\n\
-         [id, name] [[Some(1), Some(a'; DROP TABLE t; --)], [Some(2), Some(b)]] 2\n\
+         [id, name] [[Some(1), Some(a'; DROP TABLE t; --)], [Some(2), Some(b)], [Some(3), None]] 3\n\
          5000 5000 1000\n\
          0 0\n\
-         2\n\
+         3\n\
          ok\n"
     );
     let _ = std::fs::remove_dir_all(dir);
@@ -991,10 +1006,10 @@ fn pg_bindir() -> Option<PathBuf> {
 #[cfg(unix)]
 const PG_SRC: &str = r#"use std.pg;
 
-fn pg.Config cfg(i64 port, str user, str pw) { pg.Config { host: "127.0.0.1", port: port, user: user, password: pw, database: "tdb" } }
+fn pg.Config cfg(i64 port, str user, str pw) { pg.Config { host: "127.0.0.1", port: port, user: user, password: pw, database: "tdb", tls: false } }
 
 fn Result<(), str> setup(i64 port) {
-    let mut db = pg.connect(pg.Config { host: "127.0.0.1", port: port, user: "postgres", password: "", database: "postgres" })?;
+    let mut db = pg.connect(pg.Config { host: "127.0.0.1", port: port, user: "postgres", password: "", database: "postgres", tls: false })?;
     db.exec("CREATE USER t_trust", [])?;
     db.exec("SET password_encryption = 'md5'", [])?;
     db.exec("CREATE USER t_md5 PASSWORD 'md5pw'", [])?;
@@ -1006,9 +1021,10 @@ fn Result<(), str> setup(i64 port) {
     Ok(())
 }
 
-fn Result<(), str> login(i64 port, str user, str pw) {
-    let mut db = pg.connect(cfg(port, user, pw))?;
-    let r = db.query("SELECT 1 + $1::int AS x, NULL::text AS n, 'こんにちは' AS s", ["41"])?;
+fn Result<(), str> login(pg.Config c) {
+    let user = c.user;
+    let mut db = pg.connect(c)?;
+    let r = db.query("SELECT 1 + $1::int AS x, NULL::text AS n, 'こんにちは' AS s, (SELECT ssl::text FROM pg_stat_ssl WHERE pid = pg_backend_pid()) AS tls", ["41"])?;
     print(user, r.columns, r.rows, r.affected, r.get(0, "s"), r.get(0, "nope"));
     pg.close(db)?;
     Ok(())
@@ -1019,6 +1035,7 @@ fn Result<(), str> work(i64 port) {
     let made = db.exec("CREATE TABLE t (id int PRIMARY KEY, name text)", [])?;
     // 値は SQL に埋め込まずに送るので、引用符などはそのまま値になる
     print(made, db.exec("INSERT INTO t VALUES ($1, $2), ($3, $4)", ["1", "a'; DROP TABLE t; --", "2", "b"])?);
+    print(db.exec_opt("INSERT INTO t VALUES ($1, $2)", [Some("3"), None])?);
     // エラーのあとも同じつながりを使える
     match db.exec("INSERT INTO t VALUES ($1, $2)", ["1", "dup"]) {
         case Ok(n) -> print("?", n);
@@ -1054,7 +1071,15 @@ fn main() {
     let us = ["t_trust", "t_md5", "t_scram", "t_scram", "t_plain", "nobody"];
     let ps = ["", "md5pw", "scrampw", "wrong", "plainpw", ""];
     for (i, u) in us {
-        match login(port, u, ps[i]) { case Ok(_) -> {} case Err(e) -> print(u, "Err", e); }
+        match login(cfg(port, u, ps[i])) { case Ok(_) -> {} case Err(e) -> print(u, "Err", e); }
+    }
+    // TLS（証明書は localhost のもの。IP で照らすと合わない）
+    let ts = ["localhost", "localhost", "127.0.0.1"];
+    let tu = ["t_plain", "t_scram", "t_scram"];
+    let tp = ["plainpw", "scrampw", "scrampw"];
+    for (i, h) in ts {
+        let c = pg.Config { host: h, port: port, user: tu[i], password: tp[i], database: "tdb", tls: true };
+        match login(c) { case Ok(_) -> {} case Err(e) -> print(tu[i], "Err", e); }
     }
     match work(port) { case Ok(_) -> print("ok"); case Err(e) -> print("Err", e); }
 }

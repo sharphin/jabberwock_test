@@ -43,6 +43,7 @@ const RES_DECLS = "declare i32 @jw_fs_open(ptr, i64, ptr, ptr)\n" +
     "declare i64 @jw_time_now_ns()\n" +
     "declare i64 @jw_time_unix_ms()\n" +
     "declare i32 @jw_tls_connect(ptr, i64, ptr, ptr)\n" +
+    "declare i32 @jw_tls_upgrade(ptr, ptr, ptr, ptr, ptr)\n" +
     "declare i32 @jw_tls_read(ptr, i64, ptr, ptr, ptr)\n" +
     "declare i32 @jw_tls_write(ptr, ptr, ptr, ptr)\n" +
     "declare i32 @jw_tls_write_text(ptr, ptr, ptr, ptr)\n" +
