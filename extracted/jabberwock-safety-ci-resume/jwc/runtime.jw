@@ -16,6 +16,10 @@ pub fn str source() {
 #if !defined(_WIN32) && !defined(_DEFAULT_SOURCE)
 #define _DEFAULT_SOURCE
 #endif
+// MSVC の C ライブラリが strcpy・getenv などに出す「安全でない」の警告を止める（使い方は確かめてある）
+#if defined(_WIN32) && !defined(_CRT_SECURE_NO_WARNINGS)
+#define _CRT_SECURE_NO_WARNINGS
+#endif
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -3792,9 +3796,17 @@ typedef struct {{
 typedef struct {{
     unsigned long size, error, info; // CERT_CHAIN_CONTEXT の頭（cbSize と TrustStatus）
 }} WChainCtx;
+// CERT_CHAIN_PARA は入れ子の形（CERT_USAGE_MATCH の中に CERT_ENHKEY_USAGE）。入れ子はそれぞれ 8 バイトにそろうので、
+// 平たく並べると位置がずれる（x64 で 32 バイト。ずれると Windows が用途の数と配列を読み違えて落ちる。wine は読まない）
 typedef struct {{
-    unsigned long size, usage_type, nusages;
-    char **usages;
+    unsigned long size;
+    struct {{
+        unsigned long type;
+        struct {{
+            unsigned long count;
+            char **ids;
+        }} usage;
+    }} requested;
 }} WChainPara;
 typedef struct {{
     unsigned long size, auth_type, checks;
@@ -3936,7 +3948,7 @@ static unsigned long tls_verify(WTls *t, wchar_t *target) {{
     WCertCtx *cert = NULL;
     if (g_tls.query(&t->ctx, 0x53 /* SECPKG_ATTR_REMOTE_CERT_CONTEXT */, &cert) != SEC_OK || !cert) return 0x800B010AUL; // CERT_E_CHAINING
     char *server_auth = "1.3.6.1.5.5.7.3.1"; // szOID_PKIX_KP_SERVER_AUTH
-    WChainPara cp = {{sizeof cp, 0 /* USAGE_MATCH_TYPE_AND */, 1, &server_auth}};
+    WChainPara cp = {{sizeof cp, {{0 /* USAGE_MATCH_TYPE_AND */, {{1, &server_auth}}}}}};
     WChainCtx *chain = NULL;
     unsigned long why = 0x800B010AUL;
     // 途中の証明書は、相手が送ってきたもの（cert->store）からも探す
