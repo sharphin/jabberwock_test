@@ -4,7 +4,8 @@
 //   let t = date.parse("2026-10-31T19:37:52+09:00")?;       // 時差は UTC に直す
 //   let next = date.from_unix_ms(t.unix_ms() + 86400000);   // 1 日（86400000 ミリ秒）あと
 //   print(next.weekday());                                  // 1（月）〜 7（日）
-// .jw だけで書いている。年は 0〜9999。うるう秒は扱わない（秒は 0〜59）。地域の時刻（タイムゾーンの決まり）はまだない。
+//   print(d.format_local()?);                               // "2026-10-31T19:37:52+09:00"（OS のタイムゾーンで）
+// .jw で書いている（地域の時刻のずれだけ OS に聞く）。年は 0〜9999。うるう秒は扱わない（秒は 0〜59）。タイムゾーンの名前（Asia/Tokyo など）からは引けない。
 
 use std.time;
 
@@ -43,6 +44,30 @@ pub struct DateTime {
 
     /// 日付だけ（"2026-10-31"）
     fn str format_date() { pad(year, 4) + "-" + two(month) + "-" + two(day) }
+
+    /// 時差 offset_ms（ミリ秒。東が正。日本なら 9 * 3600000）の地域で見た年月日と時刻。
+    /// 結果の year〜ms はその地域の時計の値（UTC ではない）なので、unix_ms() や format() には使わないこと。
+    /// offset_ms が分の倍数で -23:59〜+23:59 に入らないか、0〜9999 年を出るなら実行時エラー
+    fn DateTime wall(i64 offset_ms) {
+        assert(offset_ms % 60000 == 0 && offset_ms > -DAY_MS && offset_ms < DAY_MS);
+        from_unix_ms(unix_ms() + offset_ms)
+    }
+
+    /// 時差 offset_ms の地域で見た ISO 8601 の形（"2026-10-31T19:37:52+09:00"。ミリ秒が 0 でなければ ".123" を付ける）
+    fn str format_at(i64 offset_ms) {
+        let w = wall(offset_ms);
+        let mut s = w.format_date() + "T" + two(w.hour) + ":" + two(w.minute) + ":" + two(w.second);
+        if w.ms != 0 { s += "." + pad(w.ms, 3); }
+        let a = if offset_ms < 0 { -offset_ms } else { offset_ms };
+        let sign = if offset_ms < 0 { "-" } else { "+" };
+        s + sign + two(a / 3600000) + ":" + two(a / 60000 % 60)
+    }
+
+    /// OS に設定したタイムゾーン（地域の時刻）で見た形。その時点の時差を OS に聞く（夏時間も）。分からなければ Err
+    fn Result<str, str> format_local() {
+        let off = time.local_offset_ms(unix_ms())?;
+        Ok(format_at(off))
+    }
 }
 
 /// 1 日のミリ秒

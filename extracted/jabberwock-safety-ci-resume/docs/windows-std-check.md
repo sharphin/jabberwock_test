@@ -125,6 +125,17 @@ random 16 true
 - `Err` と出てすぐ終わったら、8080 番をほかのプログラムが使っている。その行を知らせてほしい。
 - Windows のファイアウォールの確かめが出たら、「キャンセル」でよい（127.0.0.1 だけで待ち受けるので、外からはつながらない）。
 
+**local_time**（地域の時刻）:
+
+```
+.\jwc.exe build -o local_time.exe samples\windows\local_time.jw
+.\local_time.exe
+```
+
+- 日本の設定なら、`地域` の行の終わりが `+09:00`、`時差  32400000`、`夏     2026-07-01T21:00:00+09:00`。
+- `1969` の行は Windows では `Err`（Windows の localtime が 1970 年より前に答えないため）でよい。
+- 環境変数 TZ を設定していると、そちらに従う（Windows の TZ は `JST-9` の形。`Asia/Tokyo` の形は正しく読まれない）。
+
 **pg_check**（std.pg。PostgreSQL のサーバーがあるときだけ）:
 
 ```

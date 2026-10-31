@@ -757,6 +757,7 @@ fn jwc_std_date_csv_regex() {
          Err 日時の形が読めません（2026-10-31T10:37:52Z のように書いてください）: 2026-10-31T10:00:00\n\
          Err UTC に直すと 0〜9999 年に入りません: 0000-01-01T00:00:00+01:00\n\
          9999-12-31T23:59:59.999Z 28 29\n\
+         2026-10-31T19:37:52.500+09:00 2026-10-31T05:07:52.500-05:30 2026-10-31T10:37:52.500+00:00 31 19\n\
          [[name, age], [山田, 太郎, 30], [a\"b\nc, ]] true\n\
          Err CSV の 1 行目: 囲んでいない値の中に `\"` があります（`\"` で囲んで `\"\"` と書いてください）\n\
          Err CSV の 2 行目の `\"` が閉じていません\n\
@@ -784,6 +785,9 @@ fn Result<(), str> run() {
         }
     }
     print(date.from_unix_ms(253402300799999).format(), date.days_in_month(1900, 2), date.days_in_month(2000, 2));
+    let t = date.parse("2026-10-31T10:37:52.5Z")?;
+    let wl = t.wall(32400000);
+    print(t.format_at(32400000), t.format_at(-19800000), t.format_at(0), wl.day, wl.hour);
 
     let rows = csv.parse("name,age\r\n\"山田, 太郎\",30\n\"a\"\"b\nc\",")?;
     let again = csv.parse(csv.format(ref rows))?;

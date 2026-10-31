@@ -1,0 +1,25 @@
+// Windows の実機で地域の時刻（OS のタイムゾーン）を確かめるサンプル。
+// 日本の設定なら、2 行目は +09:00、3 行目は 32400000、4 行目は 2026-07-01T21:00:00+09:00 になる。
+use std.date;
+use std.time;
+
+fn Result<(), str> run() {
+    let now = date.now();
+    print("UTC   ", now.format());
+    print("地域  ", now.format_local()?);
+    print("時差  ", time.local_offset_ms(now.unix_ms())?);
+    let summer = date.parse("2026-07-01T12:00:00Z")?;
+    print("夏    ", summer.format_local()?);
+    match time.local_offset_ms(-1000) {
+        case Ok(off) -> print("1969  ", off);
+        case Err(e) -> print("1969   Err", e);
+    }
+    Ok(())
+}
+
+fn main() {
+    match run() {
+        case Ok(_) -> print("おわり");
+        case Err(e) -> print("Err", e);
+    }
+}

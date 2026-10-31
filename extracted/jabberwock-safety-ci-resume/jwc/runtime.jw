@@ -3090,6 +3090,38 @@ int64_t jw_time_unix_ms(void) {{
 #endif
 }}
 
+#include <time.h>
+
+// 地域の時刻（OS に設定したタイムゾーン）が、ms の時点で UTC からどれだけずれているか（ミリ秒。東が正）。
+// OS の localtime で年月日と時刻を出し、UTC として数え直した差を返す（夏時間もその時点のもの）。分からなければ 0 を返して Err
+int32_t jw_time_local_offset(int64_t ms, int64_t *out, WStr **err) {{
+    int64_t s = ms / 1000;
+    if (ms % 1000 < 0) s -= 1;
+    struct tm tm;
+#ifdef _WIN32
+    __time64_t t = (__time64_t)s;
+    int ok = _localtime64_s(&tm, &t) == 0;
+#else
+    time_t t = (time_t)s;
+    int ok = (int64_t)t == s && localtime_r(&t, &tm) != NULL;
+#endif
+    if (!ok) {{
+        *err = err_text("この時点の地域の時刻が分かりません（OS が答えません）");
+        return 0;
+    }}
+    // days_from_civil（std/date.jw と同じ数え方）
+    int64_t y = (int64_t)tm.tm_year + 1900, m = (int64_t)tm.tm_mon + 1, d = tm.tm_mday;
+    if (m <= 2) y -= 1;
+    int64_t era = (y >= 0 ? y : y - 399) / 400;
+    int64_t yoe = y - era * 400;
+    int64_t doy = (153 * (m > 2 ? m - 3 : m + 9) + 2) / 5 + d - 1;
+    int64_t doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    int64_t days = era * 146097 + doe - 719468;
+    int64_t local = ((days * 24 + tm.tm_hour) * 60 + tm.tm_min) * 60 + tm.tm_sec;
+    *out = (local - s) * 1000;
+    return 1;
+}}
+
 void jw_time_sleep_ms(int64_t ms, const WSite *at) {{
     if (ms < 0) {{
         begin_error("待つ時間が負です");

@@ -91,7 +91,7 @@ fn main() {
 | `std.text` | `pad_left(s, width, fill)`・`pad_right(s, width, fill)`（fill は 1 文字）・`reverse(s)`・`count(s, sub)`（重ならずに数える。sub が空なら実行時エラー）・`is_digits(s)`（空でなく全部 0〜9）・`from_utf8(ref bytes)`（`Option<str>`。正しい UTF-8 でなければ None） |
 | `std.fs` | `open(path)`・`create(path)`・`append(path)`・`close(f)` と資源の型 `File`、`exists(path)`・`list_dir(path)`・`make_dir(path)`・`remove(path)`・`rename(from, to)`・`write_atomic(path, bytes)`・`write_text_atomic(path, s)`・`stat(path)` と `Info`・`is_file(path)`・`is_dir(path)`・`copy(from, to)`・`remove_all(path)`（[1.3](#13-資源と-stdfsjwc-だけ)） |
 | `std.env` | `get(name)`（`Option<str>`）（[1.6](#16-stdenvstdtimestdjsonjwc-だけ)） |
-| `std.time` | `now()`・`sleep(ms)`・`unix_ms()` と `Instant`（[1.6](#16-stdenvstdtimestdjsonjwc-だけ)） |
+| `std.time` | `now()`・`sleep(ms)`・`unix_ms()`・`local_offset_ms(t)` と `Instant`（[1.6](#16-stdenvstdtimestdjsonjwc-だけ)） |
 | `std.json` | `parse(s)`・`stringify(ref v)`・`quote(s)` と `Json`（[1.6](#16-stdenvstdtimestdjsonjwc-だけ)） |
 | `std.http` | `get(url)`・`post(url, content_type, body)` と `Response`、サーバーの `listen(host, port)`・`stop(srv)` と `Server`・`Request`（[1.5](#15-stdhttpjwc-だけ)） |
 | `std.url` | `parse(s)`・`encode(s)`・`decode(s, plus)` と `Url`（[1.7](#17-stdurljwc-だけ)） |
@@ -229,7 +229,8 @@ print(v.get("a").at(1).as_str(), json.stringify(ref v));   // Some(x) {"a":[1,"x
 - `env.get(name)`: 環境変数（名前が空・`=` や NUL を含む・値が UTF-8 でないなら None）。設定する関数はまだない。
 - `time.now()`: 単調な時計の読み（`Instant { ns }`）。壁時計の修正に影響されず、差だけに意味がある。`t.elapsed_ns()`・`t.elapsed_ms()`。
   `time.sleep(ms)`（負なら実行時エラー。待つ前に print の出力を書き出す）。
-- `time.unix_ms()`: 壁時計（1970-01-01 UTC からのミリ秒）。時刻の修正で戻ることがあるので、かかった時間は now で測る。暦（年月日）への直しはまだない。
+- `time.unix_ms()`: 壁時計（1970-01-01 UTC からのミリ秒）。時刻の修正で戻ることがあるので、かかった時間は now で測る。暦（年月日）への直しは std.date（1.13）。
+- `time.local_offset_ms(t)`（`Result<i64, str>`）: OS に設定したタイムゾーンが、t（unix_ms と同じミリ秒）の時点で UTC からどれだけずれているか（ミリ秒。東が正。夏時間もその時点のもの）。OS の localtime（Windows は _localtime64_s）で求め、答えがなければ Err（Windows は 1970 年より前に答えないので Err。環境変数 TZ を設定していればそれに従う）。
 - `Json` は enum: `Null`・`Bool(b)`・`Num(n)`（いつも f64）・`Str(s)`・`Arr(own Json[] items)`・`Obj(own Json[str] fields)`（キーは書いた順。同じキーは後ろの値）。
   メソッド: `get(key)`・`at(i)`（写しを返す。なければ Null）・`len()`・`keys()`・`is_null()`・`as_bool()`・`as_num()`・`as_str()`（`Option`）・`clone()`。
   中を借りて読むなら `match ref v { case Obj(fields) -> ... }`。
@@ -391,9 +392,12 @@ let re = regex.compile("(\\d+)-(\\d+)")?;
 print(re.replace_all("1-2 3-4", "$2-$1"));            // 2-1 4-3
 ```
 
-- `std.date`（.jw だけ）: いつも UTC で、グレゴリオ暦を過去にも延ばす。年は 0〜9999。うるう秒・地域の時刻（タイムゾーンの決まり）は扱わない。
+- `std.date`（.jw だけ。地域の時刻のずれだけ std.time で OS に聞く）: DateTime はいつも UTC で、グレゴリオ暦を過去にも延ばす。年は 0〜9999。うるう秒は扱わない。タイムゾーンの名前（Asia/Tokyo など）からは引けない。
   - `DateTime`: `year`・`month`（1〜12）・`day`・`hour`・`minute`・`second`（0〜59）・`ms`（0〜999）。メソッドは `unix_ms()`（1970-01-01T00:00:00Z からのミリ秒。前なら負）・
-    `weekday()`（ISO 8601 の 1＝月〜7＝日）・`day_of_year()`（1 月 1 日が 1）・`format()`（`2026-10-31T10:37:52Z`。ミリ秒が 0 でなければ `.123` を付ける）・`format_date()`（`2026-10-31`）。
+    `weekday()`（ISO 8601 の 1＝月〜7＝日）・`day_of_year()`（1 月 1 日が 1）・`format()`（`2026-10-31T10:37:52Z`。ミリ秒が 0 でなければ `.123` を付ける）・`format_date()`（`2026-10-31`）・
+    `format_at(offset_ms)`（時差 offset_ms の地域で見た形。`2026-10-31T19:37:52+09:00`。0 なら `+00:00`）・`format_local()`（`Result<str, str>`。OS のタイムゾーンで format_at）・
+    `wall(offset_ms)`（その地域の時計の年月日と時刻を入れた DateTime。UTC ではないので unix_ms や format には使わない）。
+    offset_ms は分の倍数で -23:59〜+23:59、結果が 0〜9999 年に入ること（でなければ実行時エラー）。
   - `now()`（今の UTC）・`from_unix_ms(t)`（0〜9999 年に入らなければ実行時エラー）・`make(year, month, day, hour, minute, second, ms)`（`Result`。ない日付・範囲の外なら Err）・
     `is_leap(year)`・`days_in_month(year, month)`（month が 1〜12 でなければ実行時エラー）。
   - `parse(s)`（`Result<DateTime, str>`）: `2026-10-31`（0 時 UTC）か `2026-10-31T10:37:52`＋秒の小数（1〜9 桁。ミリ秒より細かい分は切り捨て）＋`Z` か `±HH:MM`。
