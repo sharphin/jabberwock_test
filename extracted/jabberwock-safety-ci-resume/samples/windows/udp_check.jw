@@ -1,0 +1,36 @@
+// std.net の UDP を試す（127.0.0.1 の中だけで送り・受け取りする）。想定の出力は docs/windows-std-check.md
+use std.net;
+
+fn main() {
+    let mut a = match net.bind_udp("127.0.0.1", 0) { case Ok(s) -> s; case Err(e) -> { print("bind a: {e}"); return; } };
+    let mut b = match net.bind_udp("127.0.0.1", 0) { case Ok(s) -> s; case Err(e) -> { print("bind b: {e}"); return; } };
+    let pa = a.port();
+    let pb = b.port();
+    print("ports ok: {pa > 0 && pb > 0 && pa != pb}");
+    match a.send_to("hello udp".bytes(), "127.0.0.1", pb) { case Ok(_) -> {} case Err(e) -> print("send: {e}"); }
+    match net.recv_from(ref mut b, 2048) {
+        case Ok(d) -> {
+            let mut t = "";
+            for x in d.data { t += chr(x as i64); }
+            print("got '{t}' from {d.host} same port: {d.port == pa}");
+        }
+        case Err(e) -> print("recv: {e}");
+    }
+    // 長いまとまりは切れる
+    let u8[] mut big = [];
+    for i in range(0, 100) { big.push((i % 256) as u8); }
+    match a.send_to(big, "localhost", pb) { case Ok(_) -> {} case Err(e) -> print("send big: {e}"); }
+    match net.recv_from(ref mut b, 10) {
+        case Ok(d) -> print("cut len {d.data.len()} last {d.data[9]}");
+        case Err(e) -> print("recv cut: {e}");
+    }
+    // 空のまとまり
+    match a.send_to([], "127.0.0.1", pb) { case Ok(_) -> {} case Err(e) -> print("send empty: {e}"); }
+    match net.recv_from(ref mut b, 10) { case Ok(d) -> print("empty len {d.data.len()}"); case Err(e) -> print("recv empty: {e}"); }
+    // 時間切れ
+    match b.set_timeout(100) { case Ok(_) -> {} case Err(e) -> print("timeout: {e}"); }
+    match net.recv_from(ref mut b, 10) { case Ok(_) -> print("unexpected"); case Err(e) -> print("timeout err: {e}"); }
+    match a.send_to([1 as u8], "no.such.host.invalid", 9) { case Ok(_) -> print("unexpected ok"); case Err(e) -> print("bad host: {e}"); }
+    match net.bind_udp("127.0.0.1", pa) { case Ok(_) -> print("unexpected rebind"); case Err(e) -> print("rebind: {e}"); }
+    match net.unbind(a) { case Ok(_) -> print("unbound"); case Err(e) -> print("unbind: {e}"); }
+}

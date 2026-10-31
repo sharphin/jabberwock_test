@@ -820,3 +820,9 @@ let x = pick(true, 1, 2);
 - 地域の時刻（2026-10-31）: タイムゾーンの決まりの表は持たず、ある時点の時差だけを OS の localtime に聞く（time.local_offset_ms）。
   DateTime はいつも UTC のままにして、地域の時刻は format_at・format_local（書き出すとき）と wall（地域の時計の値を見るとき）だけで扱う。
   UTC と地域の値が同じ型に混ざるのを避けるため、地域の年月日から UTC に戻す関数（夏時間の切り替わりであいまいになる）はまだ作らない。
+- UDP（2026-10-31、オーナーの指示「足りないのを実装」）: std.net に資源の型 UdpSocket を足した（bind_udp・send_to・recv_from・set_timeout・port）。
+  受け取りは送り元も返すので、コンパイラの内部の操作 recv_raw が [名前の長さ・名前・番号・中身] をバイトで返し、std.net の recv_from が Datagram に組み立てる
+  （タプルがなく、資源のメソッドから構造体を直接返す仕組みもまだないため。recv_raw は std.net の中だけで使える）。
+  まとまりの大きさの上限は IPv4 の UDP の最大 65507 バイト。範囲の外は使う側の書き違いなので、Err ではなくプログラムを止める（read(n) の n が負のときと同じ）。
+  n より長いまとまりは、Linux と Windows で動きをそろえるため、n バイトまで受け取って残りを捨てる（Windows は WSAEMSGSIZE を受け取れたものとして扱う）。
+  接続型の UDP（connect してから send・recv）・マルチキャスト・ブロードキャストは、必要になるまで作らない。

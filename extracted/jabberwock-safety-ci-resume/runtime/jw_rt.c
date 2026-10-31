@@ -2502,6 +2502,7 @@ int32_t jw_run_command(WStr *cmd, WList *args, int64_t *code, WStr **err) {
 #define RES_LISTENER 3
 #define RES_BROWSER 4
 #define RES_TLS 5
+#define RES_UDP 6
 
 typedef struct WRes {
     uint64_t gen;
@@ -3172,6 +3173,9 @@ static struct {
     int(__stdcall *setsockopt)(WSock, int, int, const char *, int);
     int(__stdcall *getsockname)(WSock, void *, int *);
     int(__stdcall *last_error)(void);
+    int(__stdcall *sendto)(WSock, const char *, int, int, const void *, int);
+    int(__stdcall *recvfrom)(WSock, char *, int, int, void *, int *);
+    int(__stdcall *getnameinfo)(const void *, int, char *, unsigned long, char *, unsigned long, int);
 } g_ws;
 
 // 初めてなら ws2_32.dll を読み込んで WSAStartup する。使えれば 1
@@ -3196,11 +3200,14 @@ static int ws_ready(void) {
             WS_GET(setsockopt, "setsockopt");
             WS_GET(getsockname, "getsockname");
             WS_GET(last_error, "WSAGetLastError");
+            WS_GET(sendto, "sendto");
+            WS_GET(recvfrom, "recvfrom");
+            WS_GET(getnameinfo, "getnameinfo");
 #undef WS_GET
             char data[1024]; // WSADATA より大きい
             if (g_ws.startup && g_ws.getaddrinfo && g_ws.freeaddrinfo && g_ws.socket && g_ws.connect && g_ws.bind &&
                 g_ws.listen && g_ws.accept && g_ws.recv && g_ws.send && g_ws.closesocket && g_ws.setsockopt &&
-                g_ws.getsockname && g_ws.last_error && g_ws.startup(0x0202, data) == 0)
+                g_ws.getsockname && g_ws.last_error && g_ws.sendto && g_ws.recvfrom && g_ws.getnameinfo && g_ws.startup(0x0202, data) == 0)
                 g_ws.ready = 1;
         }
     }
@@ -3363,6 +3370,152 @@ int64_t jw_listener_port(void *h, const WSite *at) {
     unsigned short fam = (unsigned short)(ss[0] | ss[1] << 8);
     if (fam != 2 && fam != 23) return -1;
     return (int64_t)(ss[2] << 8 | ss[3]);
+}
+
+// ---- UDP（std.net の UdpSocket）。1 回の送り・受け取りが 1 つのまとまり（データグラム）
+
+// 受け取ったまとまりを、std.net が読む形にする: [名前の長さ(2)][名前（数字の形）][番号(2)][中身]
+static void udp_pack(WList *out, const char *name, int port, const char *data, int64_t n) {
+    int64_t hl = (int64_t)strlen(name);
+    jw_list_reserve(out, 1, 4 + hl + n);
+    char *p = out->data;
+    p[0] = (char)(hl >> 8);
+    p[1] = (char)(hl & 255);
+    memcpy(p + 2, name, (size_t)hl);
+    p[2 + hl] = (char)((port >> 8) & 255);
+    p[3 + hl] = (char)(port & 255);
+    if (n > 0) memcpy(p + 4 + hl, data, (size_t)n);
+    out->len = 4 + hl + n;
+}
+
+static void udp_check_size(int64_t n, const char *what, const WSite *at) {
+    if (n < 0 || n > 65507) {
+        begin_error("UDP のまとまりの大きさが範囲の外です");
+        finish_error(at, what, NULL);
+    }
+}
+
+// host の port で UDP を受ける（port が 0 なら OS が選ぶ）
+int32_t jw_udp_bind(WStr *host, int64_t port, void **out, WStr **err) {
+    WSock fd = WSOCK_BAD;
+    if (!res_fail("listen") && port >= 0 && port <= 65535 && !memchr(host->data, 0, (size_t)host->len) && ws_ready()) {
+        char *hc = c_str(host);
+        char ps[16];
+        snprintf(ps, sizeof ps, "%d", (int)port);
+        struct w_addrinfo hints, *res = NULL;
+        memset(&hints, 0, sizeof hints);
+        hints.ai_socktype = 2; // SOCK_DGRAM
+        hints.ai_flags = 1;    // AI_PASSIVE
+        if (g_ws.getaddrinfo(hc, ps, &hints, &res) == 0) {
+            for (struct w_addrinfo *a = res; a && fd == WSOCK_BAD; a = a->ai_next) {
+                fd = g_ws.socket(a->ai_family, a->ai_socktype, a->ai_protocol);
+                if (fd == WSOCK_BAD) continue;
+                int one = 1;
+                g_ws.setsockopt(fd, 0xffff, ~4, (const char *)&one, sizeof one); // SO_EXCLUSIVEADDRUSE
+                if (g_ws.bind(fd, a->ai_addr, (int)a->ai_addrlen) != 0) {
+                    g_ws.closesocket(fd);
+                    fd = WSOCK_BAD;
+                }
+            }
+            g_ws.freeaddrinfo(res);
+        }
+        free(hc);
+    }
+    if (fd == WSOCK_BAD) {
+        *err = message("UDP で待ち受けられません: ", host);
+        return 0;
+    }
+    uint64_t tok = res_new(RES_UDP, NULL, (int64_t)fd);
+    if (!tok) {
+        g_ws.closesocket(fd);
+        *err = message("開いている資源が多すぎます: ", host);
+        return 0;
+    }
+    *out = (void *)(uintptr_t)tok;
+    return 1;
+}
+
+// host の port へ 1 つのまとまりを送る（ソケットと同じ種類のアドレス IPv4・IPv6 に解決する）
+static int32_t udp_send_to(void *h, WList *data, WStr *host, int64_t port, WStr **err, const WSite *at) {
+    WRes *r = res_get((uint64_t)(uintptr_t)h, RES_UDP, at);
+    udp_check_size(data->len, "send_to のデータは 65507 バイトまで", at);
+    if (port < 1 || port > 65535 || memchr(host->data, 0, (size_t)host->len)) {
+        *err = message("送り先が正しくありません: ", host);
+        return 0;
+    }
+    unsigned char me[128];
+    int ml = sizeof me;
+    if (g_ws.getsockname((WSock)r->fd, me, &ml) != 0 || ml < 2) {
+        *err = err_text("UDP のソケットが使えません");
+        return 0;
+    }
+    char *hc = c_str(host);
+    char ps[16];
+    snprintf(ps, sizeof ps, "%d", (int)port);
+    struct w_addrinfo hints, *res = NULL;
+    memset(&hints, 0, sizeof hints);
+    hints.ai_family = me[0] | me[1] << 8;
+    hints.ai_socktype = 2;
+    if (g_ws.getaddrinfo(hc, ps, &hints, &res) == 0) {
+        int ok = res && g_ws.sendto((WSock)r->fd, data->data, (int)data->len, 0, res->ai_addr, (int)res->ai_addrlen) == (int)data->len;
+        g_ws.freeaddrinfo(res);
+        free(hc);
+        if (!ok) {
+            *err = sock_error("UDP で送れません");
+            return 0;
+        }
+        return 1;
+    }
+    free(hc);
+    *err = message("送り先の名前が分かりません: ", host);
+    return 0;
+}
+
+// 1 つのまとまりを受け取る（n バイトより長い分は捨てる）。送り元と中身を udp_pack の形で
+int32_t jw_udp_recv_raw(void *h, int64_t n, WList *out, WStr **err, const WSite *at) {
+    WRes *r = res_get((uint64_t)(uintptr_t)h, RES_UDP, at);
+    udp_check_size(n, "recv_from(n) の n は 0〜65507", at);
+    char *buf = jw_checked_malloc((size_t)(n > 0 ? n : 1));
+    unsigned char from[128];
+    int fl = sizeof from;
+    int got = res_fail("read") ? -1 : g_ws.recvfrom((WSock)r->fd, buf, (int)n, 0, from, &fl);
+    // WSAEMSGSIZE（10040）: n より長いまとまり。n バイトまでは受け取れている
+    if (got < 0 && g_ws.last_error() == 10040) got = (int)n;
+    if (got < 0) {
+        free(buf);
+        *err = sock_error("UDP で受け取れません");
+        return 0;
+    }
+    char name[64], serv[16];
+    if (g_ws.getnameinfo(from, fl, name, sizeof name, serv, sizeof serv, 2 | 8) != 0) { // NI_NUMERICHOST・NI_NUMERICSERV
+        name[0] = 0;
+        serv[0] = '0';
+        serv[1] = 0;
+    }
+    udp_pack(out, name, atoi(serv), buf, got);
+    free(buf);
+    return 1;
+}
+
+int64_t jw_udp_port(void *h, const WSite *at) {
+    WRes *r = res_get((uint64_t)(uintptr_t)h, RES_UDP, at);
+    unsigned char ss[128];
+    int n = sizeof ss;
+    if (g_ws.getsockname((WSock)r->fd, ss, &n) != 0 || n < 4) return -1;
+    unsigned short fam = (unsigned short)(ss[0] | ss[1] << 8);
+    if (fam != 2 && fam != 23) return -1;
+    return (int64_t)(ss[2] << 8 | ss[3]);
+}
+
+int32_t jw_udp_set_timeout(void *h, int64_t ms, WStr **err, const WSite *at) {
+    return sock_timeout(res_get((uint64_t)(uintptr_t)h, RES_UDP, at), ms, err, at);
+}
+
+// 送るリストはムーブされてきたので、ここで解放する
+int32_t jw_udp_send_to(void *h, WList *data, WStr *host, int64_t port, WStr **err, const WSite *at) {
+    int32_t ok = udp_send_to(h, data, host, port, err, at);
+    jw_list_free(data, 1, NULL);
+    return ok;
 }
 #else
 #include <errno.h>
@@ -3548,6 +3701,154 @@ int64_t jw_listener_port(void *h, const WSite *at) {
     if (ss.ss_family == AF_INET6) return ntohs(((struct sockaddr_in6 *)&ss)->sin6_port);
     return -1;
 }
+
+// ---- UDP（std.net の UdpSocket）。1 回の送り・受け取りが 1 つのまとまり（データグラム）
+
+// 受け取ったまとまりを、std.net が読む形にする: [名前の長さ(2)][名前（数字の形）][番号(2)][中身]
+static void udp_pack(WList *out, const char *name, int port, const char *data, int64_t n) {
+    int64_t hl = (int64_t)strlen(name);
+    jw_list_reserve(out, 1, 4 + hl + n);
+    char *p = out->data;
+    p[0] = (char)(hl >> 8);
+    p[1] = (char)(hl & 255);
+    memcpy(p + 2, name, (size_t)hl);
+    p[2 + hl] = (char)((port >> 8) & 255);
+    p[3 + hl] = (char)(port & 255);
+    if (n > 0) memcpy(p + 4 + hl, data, (size_t)n);
+    out->len = 4 + hl + n;
+}
+
+static void udp_check_size(int64_t n, const char *what, const WSite *at) {
+    if (n < 0 || n > 65507) {
+        begin_error("UDP のまとまりの大きさが範囲の外です");
+        finish_error(at, what, NULL);
+    }
+}
+
+// host の port で UDP を受ける（port が 0 なら OS が選ぶ）
+int32_t jw_udp_bind(WStr *host, int64_t port, void **out, WStr **err) {
+    int fd = -1;
+    if (!res_fail("listen") && port >= 0 && port <= 65535 && !memchr(host->data, 0, (size_t)host->len)) {
+        char *hc = c_str(host);
+        char ps[16];
+        snprintf(ps, sizeof ps, "%d", (int)port);
+        struct addrinfo hints, *res = NULL;
+        memset(&hints, 0, sizeof hints);
+        hints.ai_family = AF_UNSPEC;
+        hints.ai_socktype = SOCK_DGRAM;
+        hints.ai_flags = AI_PASSIVE;
+        if (getaddrinfo(hc, ps, &hints, &res) == 0) {
+            for (struct addrinfo *a = res; a && fd < 0; a = a->ai_next) {
+                fd = socket(a->ai_family, a->ai_socktype, a->ai_protocol);
+                if (fd >= 0 && bind(fd, a->ai_addr, a->ai_addrlen) != 0) {
+                    close(fd);
+                    fd = -1;
+                }
+            }
+            freeaddrinfo(res);
+        }
+        free(hc);
+    }
+    if (fd < 0) {
+        *err = message("UDP で待ち受けられません: ", host);
+        return 0;
+    }
+    uint64_t tok = res_new(RES_UDP, NULL, fd);
+    if (!tok) {
+        close(fd);
+        *err = message("開いている資源が多すぎます: ", host);
+        return 0;
+    }
+    *out = (void *)(uintptr_t)tok;
+    return 1;
+}
+
+// host の port へ 1 つのまとまりを送る（ソケットと同じ種類のアドレス IPv4・IPv6 に解決する）
+static int32_t udp_send_to(void *h, WList *data, WStr *host, int64_t port, WStr **err, const WSite *at) {
+    WRes *r = res_get((uint64_t)(uintptr_t)h, RES_UDP, at);
+    udp_check_size(data->len, "send_to のデータは 65507 バイトまで", at);
+    if (port < 1 || port > 65535 || memchr(host->data, 0, (size_t)host->len)) {
+        *err = message("送り先が正しくありません: ", host);
+        return 0;
+    }
+    struct sockaddr_storage me;
+    socklen_t ml = sizeof me;
+    if (getsockname((int)r->fd, (struct sockaddr *)&me, &ml) != 0) {
+        *err = err_text("UDP のソケットが使えません");
+        return 0;
+    }
+    char *hc = c_str(host);
+    char ps[16];
+    snprintf(ps, sizeof ps, "%d", (int)port);
+    struct addrinfo hints, *res = NULL;
+    memset(&hints, 0, sizeof hints);
+    hints.ai_family = me.ss_family;
+    hints.ai_socktype = SOCK_DGRAM;
+    int ok = 0;
+    if (getaddrinfo(hc, ps, &hints, &res) == 0) {
+        if (res) ok = sendto((int)r->fd, data->data, (size_t)data->len, MSG_NOSIGNAL, res->ai_addr, res->ai_addrlen) == (ssize_t)data->len;
+        freeaddrinfo(res);
+        free(hc);
+        if (!ok) {
+            *err = sock_error("UDP で送れません");
+            return 0;
+        }
+        return 1;
+    }
+    free(hc);
+    *err = message("送り先の名前が分かりません: ", host);
+    return 0;
+}
+
+// 1 つのまとまりを受け取る（n バイトより長い分は捨てる）。送り元と中身を udp_pack の形で
+int32_t jw_udp_recv_raw(void *h, int64_t n, WList *out, WStr **err, const WSite *at) {
+    WRes *r = res_get((uint64_t)(uintptr_t)h, RES_UDP, at);
+    udp_check_size(n, "recv_from(n) の n は 0〜65507", at);
+    char *buf = jw_checked_malloc((size_t)(n > 0 ? n : 1));
+    struct sockaddr_storage from;
+    socklen_t fl;
+    ssize_t got;
+    do {
+        fl = sizeof from;
+        got = res_fail("read") ? -1 : recvfrom((int)r->fd, buf, (size_t)n, 0, (struct sockaddr *)&from, &fl);
+    } while (got < 0 && errno == EINTR && !res_fail("read"));
+    if (got < 0) {
+        free(buf);
+        *err = sock_error("UDP で受け取れません");
+        return 0;
+    }
+    char name[64], serv[16];
+    if (getnameinfo((struct sockaddr *)&from, fl, name, sizeof name, serv, sizeof serv, NI_NUMERICHOST | NI_NUMERICSERV) != 0) {
+        name[0] = 0;
+        serv[0] = '0';
+        serv[1] = 0;
+    }
+    udp_pack(out, name, atoi(serv), buf, got);
+    free(buf);
+    return 1;
+}
+
+int64_t jw_udp_port(void *h, const WSite *at) {
+    WRes *r = res_get((uint64_t)(uintptr_t)h, RES_UDP, at);
+    struct sockaddr_storage ss;
+    socklen_t n = sizeof ss;
+    if (getsockname((int)r->fd, (struct sockaddr *)&ss, &n) != 0) return -1;
+    if (ss.ss_family == AF_INET) return ntohs(((struct sockaddr_in *)&ss)->sin_port);
+    if (ss.ss_family == AF_INET6) return ntohs(((struct sockaddr_in6 *)&ss)->sin6_port);
+    return -1;
+}
+
+int32_t jw_udp_set_timeout(void *h, int64_t ms, WStr **err, const WSite *at) {
+    return sock_timeout(res_get((uint64_t)(uintptr_t)h, RES_UDP, at), ms, err, at);
+}
+
+// 送るリストはムーブされてきたので、ここで解放する
+int32_t jw_udp_send_to(void *h, WList *data, WStr *host, int64_t port, WStr **err, const WSite *at) {
+    int32_t ok = udp_send_to(h, data, host, port, err, at);
+    jw_list_free(data, 1, NULL);
+    return ok;
+}
+
 #endif
 
 // ---------------------------------------------------------------- TLS のクライアント（std.tls）

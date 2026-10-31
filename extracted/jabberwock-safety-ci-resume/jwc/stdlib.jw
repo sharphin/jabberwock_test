@@ -2271,9 +2271,23 @@ pub fn f64 round(f64 x) {{
 //   net.close(c)?;
 // TcpStream のメソッド: `read(n)`・`write(bytes)`・`write_text(s)`・`set_timeout(ms)`（受け取り・送りの待ち時間。0 なら待ち続ける。
 // 時間切れは Err("時間切れです")）。TcpListener のメソッド: `accept()`・`port()`。
+//
+// UDP は UdpSocket（資源）。1 回の send_to・recv_from が 1 つのまとまり（データグラム。届く・順番は保証されない）。
+//   let mut u = net.bind_udp("127.0.0.1", 0)?;       // port が 0 なら OS が選ぶ。番号は `u.port()`
+//   u.send_to("ping".bytes(), "127.0.0.1", 9000)?;    // 1 回で 65507 バイトまで
+//   let d = net.recv_from(ref mut u, 2048)?;                 // d.data・d.host（数字の形）・d.port。n より長い分は捨てる
+// UdpSocket のメソッド: `send_to(bytes, host, port)`・`set_timeout(ms)`・`port()`。
 
 pub resource TcpStream;
 pub resource TcpListener;
+pub resource UdpSocket;
+
+/// 受け取った 1 つのまとまりと、その送り元
+pub struct Datagram {{
+    u8[] data;
+    str host;
+    i64 port;
+}}
 
 /// host（名前か番号）の port につなぐ
 pub fn Result<TcpStream, str> connect(str host, i64 port) {{ __net_connect(host, port) }}
@@ -2286,6 +2300,25 @@ pub fn Result<(), str> close(TcpStream s) {{ __res_close(s) }}
 
 /// 待ち受けをやめる
 pub fn Result<(), str> stop(TcpListener l) {{ __res_close(l) }}
+
+/// host の port で UDP を受ける（host が "0.0.0.0" ならどこからでも。port が 0 なら OS が選ぶ）
+pub fn Result<UdpSocket, str> bind_udp(str host, i64 port) {{ __net_udp_bind(host, port) }}
+
+/// 1 つのまとまりを受け取るまで待つ（set_timeout で時間を決められる）。n バイトより長い分は捨てる
+pub fn Result<Datagram, str> recv_from(ref mut UdpSocket s, i64 n) {{
+    let raw = s.recv_raw(n)?;
+    // 形: [名前の長さ(2)][名前（数字の形なので ASCII）][番号(2)][中身]
+    let hl = (raw[0] as i64) * 256 + (raw[1] as i64);
+    let mut host = "";
+    for i in range(2, 2 + hl) {{ host += chr(raw[i] as i64); }}
+    let port = (raw[2 + hl] as i64) * 256 + (raw[3 + hl] as i64);
+    let u8[] mut data = [];
+    for i in range(4 + hl, raw.len()) {{ data.push(raw[i]); }}
+    Ok(Datagram {{ data: data, host: host, port: port }})
+}}
+
+/// UDP をやめる
+pub fn Result<(), str> unbind(UdpSocket s) {{ __res_close(s) }}
 """);
     }
     if name == "pg" {

@@ -136,6 +136,17 @@ random 16 true
 - `1969` の行は Windows では `Err`（Windows の localtime が 1970 年より前に答えないため）でよい。
 - 環境変数 TZ を設定していると、そちらに従う（Windows の TZ は `JST-9` の形。`Asia/Tokyo` の形は正しく読まれない）。
 
+**udp_check**（std.net の UDP）:
+
+```
+.\jwc.exe build -o udp_check.exe samples\windows\udp_check.jw
+.\udp_check.exe
+```
+
+- 想定どおりなら 8 行で、`ports ok: true`・`got 'hello udp' from 127.0.0.1 same port: true`・`cut len 10 last 9`・`empty len 0`・
+  `timeout err: 時間切れです`・`bad host: 送り先の名前が分かりません: no.such.host.invalid`・`rebind: UDP で待ち受けられません: 127.0.0.1`・`unbound`。
+- 127.0.0.1 だけを使うので、ファイアウォールの確かめが出たら「キャンセル」でよい。
+
 **pg_check**（std.pg。PostgreSQL のサーバーがあるときだけ）:
 
 ```

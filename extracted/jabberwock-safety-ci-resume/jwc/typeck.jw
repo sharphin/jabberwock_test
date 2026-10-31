@@ -43,11 +43,11 @@ fn bool is_builtin(str n) {
     n == "print" || n == "eprint" || n == "drop" || n == "assert" || n == "read_line" || n == "args" || n == "spawn"
         || n == "chan" || n == "exit" || n == "read_file" || n == "write_file" || n == "run_command" || n == "chr"
         || n == "__fs_open" || n == "__res_close" || n == "__fs_exists" || n == "__fs_list" || n == "__fs_make_dir" || n == "__fs_remove" || n == "__fs_rename" || n == "__fs_stat"
-        || n == "__net_connect" || n == "__net_listen" || n == "__env_get" || n == "__time_now_ns" || n == "__time_unix_ms" || n == "__time_sleep_ms" || n == "__time_local_offset" || n == "__browser_open" || n == "__tls_connect" || n == "__tls_upgrade" || n == "__random_bytes"
+        || n == "__net_connect" || n == "__net_listen" || n == "__net_udp_bind" || n == "__env_get" || n == "__time_now_ns" || n == "__time_unix_ms" || n == "__time_sleep_ms" || n == "__time_local_offset" || n == "__browser_open" || n == "__tls_connect" || n == "__tls_upgrade" || n == "__random_bytes"
 }
 
 /// コンパイラが知っている資源の型（`resource` で書けるのはこれだけ）
-fn bool known_resource(str n) { n == "std:fs.File" || n == "std:net.TcpStream" || n == "std:net.TcpListener" || n == "std:browser.Handle" || n == "std:tls.TlsStream" }
+fn bool known_resource(str n) { n == "std:fs.File" || n == "std:net.TcpStream" || n == "std:net.TcpListener" || n == "std:net.UdpSocket" || n == "std:browser.Handle" || n == "std:tls.TlsStream" }
 
 /// 最後の `.` の位置（なければ -1）
 fn i64 last_dot(str s) {
@@ -2584,6 +2584,31 @@ pub struct Checker {
             require_mut(recv, rt, span, "資源を `{name}` で使おうとした")?;
             return Ok(ty.Ty.Enum("Result", own [ty.Ty.Res("std:net.TcpStream"), ty.Ty.Str]));
         }
+        if n == "std:net.UdpSocket" {
+            // UDP。受け取りは std.net の recv_from（送り元つき）を通す。recv_raw はその内部の操作
+            if name == "port" {
+                if argv.len() > 0 { return Err(arity_error(name, 0, argv.len(), span)); }
+                return Ok(ty.i64t());
+            }
+            if name == "set_timeout" {
+                params.push(ty.i64t());
+            } else if name == "send_to" {
+                params.push(ty.Ty.List(own ty.Ty.Int("u8")));
+                params.push(ty.Ty.Str);
+                params.push(ty.i64t());
+            } else if name == "recv_raw" && cur_mod == "std:net" {
+                params.push(ty.i64t());
+                ret = ty.Ty.List(own ty.Ty.Int("u8"));
+            } else {
+                return Err(diag.make("`{ty.show(r)}` にメソッド `{name}` はありません")
+                    .at(span, "`send_to(bytes, host, port)`・`set_timeout(ms)`・`port()` です")
+                    .with_note("受け取るのは `net.recv_from(s, n)`"));
+            }
+            if argv.len() != params.len() { return Err(arity_error(name, params.len(), argv.len(), span)); }
+            require_mut(recv, rt, span, "資源を `{name}` で使おうとした")?;
+            for (i, a) in argv { expect(a, params[i])?; }
+            return Ok(ty.Ty.Enum("Result", own [ret, ty.Ty.Str]));
+        }
         let stream = n == "std:net.TcpStream" || n == "std:tls.TlsStream";
         if stream && name == "set_timeout" {
             params.push(ty.i64t());
@@ -2881,7 +2906,7 @@ pub struct Checker {
             expect(argv[4], ty.i64t())?;
             return Ok(ty.Ty.Enum("Result", own [ty.Ty.Res("std:browser.Handle"), ty.Ty.Str]));
         }
-        if name == "__res_close" || name == "__net_connect" || name == "__net_listen" || name == "__tls_connect" {
+        if name == "__res_close" || name == "__net_connect" || name == "__net_listen" || name == "__net_udp_bind" || name == "__tls_connect" {
             // 標準ライブラリの中だけで使う（資源を作る・閉じる内部の操作）
             let home = if name == "__res_close" { cur_mod.starts_with("std:") } else if name == "__tls_connect" { cur_mod == "std:tls" } else { cur_mod == "std:net" };
             if !home {
@@ -2896,7 +2921,7 @@ pub struct Checker {
             if argv.len() != 2 { return Err(arity_error(name, 2, argv.len(), span)); }
             expect(argv[0], ty.Ty.Str)?;
             expect(argv[1], ty.i64t())?;
-            let rn = if name == "__net_connect" { "std:net.TcpStream" } else if name == "__tls_connect" { "std:tls.TlsStream" } else { "std:net.TcpListener" };
+            let rn = if name == "__net_connect" { "std:net.TcpStream" } else if name == "__tls_connect" { "std:tls.TlsStream" } else if name == "__net_udp_bind" { "std:net.UdpSocket" } else { "std:net.TcpListener" };
             return Ok(ty.Ty.Enum("Result", own [ty.Ty.Res(rn), ty.Ty.Str]));
         }
         if name == "__tls_upgrade" {
@@ -3433,7 +3458,7 @@ pub fn Result<Checker, diag.Diag> check(ref ast.Program prog) {
     };
     for (i, r) in prog.resources {
         if !known_resource(r) {
-            return Err(diag.make("資源の型 `{r}` はコンパイラが知りません").at(prog.resource_spans[i], "使えるのは std.fs の File と std.net の TcpStream・TcpListener だけ"));
+            return Err(diag.make("資源の型 `{r}` はコンパイラが知りません").at(prog.resource_spans[i], "使えるのは std.fs の File、std.net の TcpStream・TcpListener・UdpSocket などだけ"));
         }
     }
     for s in prog.structs {

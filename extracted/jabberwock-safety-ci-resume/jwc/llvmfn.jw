@@ -1855,10 +1855,10 @@ struct FnGen {
             release(vals, all);
             return result_of(m, want, ok, err, "res", out);
         }
-        if name == "__net_connect" || name == "__net_listen" || name == "__tls_connect" {
+        if name == "__net_connect" || name == "__net_listen" || name == "__net_udp_bind" || name == "__tls_connect" {
             let out = b.alloca("ptr");
             let err = b.alloca("ptr");
-            let f = if name == "__net_connect" { "@jw_net_connect" } else if name == "__tls_connect" { "@jw_tls_connect" } else { "@jw_net_listen" };
+            let f = if name == "__net_connect" { "@jw_net_connect" } else if name == "__tls_connect" { "@jw_tls_connect" } else if name == "__net_udp_bind" { "@jw_udp_bind" } else { "@jw_net_listen" };
             let ok = b.val("call i32 " + f + "(ptr " + vals[0].v + ", i64 " + vals[1].v + ", ptr " + out + ", ptr " + err + ")");
             release(vals, all);
             return result_of(m, want, ok, err, "res", out);
@@ -1905,11 +1905,33 @@ struct FnGen {
             let f = if name == "browser.name" { "@jw_browser_name" } else { "@jw_browser_event_text" };
             return Ok(llvm.vt(b.val("call ptr " + f + "(ptr " + vals[0].v + ", ptr " + site + ")"), ty.Ty.Str));
         }
+        if name == "udp.port" {
+            let site = m.site(span, "");
+            return Ok(llvm.vt(b.val("call i64 @jw_udp_port(ptr " + vals[0].v + ", ptr " + site + ")"), ty.i64t()));
+        }
+        // 送るリストはムーブされてきたので、jw_udp_send_to が解放する
+        if name == "udp.send_to" {
+            let lst = b.alloca("%list");
+            b.op("store %list " + vals[1].v + ", ptr " + lst);
+            let err = b.alloca("ptr");
+            let site = m.site(span, "");
+            let ok = b.val("call i32 @jw_udp_send_to(ptr " + vals[0].v + ", ptr " + lst + ", ptr " + vals[2].v + ", i64 " + vals[3].v + ", ptr " + err + ", ptr " + site + ")");
+            release(vals, all);
+            return result_of(m, want, ok, err, "unit", "");
+        }
+        if name == "udp.recv_raw" {
+            let out = b.alloca("%list");
+            b.op("store %list zeroinitializer, ptr " + out);
+            let err = b.alloca("ptr");
+            let site = m.site(span, "");
+            let ok = b.val("call i32 @jw_udp_recv_raw(ptr " + vals[0].v + ", i64 " + vals[1].v + ", ptr " + out + ", ptr " + err + ", ptr " + site + ")");
+            return result_of(m, want, ok, err, "bytes", out);
+        }
         if name == "listener.port" {
             let site = m.site(span, "");
             return Ok(llvm.vt(b.val("call i64 @jw_listener_port(ptr " + vals[0].v + ", ptr " + site + ")"), ty.i64t()));
         }
-        if name == "tcp.set_timeout" || name == "tls.set_timeout" {
+        if name == "tcp.set_timeout" || name == "tls.set_timeout" || name == "udp.set_timeout" {
             let err = b.alloca("ptr");
             let site = m.site(span, "");
             let ok = b.val("call i32 @jw_" + name.slice(0, 3) + "_set_timeout(ptr " + vals[0].v + ", i64 " + vals[1].v + ", ptr " + err + ", ptr " + site + ")");

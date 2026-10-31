@@ -772,6 +772,69 @@ fn jwc_std_date_csv_regex() {
     );
 }
 
+// std.net の UDP: 送り元つきの受け取り・長いまとまりの切り捨て・空のまとまり・時間切れ・名前の誤り・同じ番号の取り直し
+#[test]
+fn jwc_std_udp() {
+    if !have_clang() { return; }
+    let dir = std::env::temp_dir().join(format!("jw-jwc-udp-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("main.jw");
+    std::fs::write(&path, UDP_SRC).unwrap();
+    let exe = dir.join("main");
+    let out = Command::new(jwc()).args(["build", "--clang", &native::clang(), "-o"]).arg(&exe).arg(&path).output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let got = Command::new(&exe).output().unwrap();
+    let _ = std::fs::remove_dir_all(dir);
+    assert_eq!(
+        String::from_utf8_lossy(&got.stdout),
+        "ports ok: true\n\
+         got 'hello udp' from 127.0.0.1 same port: true\n\
+         cut len 10 last 9\n\
+         empty len 0\n\
+         timeout err: 時間切れです\n\
+         bad host: 送り先の名前が分かりません: no.such.host.invalid\n\
+         rebind: UDP で待ち受けられません: 127.0.0.1\n\
+         unbound\n"
+    );
+}
+
+const UDP_SRC: &str = r#"use std.net;
+
+fn main() {
+    let mut a = match net.bind_udp("127.0.0.1", 0) { case Ok(s) -> s; case Err(e) -> { print("bind a: {e}"); return; } };
+    let mut b = match net.bind_udp("127.0.0.1", 0) { case Ok(s) -> s; case Err(e) -> { print("bind b: {e}"); return; } };
+    let pa = a.port();
+    let pb = b.port();
+    print("ports ok: {pa > 0 && pb > 0 && pa != pb}");
+    match a.send_to("hello udp".bytes(), "127.0.0.1", pb) { case Ok(_) -> {} case Err(e) -> print("send: {e}"); }
+    match net.recv_from(ref mut b, 2048) {
+        case Ok(d) -> {
+            let mut t = "";
+            for x in d.data { t += chr(x as i64); }
+            print("got '{t}' from {d.host} same port: {d.port == pa}");
+        }
+        case Err(e) -> print("recv: {e}");
+    }
+    // 長いまとまりは切れる
+    let u8[] mut big = [];
+    for i in range(0, 100) { big.push((i % 256) as u8); }
+    match a.send_to(big, "localhost", pb) { case Ok(_) -> {} case Err(e) -> print("send big: {e}"); }
+    match net.recv_from(ref mut b, 10) {
+        case Ok(d) -> print("cut len {d.data.len()} last {d.data[9]}");
+        case Err(e) -> print("recv cut: {e}");
+    }
+    // 空のまとまり
+    match a.send_to([], "127.0.0.1", pb) { case Ok(_) -> {} case Err(e) -> print("send empty: {e}"); }
+    match net.recv_from(ref mut b, 10) { case Ok(d) -> print("empty len {d.data.len()}"); case Err(e) -> print("recv empty: {e}"); }
+    // 時間切れ
+    match b.set_timeout(100) { case Ok(_) -> {} case Err(e) -> print("timeout: {e}"); }
+    match net.recv_from(ref mut b, 10) { case Ok(_) -> print("unexpected"); case Err(e) -> print("timeout err: {e}"); }
+    match a.send_to([1 as u8], "no.such.host.invalid", 9) { case Ok(_) -> print("unexpected ok"); case Err(e) -> print("bad host: {e}"); }
+    match net.bind_udp("127.0.0.1", pa) { case Ok(_) -> print("unexpected rebind"); case Err(e) -> print("rebind: {e}"); }
+    match net.unbind(a) { case Ok(_) -> print("unbound"); case Err(e) -> print("unbind: {e}"); }
+}
+"#;
+
 const DCR_SRC: &str = r#"use std.date;
 use std.csv;
 use std.regex;

@@ -96,7 +96,7 @@ fn main() {
 | `std.http` | `get(url)`・`post(url, content_type, body)` と `Response`、サーバーの `listen(host, port)`・`stop(srv)` と `Server`・`Request`（[1.5](#15-stdhttpjwc-だけ)） |
 | `std.url` | `parse(s)`・`encode(s)`・`decode(s, plus)` と `Url`（[1.7](#17-stdurljwc-だけ)） |
 | `std.browser` | `open(cfg)`・`close(e)` と `Engine`・`Config`・`Event`・`KeyCode`・`Info`（[1.8](#18-stdbrowserjwc-だけ)） |
-| `std.net` | `connect(host, port)`・`listen(host, port)`・`close(s)`・`stop(l)` と資源の型 `TcpStream`・`TcpListener`（[1.4](#14-stdnetjwc-だけ)） |
+| `std.net` | `connect(host, port)`・`listen(host, port)`・`close(s)`・`stop(l)`・`bind_udp(host, port)`・`recv_from(s, n)`・`unbind(s)` と資源の型 `TcpStream`・`TcpListener`・`UdpSocket`（[1.4](#14-stdnetjwc-だけ)） |
 | `std.tls` | `connect(host, port)`・`upgrade(s, host)`・`close(s)` と資源の型 `TlsStream`（[1.9](#19-stdtlsjwc-だけ)） |
 | `std.gzip` | `decompress(ref data, limit)`・`compress(ref data)`・`crc32(ref data)`（[1.10](#110-stdgzipjwc-だけ)） |
 | `std.pg` | `connect(cfg)`・`close(db)` と `Config`・`Conn`・`Rows`（[1.11](#111-stdpgjwc-だけ)） |
@@ -125,7 +125,7 @@ fn Result<(), str> save() {
 ```
 
 - **資源**は外のもの（今は開いたファイルだけ）を持つ値。`resource 名前;` で決めるが、書けるのは標準ライブラリの中だけで、
-  コンパイラが知っている種類（`std.fs` の `File`、`std.net` の `TcpStream`・`TcpListener`、`std.tls` の `TlsStream`、`std.browser` の `Handle`）に限る。数や文字列から作る方法はない（作るのは `fs.open` などだけ）。
+  コンパイラが知っている種類（`std.fs` の `File`、`std.net` の `TcpStream`・`TcpListener`・`UdpSocket`、`std.tls` の `TlsStream`、`std.browser` の `Handle`）に限る。数や文字列から作る方法はない（作るのは `fs.open` などだけ）。
 - 値として読むといつもムーブ（2 つ目の持ち主はできない）。`ref` / `ref mut` で借りられる。`for x in` の x などの読むだけの写しは、閉じない。
 - 持ち主がいなくなると黙って閉じる（構造体・リストの中でも）。閉じたときの失敗を知りたいときは `fs.close(f)`（`Result<(), str>`。失敗しても f はもう使えない）。
   `exit` と実行時エラーでは閉じない（ほかの後片づけと同じ。書いた内容は close で確かめる）。
@@ -160,12 +160,21 @@ c.set_timeout(2000)?;                      // ミリ秒（0 なら待ち続け�
 let got = c.read(4096)?;                   // 最大 4096 バイト。相手が閉じたら []
 c.write_text("ok\n")?;
 net.close(c)?;
+
+let mut u = net.bind_udp("127.0.0.1", 0)?;          // UDP。0 なら OS が番号を選ぶ（u.port()）
+u.send_to("ping".bytes(), "127.0.0.1", 9000)?;       // 1 回が 1 つのまとまり
+let d = net.recv_from(ref mut u, 2048)?;                    // net.Datagram { data, host, port }
 ```
 
-- TCP だけ（同期。UDP はまだ。TLS は std.tls、HTTP は std.http）。`TcpStream`・`TcpListener` は資源で、規則は 1.3 と同じ（ムーブだけ・送れない・持ち主がいなくなると閉じる）。
+- 同期だけ。TLS は std.tls、HTTP は std.http。`TcpStream`・`TcpListener`・`UdpSocket` は資源で、規則は 1.3 と同じ（ムーブだけ・送れない・持ち主がいなくなると閉じる）。
 - `net.connect(host, port)`・`net.listen(host, port)`（`Result`）。host は名前か番号。port が 0〜65535 の外なら Err。
 - TcpStream: `read(n)`（`u8[]`）・`write(bytes)`・`write_text(s)`・`set_timeout(ms)`。時間切れは `Err("時間切れです")`。相手が閉じた接続へ書くと Err（プログラムは止まらない）。
 - TcpListener: `accept()`（`Result<TcpStream, str>`）・`port()`（`i64`）。やめるのは `net.stop(l)`。
+- UDP: `net.bind_udp(host, port)`（`Result<UdpSocket, str>`。host が `"0.0.0.0"` ならどこからでも受ける）。
+  UdpSocket: `send_to(bytes, host, port)`（`Result<(), str>`。送り先はソケットと同じ種類の IPv4・IPv6 に解決する）・`set_timeout(ms)`・`port()`。
+  受け取りは `net.recv_from(s, n)`（`Result<Datagram, str>`。`Datagram` は `data: u8[]`・`host: str`（数字の形）・`port: i64`）。
+  1 回の送り・受け取りが 1 つのまとまりで、届くことも順番も保証されない。n バイトより長いまとまりは、n バイトまで受け取って残りを捨てる。
+  まとまりの大きさ（send_to のデータ・recv_from の n）が 0〜65507 の外なら、プログラムが止まる（範囲のエラー）。やめるのは `net.unbind(s)`。
 - Linux・macOS・Windows で使える。Windows は Winsock（ws2_32.dll）を初めて使うときに読み込む（リンクの指定は要らない。読み込めなければ connect / listen が Err）。
 
 ### 1.5 std.http（jwc だけ）
