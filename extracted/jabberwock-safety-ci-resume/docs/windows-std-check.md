@@ -12,7 +12,7 @@ cargo test --release --test jwc -- jwc_std_net jwc_std_http
 
 - 2 件とも `ok` なら成功。jwc を作るところから始まるので、数分かかる。
 - std.tls・std.gzip・std.pg のテストは Linux だけで動く（std.tls は試験用の発行元を Windows の信頼の置き場所に入れずには試せないため。std.gzip は gzip のコマンド、std.pg は PostgreSQL のコマンドを使うため）。
-- std.http のサーバーは、Windows 向けに作ったものを wine で動かし、curl から答えられることを確かめた（2026-10-31。本物の Windows ではまだ。テスト jwc_std_http_server は Windows でも動く）。
+- std.http のサーバーは、Windows 向けに作ったものを wine で動かし、curl から答えられることを確かめた（2026-10-31）。本物の Windows でも server_check と jwc_std_http_server が通った（2026-10-31、まつさん）。
 - std.pg の TLS（tls: true）は、Windows 向けに作ったものを wine で動かし、手元の PostgreSQL 16 に Schannel でつながることを確かめた（2026-10-31。本物の Windows ではまだ）。
 
 ## 2. 本物のサイトへの https（std.tls）
@@ -66,7 +66,7 @@ Err TLS の証明書を確かめられません（信頼できる発行元につ
 ## 3. 追加した標準ライブラリ（2026-10-31 の分）
 
 fs の追加分・date・csv・regex・hash・base64・random と、HTTP サーバー・std.pg を、サンプル（`samples/windows/`）で確かめる。
-どれも Linux の上の mingw と wine では想定どおりに動いた。本物の Windows ではまだ。リポジトリ直下の PowerShell から実行する。
+どれも Linux の上の mingw と wine では想定どおりに動いた。本物の Windows でも、自動テスト 9 件・lib_check・server_check が通った（2026-10-31、まつさん。pg_check は未実行）。リポジトリ直下の PowerShell から実行する。
 
 ### 3.1 自動テスト
 
@@ -118,7 +118,8 @@ random 16 true
 .\server_check.exe
 ```
 
-- 動いたままになる。ブラウザで `http://127.0.0.1:8080/` を開き、「こんにちは、だれか さん」と出れば成功。名前を入れて「送る」を押すと、その名前に変わる。
+- 動いたままになり、すぐに `待ち受けを始めました: http://127.0.0.1:8080/` と出る（出なければ print の書き出しの問題なので知らせてほしい）。開くたびに `受けた 1 GET /` のような行がすぐ出る。
+- ブラウザで `http://127.0.0.1:8080/` を開き、「こんにちは、だれか さん」と出れば成功。名前を入れて「送る」を押すと、その名前に変わる。
 - `http://127.0.0.1:8080/stop` を開くと「終わります」と出て、PowerShell に `おわり` が出て終わる。
 - 別の PowerShell から `curl.exe -i http://127.0.0.1:8080/` でもよい（`curl` ではなく `curl.exe` と書く。`curl` だけだと PowerShell の別のコマンドになる）。
 - `Err` と出てすぐ終わったら、8080 番をほかのプログラムが使っている。その行を知らせてほしい。

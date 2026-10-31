@@ -124,6 +124,17 @@ typedef struct WSb {{
 
 // ---------------------------------------------------------------- 出力
 
+// 標準出力が端末なら、print の 1 行ごとに書き出す（サーバーの記録などがすぐ見えるように）。
+// 端末でない（パイプ・ファイル）なら、ためてまとめて書き出す（速さのため）。どちらでも出る中身は同じ
+#ifdef _WIN32
+#include <io.h>
+#define jw_isatty(fd) _isatty(fd)
+#else
+#include <unistd.h>
+#define jw_isatty(fd) isatty(fd)
+#endif
+static int out_tty = -1; // -1: まだ調べていない
+
 static char *out_buf;
 static size_t out_len, out_cap;
 static WLock out_lock = WLOCK_INIT;
@@ -182,6 +193,8 @@ void jw_print_part(WStr *s, int32_t first) {{
 
 void jw_print_end(void) {{
     out_write("\\n", 1);
+    if (out_tty < 0) out_tty = jw_isatty(1) ? 1 : 0;
+    if (out_tty) flush_locked();
     out_leave();
 }}
 

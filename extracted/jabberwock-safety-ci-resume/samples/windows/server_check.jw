@@ -5,10 +5,13 @@ use std.date;
 
 fn Result<(), str> run() {
     let mut srv = http.listen("127.0.0.1", 8080)?;
+    print("待ち受けを始めました: http://127.0.0.1:8080/");
     let mut count = 0;
     loop {
         let mut req = srv.next()?;
         count += 1;
+        // 端末（PowerShell の窓）なら、この行は要求のたびにすぐ出る
+        print("受けた", count, req.method, req.target);
         if req.path == "/stop" {
             req.respond(200, "text/plain; charset=utf-8", "終わります（{count} 件目）")?;
             break;
