@@ -30,7 +30,8 @@ typedef struct JweEngine JweEngine;
 enum {
     JWE_CAP_SCRIPT = 1u << 0,      /* ページの JavaScript が動く */
     JWE_CAP_CHROME_VIEW = 1u << 1, /* 外枠（アドレスバーなど）を HTML で表示できる（jwe_chrome_*） */
-    JWE_CAP_PERSIST = 1u << 2      /* Cookie などをディスクに残せる */
+    JWE_CAP_PERSIST = 1u << 2,     /* Cookie などをディスクに残せる */
+    JWE_CAP_FRAMELESS = 1u << 3    /* OS のタイトルバーがなく、外枠が窓の一番上まで来る（外枠が ー □ × を出し、jwe_window を呼ぶ） */
 };
 
 typedef struct {
@@ -101,12 +102,31 @@ JweStatus jwe_forward(JweEngine *e, uint32_t tab);
 JweStatus jwe_reload(JweEngine *e, uint32_t tab);
 JweStatus jwe_stop(JweEngine *e, uint32_t tab);
 
-/* 外枠（JWE_CAP_CHROME_VIEW があるときだけ）。height は外枠の高さ（論理ピクセル） */
+/* 外枠（JWE_CAP_CHROME_VIEW があるときだけ）。height は外枠の高さ（論理ピクセル）
+ * jwe_chrome_post は jwe_chrome_load のあとなら、外枠の準備ができる前でも受け付ける（準備ができたら送る） */
 JweStatus jwe_chrome_load(JweEngine *e, const char *html, uint32_t html_len, uint32_t height);
 JweStatus jwe_chrome_post(JweEngine *e, const char *msg, uint32_t msg_len);
+/* 外枠の高さを変える。JWE_CHROME_FULL なら外枠が窓全体を覆い、タブのページは隠れる（設定画面など） */
+#define JWE_CHROME_FULL 0xFFFFFFFFu
+JweStatus jwe_chrome_height(JweEngine *e, uint32_t height);
 
 /* 窓 */
 JweStatus jwe_set_title(JweEngine *e, const char *title, uint32_t title_len);
+
+enum {
+    JWE_WINDOW_DRAG = 1,        /* 押している間、マウスで窓を動かす（外枠の空いたところが押されたとき） */
+    JWE_WINDOW_MINIMIZE = 2,
+    JWE_WINDOW_TOGGLE_MAXIMIZE = 3,
+    JWE_WINDOW_FOCUS = 4         /* 最小化を戻して手前に出す */
+};
+JweStatus jwe_window(JweEngine *e, uint32_t op);
+
+/* ログインの欄にユーザー名とパスワードを入れる（パスワードの金庫から、利用者が押したときだけ呼ぶ）。
+ * site は "https://example.com" のような出どころ（scheme://host[:port]。既定のポートは書かない）。
+ * タブの今のページの出どころが site と完全に同じときだけ入れる（違えば JWE_ERR_BAD_ARG で何もしない）。
+ * エンジンはパスワードを覚えない。入れる直前にもページの中でもう一度出どころを確かめる */
+JweStatus jwe_fill_login(JweEngine *e, uint32_t tab, const char *site, uint32_t site_len,
+                         const char *user, uint32_t user_len, const char *password, uint32_t password_len);
 
 /* Cookie・キャッシュ・サイトのデータを全部消す */
 JweStatus jwe_clear_site_data(JweEngine *e);

@@ -4,6 +4,7 @@ pub fn str[] names() {
     let str[] mut out = [];
     out.push("base64");
     out.push("browser");
+    out.push("crypto");
     out.push("csv");
     out.push("date");
     out.push("env");
@@ -160,7 +161,9 @@ pub struct Info {{
     bool script;      // ページの JavaScript が動く
     bool chrome_view; // 外枠を HTML で出せる（chrome_load / chrome_post）
     bool persist;     // Cookie などを残せる
+    bool frameless;   // OS のタイトルバーがなく、外枠が窓の一番上まで来る（外枠が ー □ × を出し、window を呼ぶ）
 }}
+
 
 /// 開いたエンジン
 pub struct Engine {{
@@ -168,7 +171,7 @@ pub struct Engine {{
 
     fn Info info() {{
         let c = h.caps();
-        Info {{ name: h.name(), script: c % 2 == 1, chrome_view: (c / 2) % 2 == 1, persist: (c / 4) % 2 == 1 }}
+        Info {{ name: h.name(), script: c % 2 == 1, chrome_view: (c / 2) % 2 == 1, persist: (c / 4) % 2 == 1, frameless: (c / 8) % 2 == 1 }}
     }}
 
     /// イベントがあれば取り出す（待たない）
@@ -232,6 +235,19 @@ pub struct Engine {{
 
     /// Cookie・キャッシュ・サイトのデータを全部消す
     fn mut Result<(), str> clear_site_data() {{ done(h.call(12, 0, "", 0)) }}
+
+    /// 外枠の高さを変える（論理ピクセル）。負なら外枠が窓全体を覆い、タブのページは隠れる（設定画面など）
+    fn mut Result<(), str> chrome_height(i64 height) {{ done(h.call(13, 0, "", if height < 0 {{ -1 }} else {{ height }})) }}
+
+    /// 窓の操作（jw_engine.h の JWE_WINDOW_*）。op は 1 押している間マウスで動かす・2 最小化・3 最大化の切り替え・4 最小化を戻して手前に出す。
+    /// Info.frameless の外枠のボタンから呼ぶ。1〜4 の外なら Err
+    fn mut Result<(), str> window(i64 op) {{ done(h.call(14, 0, "", op)) }}
+
+    /// タブのログインの欄にユーザー名とパスワードを入れる（金庫から、利用者が押したときだけ）。
+    /// site は "https://example.com" の形の出どころ。今のページの出どころが完全に同じときだけ入れ、違えば Err で何もしない
+    fn mut Result<(), str> fill_login(i64 tab, str site, str user, str password) {{
+        done(h.call(15, tab, "{{site.byte_len()}}:{{user.byte_len()}}:" + site + user + password, 0))
+    }}
 }}
 
 /// エンジンを開く。最初のイベントは Ready（それより前の navigate も受け付ける）
@@ -256,6 +272,283 @@ fn str status(i64 r) {{
         case 4 -> "このエンジンにはその機能がありません";
         default -> "エンジンの操作が失敗しました（{{-r}}）";
     }}
+}}
+""");
+    }
+    if name == "crypto" {
+        return Some("""
+// 標準ライブラリ std.crypto: ChaCha20-Poly1305（RFC 8439。秘密の鍵で暗号化し、改ざんを見つける印を付ける）。`use std.crypto;` と書いて使う
+//   let key = random.bytes(32);                      // 鍵は 32 バイト
+//   let nonce = random.bytes(12);                    // nonce は 12 バイト。同じ鍵で同じ nonce を 2 度使わない
+//   let sealed = crypto.seal(ref key, ref nonce, ref aad, ref plain);    // 暗号文の後ろに 16 バイトの印
+//   let back = crypto.open(ref key, ref nonce, ref aad, ref sealed);     // Option<u8[]>。鍵が違う・書き換えられていれば None
+// .jw だけで書いている（元はブラウザの金庫の browser/app/crypto.jw）。鍵・nonce の長さが違えば実行時エラー。
+// 時間が中身によらないようにしているのは、印の比べ方だけ（u32 の足し算・回転は分かれ道を作らない）。
+
+// ---- ChaCha20（RFC 8439 2.3） ----
+
+fn u32 rotl(u32 x, i64 n) {{
+    (x << n) | (x >> (32 - n))
+}}
+
+fn quarter(ref mut u32[16] s, i64 a, i64 b, i64 c, i64 d) {{
+    s[a] = s[a] + s[b];
+    s[d] = rotl(s[d] ^ s[a], 16);
+    s[c] = s[c] + s[d];
+    s[b] = rotl(s[b] ^ s[c], 12);
+    s[a] = s[a] + s[b];
+    s[d] = rotl(s[d] ^ s[a], 8);
+    s[c] = s[c] + s[d];
+    s[b] = rotl(s[b] ^ s[c], 7);
+}}
+
+fn u32 le32(ref u8[] b, i64 off) {{
+    (b[off] as u32) | ((b[off + 1] as u32) << 8) | ((b[off + 2] as u32) << 16) | ((b[off + 3] as u32) << 24)
+}}
+
+// 64 バイトの鍵の流れを 1 つ作る
+fn u8[] chacha_block(ref u8[] key, u32 counter, ref u8[] nonce) {{
+    let u32[16] mut init = [0; 16];
+    init[0] = 0x61707865;
+    init[1] = 0x3320646e;
+    init[2] = 0x79622d32;
+    init[3] = 0x6b206574;
+    for i in range(8) {{
+        init[4 + i] = le32(key, i * 4);
+    }}
+    init[12] = counter;
+    init[13] = le32(nonce, 0);
+    init[14] = le32(nonce, 4);
+    init[15] = le32(nonce, 8);
+    let mut s = init;
+    for _ in range(10) {{
+        quarter(ref mut s, 0, 4, 8, 12);
+        quarter(ref mut s, 1, 5, 9, 13);
+        quarter(ref mut s, 2, 6, 10, 14);
+        quarter(ref mut s, 3, 7, 11, 15);
+        quarter(ref mut s, 0, 5, 10, 15);
+        quarter(ref mut s, 1, 6, 11, 12);
+        quarter(ref mut s, 2, 7, 8, 13);
+        quarter(ref mut s, 3, 4, 9, 14);
+    }}
+    let u8[] mut out = [];
+    for i in range(16) {{
+        let x = s[i] + init[i];
+        out.push(x as u8);
+        out.push((x >> 8) as u8);
+        out.push((x >> 16) as u8);
+        out.push((x >> 24) as u8);
+    }}
+    out
+}}
+
+// 鍵 32 バイト・nonce 12 バイトで data を暗号化する（復号も同じ）。counter は最初の塊の番号
+pub fn u8[] chacha20(ref u8[] key, u32 counter, ref u8[] nonce, ref u8[] data) {{
+    assert(key.len() == 32 && nonce.len() == 12);
+    let u8[] mut out = [];
+    let mut c = counter;
+    let mut off = 0;
+    while off < data.len() {{
+        let ks = chacha_block(key, c, nonce);
+        let mut i = 0;
+        while i < 64 && off + i < data.len() {{
+            out.push(data[off + i] ^ ks[i]);
+            i++;
+        }}
+        off += 64;
+        c = c + 1;
+    }}
+    out
+}}
+
+// ---- Poly1305（RFC 8439 2.5。26 ビットずつ 5 つに分けて計算する） ----
+
+pub fn u8[] poly1305(ref u8[] key, ref u8[] msg) {{
+    assert(key.len() == 32);
+    let u64 r0 = (le32(key, 0) as u64) & 0x3ffffff;
+    let u64 r1 = ((le32(key, 3) as u64) >> 2) & 0x3ffff03;
+    let u64 r2 = ((le32(key, 6) as u64) >> 4) & 0x3ffc0ff;
+    let u64 r3 = ((le32(key, 9) as u64) >> 6) & 0x3f03fff;
+    let u64 r4 = ((le32(key, 12) as u64) >> 8) & 0x00fffff;
+    let s1 = r1 * 5;
+    let s2 = r2 * 5;
+    let s3 = r3 * 5;
+    let s4 = r4 * 5;
+    let u64 mut h0 = 0;
+    let u64 mut h1 = 0;
+    let u64 mut h2 = 0;
+    let u64 mut h3 = 0;
+    let u64 mut h4 = 0;
+    let n = msg.len();
+    let mut off = 0;
+    while off < n {{
+        // 16 バイト（最後は短い）に 1 を足した数
+        let u8[] mut blk = [];
+        let mut i = 0;
+        while i < 16 && off + i < n {{
+            blk.push(msg[off + i]);
+            i++;
+        }}
+        let u64 hibit = if i == 16 {{ 1 << 24 }} else {{ 0 }};
+        if i < 16 {{
+            blk.push(1);
+        }}
+        while blk.len() < 17 {{
+            blk.push(0);
+        }}
+        h0 = h0 + ((le32(blk, 0) as u64) & 0x3ffffff);
+        h1 = h1 + (((le32(blk, 3) as u64) >> 2) & 0x3ffffff);
+        h2 = h2 + (((le32(blk, 6) as u64) >> 4) & 0x3ffffff);
+        h3 = h3 + (((le32(blk, 9) as u64) >> 6) & 0x3ffffff);
+        h4 = h4 + (((le32(blk, 12) as u64) >> 8) | hibit);
+        let d0 = h0 * r0 + h1 * s4 + h2 * s3 + h3 * s2 + h4 * s1;
+        let mut d1 = h0 * r1 + h1 * r0 + h2 * s4 + h3 * s3 + h4 * s2;
+        let mut d2 = h0 * r2 + h1 * r1 + h2 * r0 + h3 * s4 + h4 * s3;
+        let mut d3 = h0 * r3 + h1 * r2 + h2 * r1 + h3 * r0 + h4 * s4;
+        let mut d4 = h0 * r4 + h1 * r3 + h2 * r2 + h3 * r1 + h4 * r0;
+        let mut c = d0 >> 26;
+        h0 = d0 & 0x3ffffff;
+        d1 = d1 + c;
+        c = d1 >> 26;
+        h1 = d1 & 0x3ffffff;
+        d2 = d2 + c;
+        c = d2 >> 26;
+        h2 = d2 & 0x3ffffff;
+        d3 = d3 + c;
+        c = d3 >> 26;
+        h3 = d3 & 0x3ffffff;
+        d4 = d4 + c;
+        c = d4 >> 26;
+        h4 = d4 & 0x3ffffff;
+        h0 = h0 + c * 5;
+        c = h0 >> 26;
+        h0 = h0 & 0x3ffffff;
+        h1 = h1 + c;
+        off += 16;
+    }}
+    // 最後まで繰り上げる
+    let mut c = h1 >> 26;
+    h1 = h1 & 0x3ffffff;
+    h2 = h2 + c;
+    c = h2 >> 26;
+    h2 = h2 & 0x3ffffff;
+    h3 = h3 + c;
+    c = h3 >> 26;
+    h3 = h3 & 0x3ffffff;
+    h4 = h4 + c;
+    c = h4 >> 26;
+    h4 = h4 & 0x3ffffff;
+    h0 = h0 + c * 5;
+    c = h0 >> 26;
+    h0 = h0 & 0x3ffffff;
+    h1 = h1 + c;
+    // h - (2^130 - 5) を計算し、負でなければそちらを使う
+    let mut g0 = h0 + 5;
+    c = g0 >> 26;
+    g0 = g0 & 0x3ffffff;
+    let mut g1 = h1 + c;
+    c = g1 >> 26;
+    g1 = g1 & 0x3ffffff;
+    let mut g2 = h2 + c;
+    c = g2 >> 26;
+    g2 = g2 & 0x3ffffff;
+    let mut g3 = h3 + c;
+    c = g3 >> 26;
+    g3 = g3 & 0x3ffffff;
+    let g4 = h4 + c;
+    if (g4 >> 26) != 0 {{
+        h0 = g0;
+        h1 = g1;
+        h2 = g2;
+        h3 = g3;
+        h4 = g4 & 0x3ffffff;
+    }}
+    // 2^128 で割った余りに s を足す
+    let u64 w0 = (h0 | (h1 << 26)) & 0xffffffff;
+    let u64 w1 = ((h1 >> 6) | (h2 << 20)) & 0xffffffff;
+    let u64 w2 = ((h2 >> 12) | (h3 << 14)) & 0xffffffff;
+    let u64 w3 = ((h3 >> 18) | (h4 << 8)) & 0xffffffff;
+    let mut f = w0 + (le32(key, 16) as u64);
+    let u8[] mut out = [];
+    let u64[4] ws = [w0, w1, w2, w3];
+    for i in range(4) {{
+        if i > 0 {{
+            f = ws[i] + (le32(key, 16 + i * 4) as u64) + (f >> 32);
+        }}
+        out.push(f as u8);
+        out.push((f >> 8) as u8);
+        out.push((f >> 16) as u8);
+        out.push((f >> 24) as u8);
+    }}
+    out
+}}
+
+// ---- ChaCha20-Poly1305（RFC 8439 2.8） ----
+
+fn pad16(ref mut u8[] m) {{
+    while m.len() % 16 != 0 {{
+        m.push(0);
+    }}
+}}
+
+fn push_le64(ref mut u8[] m, i64 n) {{
+    for i in range(8) {{
+        m.push((n >> (i * 8)) as u8);
+    }}
+}}
+
+fn u8[] tag(ref u8[] key, ref u8[] nonce, ref u8[] aad, ref u8[] ct) {{
+    let block = chacha_block(key, 0, nonce);
+    let u8[] mut pk = [];
+    for i in range(32) {{
+        pk.push(block[i]);
+    }}
+    let u8[] mut m = [];
+    for x in aad {{
+        m.push(x);
+    }}
+    pad16(ref mut m);
+    for x in ct {{
+        m.push(x);
+    }}
+    pad16(ref mut m);
+    push_le64(ref mut m, aad.len());
+    push_le64(ref mut m, ct.len());
+    poly1305(pk, m)
+}}
+
+// 暗号化して、後ろに 16 バイトの印（改ざんを見つける）を付ける
+pub fn u8[] seal(ref u8[] key, ref u8[] nonce, ref u8[] aad, ref u8[] plain) {{
+    assert(key.len() == 32 && nonce.len() == 12);
+    let mut ct = chacha20(key, 1, nonce, plain);
+    let t = tag(key, nonce, aad, ct);
+    for x in t {{
+        ct.push(x);
+    }}
+    ct
+}}
+
+// 印を確かめてから復号する。鍵が違う・書き換えられていれば None
+pub fn Option<u8[]> open(ref u8[] key, ref u8[] nonce, ref u8[] aad, ref u8[] sealed) {{
+    assert(key.len() == 32 && nonce.len() == 12);
+    let n = sealed.len();
+    if n < 16 {{
+        return None;
+    }}
+    let u8[] mut ct = [];
+    for i in range(n - 16) {{
+        ct.push(sealed[i]);
+    }}
+    let t = tag(key, nonce, aad, ct);
+    // 比べるのにかかる時間を、どこで違うかで変えない
+    let u8 mut diff = 0;
+    for i in range(16) {{
+        diff = diff | (t[i] ^ sealed[n - 16 + i]);
+    }}
+    if diff != 0 {{
+        return None;
+    }}
+    Some(chacha20(key, 1, nonce, ct))
 }}
 """);
     }
@@ -1284,6 +1577,29 @@ pub fn str hex(ref u8[] b) {{
         s += digits[v >> 4] + digits[v & 15];
     }}
     s
+}}
+
+fn i64 nibble(i64 c) {{
+    if c >= 48 && c <= 57 {{ return c - 48; }}
+    if c >= 97 && c <= 102 {{ return c - 87; }}
+    if c >= 65 && c <= 70 {{ return c - 55; }}
+    -1
+}}
+
+/// 16 進の文字列（大文字・小文字どちらでも）をバイトに戻す。長さが奇数か、16 進でない文字があれば None
+pub fn Option<u8[]> unhex(str s) {{
+    let b = s.bytes();
+    if b.len() % 2 != 0 {{ return None; }}
+    let u8[] mut out = [];
+    let mut i = 0;
+    while i < b.len() {{
+        let hi = nibble(b[i] as i64);
+        let lo = nibble(b[i + 1] as i64);
+        if hi < 0 || lo < 0 {{ return None; }}
+        out.push((hi * 16 + lo) as u8);
+        i += 2;
+    }}
+    Some(out)
 }}
 
 /// 同じ中身か（長さが同じなら、どこで違っても同じだけ時間をかける。MAC などの秘密の値を比べるとき用）

@@ -2767,7 +2767,8 @@ typedef struct JweEngine JweEngine;
 enum {
     JWE_CAP_SCRIPT = 1u << 0,      /* ページの JavaScript が動く */
     JWE_CAP_CHROME_VIEW = 1u << 1, /* 外枠（アドレスバーなど）を HTML で表示できる（jwe_chrome_*） */
-    JWE_CAP_PERSIST = 1u << 2      /* Cookie などをディスクに残せる */
+    JWE_CAP_PERSIST = 1u << 2,     /* Cookie などをディスクに残せる */
+    JWE_CAP_FRAMELESS = 1u << 3    /* OS のタイトルバーがなく、外枠が窓の一番上まで来る（外枠が ー □ × を出し、jwe_window を呼ぶ） */
 };
 
 typedef struct {
@@ -2838,12 +2839,31 @@ JweStatus jwe_forward(JweEngine *e, uint32_t tab);
 JweStatus jwe_reload(JweEngine *e, uint32_t tab);
 JweStatus jwe_stop(JweEngine *e, uint32_t tab);
 
-/* 外枠（JWE_CAP_CHROME_VIEW があるときだけ）。height は外枠の高さ（論理ピクセル） */
+/* 外枠（JWE_CAP_CHROME_VIEW があるときだけ）。height は外枠の高さ（論理ピクセル）
+ * jwe_chrome_post は jwe_chrome_load のあとなら、外枠の準備ができる前でも受け付ける（準備ができたら送る） */
 JweStatus jwe_chrome_load(JweEngine *e, const char *html, uint32_t html_len, uint32_t height);
 JweStatus jwe_chrome_post(JweEngine *e, const char *msg, uint32_t msg_len);
+/* 外枠の高さを変える。JWE_CHROME_FULL なら外枠が窓全体を覆い、タブのページは隠れる（設定画面など） */
+#define JWE_CHROME_FULL 0xFFFFFFFFu
+JweStatus jwe_chrome_height(JweEngine *e, uint32_t height);
 
 /* 窓 */
 JweStatus jwe_set_title(JweEngine *e, const char *title, uint32_t title_len);
+
+enum {
+    JWE_WINDOW_DRAG = 1,        /* 押している間、マウスで窓を動かす（外枠の空いたところが押されたとき） */
+    JWE_WINDOW_MINIMIZE = 2,
+    JWE_WINDOW_TOGGLE_MAXIMIZE = 3,
+    JWE_WINDOW_FOCUS = 4         /* 最小化を戻して手前に出す */
+};
+JweStatus jwe_window(JweEngine *e, uint32_t op);
+
+/* ログインの欄にユーザー名とパスワードを入れる（パスワードの金庫から、利用者が押したときだけ呼ぶ）。
+ * site は "https://example.com" のような出どころ（scheme://host[:port]。既定のポートは書かない）。
+ * タブの今のページの出どころが site と完全に同じときだけ入れる（違えば JWE_ERR_BAD_ARG で何もしない）。
+ * エンジンはパスワードを覚えない。入れる直前にもページの中でもう一度出どころを確かめる */
+JweStatus jwe_fill_login(JweEngine *e, uint32_t tab, const char *site, uint32_t site_len,
+                         const char *user, uint32_t user_len, const char *password, uint32_t password_len);
 
 /* Cookie・キャッシュ・サイトのデータを全部消す */
 JweStatus jwe_clear_site_data(JweEngine *e);
@@ -2925,7 +2945,8 @@ static WBrowser *browser_get(void *h, const WSite *at) { return res_get((uint64_
 // 操作 op（std/browser.jw の OP_*）。0 以上は成功（タブを作ったらその番号）、負は -JweStatus
 int64_t jw_browser_call(void *h, int64_t op, int64_t tab, WStr *text, int64_t n, const WSite *at) {
     WBrowser *b = browser_get(h, at);
-    if (tab < 0 || tab > 0xffffffffLL || text->len > 0x7fffffff || n < 0 || n > 100000) return -(int64_t)JWE_ERR_BAD_ARG;
+    // chrome_height（13）だけは n が -1（外枠が窓全体を覆う）でもよい
+    if (tab < 0 || tab > 0xffffffffLL || text->len > 0x7fffffff || n < (op == 13 ? -1 : 0) || n > 100000) return -(int64_t)JWE_ERR_BAD_ARG;
     uint32_t t = (uint32_t)tab;
     uint32_t len = (uint32_t)text->len;
     JweStatus st = JWE_ERR_BAD_ARG;
@@ -2947,6 +2968,19 @@ int64_t jw_browser_call(void *h, int64_t op, int64_t tab, WStr *text, int64_t n,
     case 10: st = jwe_chrome_post(b->e, text->data, len); break;
     case 11: st = jwe_set_title(b->e, text->data, len); break;
     case 12: st = jwe_clear_site_data(b->e); break;
+    case 13: st = jwe_chrome_height(b->e, n < 0 ? JWE_CHROME_FULL : (uint32_t)n); break;
+    case 14: st = jwe_window(b->e, (uint32_t)n); break;
+    case 15: {
+        // text は「出どころの長さ:ユーザー名の長さ:」のあとに 出どころ・ユーザー名・パスワード を続けたもの（std/browser.jw の fill_login）
+        const char *p = text->data, *end = text->data + len;
+        int64_t sl = 0, ul = 0;
+        while (p < end && *p >= '0' && *p <= '9' && sl <= 0x7fffffff) sl = sl * 10 + (*p++ - '0');
+        if (p >= end || *p++ != ':') break;
+        while (p < end && *p >= '0' && *p <= '9' && ul <= 0x7fffffff) ul = ul * 10 + (*p++ - '0');
+        if (p >= end || *p++ != ':' || sl + ul > end - p) break;
+        st = jwe_fill_login(b->e, t, p, (uint32_t)sl, p + sl, (uint32_t)ul, p + sl + ul, (uint32_t)(end - p - sl - ul));
+        break;
+    }
     default: break;
     }
     return st == JWE_OK ? 0 : -(int64_t)st;

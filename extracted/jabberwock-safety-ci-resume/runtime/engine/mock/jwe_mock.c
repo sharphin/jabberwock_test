@@ -13,6 +13,7 @@
  * ファイルが終わったら CLOSE_REQUESTED を 1 回出す。JWE_MOCK_LOG を指定すると、呼ばれた関数を書き出す。
  */
 #include "../jw_engine.h"
+#include "../site.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -299,8 +300,47 @@ JweStatus jwe_chrome_post(JweEngine *e, const char *msg, uint32_t msg_len) {
     return JWE_OK;
 }
 
+JweStatus jwe_chrome_height(JweEngine *e, uint32_t height) {
+    char n[16];
+    if (!e->chrome) return JWE_ERR_FAILED;
+    if (height == JWE_CHROME_FULL) snprintf(n, sizeof n, "full");
+    else snprintf(n, sizeof n, "%u", height);
+    logf_(e, "chrome_height", 0, n, (uint32_t)strlen(n));
+    return JWE_OK;
+}
+
 JweStatus jwe_set_title(JweEngine *e, const char *title, uint32_t title_len) {
     logf_(e, "set_title", 0, title, title_len);
+    return JWE_OK;
+}
+
+JweStatus jwe_window(JweEngine *e, uint32_t op) {
+    if (op < JWE_WINDOW_DRAG || op > JWE_WINDOW_FOCUS) return JWE_ERR_BAD_ARG;
+    char n[16];
+    snprintf(n, sizeof n, "%u", op);
+    logf_(e, "window", 0, n, (uint32_t)strlen(n));
+    return JWE_OK;
+}
+
+JweStatus jwe_fill_login(JweEngine *e, uint32_t tab, const char *site, uint32_t site_len,
+                         const char *user, uint32_t user_len, const char *password, uint32_t password_len) {
+    Tab *t = find(e, tab);
+    if (!t) return JWE_ERR_BAD_TAB;
+    char now[512], want[512];
+    now[0] = 0;
+    if (t->h.len) jwe_site_of(t->h.urls[t->h.pos], strlen(t->h.urls[t->h.pos]), now, sizeof now);
+    if (site_len >= sizeof want) return JWE_ERR_BAD_ARG;
+    memcpy(want, site, site_len);
+    want[site_len] = 0;
+    if (!now[0] || strcmp(now, want) != 0) {
+        logf_(e, "fill_refused", tab, site, site_len);
+        return JWE_ERR_BAD_ARG;
+    }
+    /* パスワードはログに書かない（長さだけ） */
+    char note[600];
+    snprintf(note, sizeof note, "%.*s %.*s (%u)", (int)site_len, site, (int)user_len, user, password_len);
+    (void)password;
+    logf_(e, "fill", tab, note, (uint32_t)strlen(note));
     return JWE_OK;
 }
 

@@ -100,9 +100,10 @@ fn main() {
 | `std.tls` | `connect(host, port)`・`upgrade(s, host)`・`close(s)` と資源の型 `TlsStream`（[1.9](#19-stdtlsjwc-だけ)） |
 | `std.gzip` | `decompress(ref data, limit)`・`compress(ref data)`・`crc32(ref data)`（[1.10](#110-stdgzipjwc-だけ)） |
 | `std.pg` | `connect(cfg)`・`close(db)` と `Config`・`Conn`・`Rows`（[1.11](#111-stdpgjwc-だけ)） |
-| `std.hash` | `sha256(ref data)`・`hmac_sha256(ref key, ref msg)`・`pbkdf2_sha256(ref password, ref salt, iters)`・`hex(ref data)`・`equal(ref a, ref b)`（[1.12](#112-stdhashstdbase64stdrandomjwc-だけ)） |
+| `std.hash` | `sha256(ref data)`・`hmac_sha256(ref key, ref msg)`・`pbkdf2_sha256(ref password, ref salt, iters)`・`hex(ref data)`・`unhex(s)`・`equal(ref a, ref b)`（[1.12](#112-stdhashstdbase64stdrandomjwc-だけ)） |
 | `std.base64` | `encode(ref data)`・`decode(s)`（[1.12](#112-stdhashstdbase64stdrandomjwc-だけ)） |
 | `std.random` | `bytes(n)`・`int(lo, hi)`（[1.12](#112-stdhashstdbase64stdrandomjwc-だけ)） |
+| `std.crypto` | `seal(ref key, ref nonce, ref aad, ref plain)`・`open(…)`・`chacha20(…)`・`poly1305(…)`（[1.12](#112-stdhashstdbase64stdrandomjwc-だけ)） |
 | `std.date` | `now()`・`from_unix_ms(t)`・`make(...)`・`parse(s)`・`is_leap(y)`・`days_in_month(y, m)` と `DateTime`（[1.13](#113-stddatestdcsvstdregexjwc-だけ)） |
 | `std.csv` | `parse(s)`・`format(ref rows)`・`quote(v)`（[1.13](#113-stddatestdcsvstdregexjwc-だけ)） |
 | `std.regex` | `compile(pattern)`・`escape(s)` と `Regex`・`Match`（[1.13](#113-stddatestdcsvstdregexjwc-だけ)） |
@@ -289,10 +290,12 @@ browser.close(e);
   エンジンは開いたスレッドだけで使う（`Engine` は資源 `Handle` を持つので、ほかのスレッドへ渡せない）。
 - `browser.open(cfg)`（`Result<Engine, str>`）: width・height は 1〜100000。エンジンが使えない・境目の版が違うなら Err。
   持ち主がいなくなるか `browser.close(e)` で閉じる（タブも全部。ephemeral なら置き場所の中も消す）。
-- `Engine` のメソッド（持ち主が mut であること）: `info()`（`Info { name, script, chrome_view, persist }`）・`poll()`・`wait(ms)`・
+- `Engine` のメソッド（持ち主が mut であること）: `info()`（`Info { name, script, chrome_view, persist, frameless }`。frameless は OS のタイトルバーがなく外枠が窓の一番上まで来ること）・`poll()`・`wait(ms)`・
   `tab_new()`（`Result<i64, str>`。タブの番号は 1 から、使い回さない）・`tab_close(tab)`・`tab_show(tab)`・`navigate(tab, url)`・`back(tab)`・`forward(tab)`・
-  `reload(tab)`・`stop(tab)`・`chrome_load(html, height)`・`chrome_post(msg)`（外枠の HTML。`chrome_view` のときだけ）・`set_title(s)`・`clear_site_data()`。
-  操作は `Result<(), str>`（ないタブ・できない操作は Err）。
+  `reload(tab)`・`stop(tab)`・`chrome_load(html, height)`・`chrome_post(msg)`（外枠の HTML。`chrome_view` のときだけ）・`set_title(s)`・`clear_site_data()`・
+  `chrome_height(h)`（外枠の高さ。負なら外枠が窓全体を覆いタブのページを隠す）・`window(op)`（1 押している間マウスで窓を動かす・2 最小化・3 最大化の切り替え・4 手前に出す。ほかは Err）・
+  `fill_login(tab, site, user, password)`（タブのログインの欄に入れる。site は `https://example.com` の形の出どころで、今のページの出どころと完全に同じときだけ。違えば Err で何もしない）。
+  操作は `Result<(), str>`（ないタブ・できない操作は Err）。外枠の `chrome_post` は、`chrome_load` のあとなら外枠の準備ができる前でも受け付ける。
 - `Event`: `Ready`・`CloseRequested`・`NavStarted(tab, url)`・`NavFinished(tab, url, code)`（code 0 は成功）・`UrlChanged(tab, url)`・`TitleChanged(tab, title)`・
   `HistoryChanged(tab, back, forward)`・`NewTabRequested(tab, url)`・`ChromeMessage(text)`・`Key(code)`（`KeyCode.of(code)` で読む）・`PermissionDenied(tab, what)`・`Failed(code, text)`。
   エンジンが UTF-8 でない文字列を返したら `Failed` にする。
@@ -381,12 +384,16 @@ let die = random.int(1, 7);                        // 1〜6
 
 - `std.hash`（.jw だけで書いている）: `sha256(ref data)`（SHA-256。32 バイト）・`hmac_sha256(ref key, ref msg)`（HMAC-SHA-256。key は何バイトでもよい）・
   `pbkdf2_sha256(ref password, ref salt, iters)`（PBKDF2-HMAC-SHA-256 の最初の 32 バイト。iters が 1 未満なら実行時エラー）・
-  `hex(ref data)`（小文字の 16 進の `str`）・`equal(ref a, ref b)`（`bool`。長さが同じなら、どこで違っても同じだけ時間をかけて比べる）。
+  `hex(ref data)`（小文字の 16 進の `str`）・`unhex(s)`（`Option<u8[]>`。大文字・小文字どちらも読む。長さが奇数か 16 進でない文字があれば None）・`equal(ref a, ref b)`（`bool`。長さが同じなら、どこで違っても同じだけ時間をかけて比べる）。
 - `std.base64`: `encode(ref data)`（標準の文字と `=` の埋め）・`decode(s)`（`Result<u8[], str>`）。decode は、長さが 4 の倍数でない・
   ほかの文字（空白や改行も）がある・`=` が終わり以外にある・終わりの余りのビットが 0 でないなら Err。
 - `std.random`（暗号に使える OS の乱数。Linux・macOS は getentropy、Windows は BCryptGenRandom。取り出せなければ実行時エラー）:
   `bytes(n)`（`u8[]`。n が負なら実行時エラー）・`int(lo, hi)`（lo 以上 hi 未満の i64 を同じ確からしさで。hi <= lo か、hi - lo があふれるなら実行時エラー）。
   種を決めて同じ並びを出す乱数はない。
+- `std.crypto`（ChaCha20-Poly1305、RFC 8439。.jw だけで書いている）: `seal(ref key, ref nonce, ref aad, ref plain)`（暗号文の後ろに 16 バイトの印を付けた `u8[]`）・
+  `open(ref key, ref nonce, ref aad, ref sealed)`（`Option<u8[]>`。印が合わない＝鍵・nonce・aad が違うか書き換えられた、または 16 バイトより短いなら None）・
+  `chacha20(ref key, counter, ref nonce, ref data)`（`counter` は `u32`。暗号化と復号は同じ）・`poly1305(ref key, ref msg)`（16 バイト）。
+  key は 32 バイト、nonce は 12 バイト（poly1305 の key は 32 バイト）。長さが違えば実行時エラー。同じ鍵で同じ nonce を 2 度使ってはいけない（使う側の責任）。
 
 ### 1.13 std.date・std.csv・std.regex（jwc だけ）
 

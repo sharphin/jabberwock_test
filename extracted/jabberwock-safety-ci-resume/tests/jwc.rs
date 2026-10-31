@@ -1337,6 +1337,66 @@ fn main() {
 "#;
 
 /// std.hash・std.base64・std.random。ハッシュは決まった値（FIPS 180-4・RFC 4231・RFC 7914 の例）と比べ、乱数は範囲と長さだけ見る
+// std.crypto（ChaCha20-Poly1305）を RFC 8439 の値で。書き換え・鍵の違い・空・短すぎる入力。std.hash.unhex も
+#[test]
+fn jwc_std_crypto() {
+    if !have_clang() { return; }
+    let dir = std::env::temp_dir().join(format!("jw-jwc-crypto-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("main.jw");
+    std::fs::write(&path, CRYPTO_SRC).unwrap();
+    let exe = dir.join("main");
+    let out = Command::new(jwc()).args(["build", "--clang", &native::clang(), "-o"]).arg(&exe).arg(&path).output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let got = Command::new(&exe).output().unwrap();
+    let _ = std::fs::remove_dir_all(dir);
+    assert_eq!(
+        String::from_utf8_lossy(&got.stdout),
+        "ok chacha20\nok poly1305\nok seal\nopen true\ntampered true wrong key true\nempty 16 true short true\nunhex true true deadbeef\n"
+    );
+}
+
+const CRYPTO_SRC: &str = r#"use std.crypto;
+use std.hash;
+
+fn same(str what, str got, str want) {
+    if got != want { print("NG {what}: {got}"); } else { print("ok {what}"); }
+}
+
+fn u8[] bx(str s) { hash.unhex(s).unwrap_or([]) }
+
+fn main() {
+    let key = bx("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f");
+    let n1 = bx("000000000000004a00000000");
+    let plain = "Ladies and Gentlemen of the class of '99: If I could offer you only one tip for the future, sunscreen would be it.".bytes();
+    let c = crypto.chacha20(ref key, 1, ref n1, ref plain);
+    same("chacha20", hash.hex(ref c), "6e2e359a2568f98041ba0728dd0d6981e97e7aec1d4360c20a27afccfd9fae0bf91b65c5524733ab8f593dabcd62b3571639d624e65152ab8f530c359f0861d807ca0dbf500d6a6156a38e088a22b65e52bc514d16ccf806818ce91ab77937365af90bbf74a35be6b40b8eedf2785e42874d");
+    let pk = bx("85d6be7857556d337f4452fe42d506a80103808afb0db2fd4abff6af4149f51b");
+    let msg = "Cryptographic Forum Research Group".bytes();
+    let t = crypto.poly1305(ref pk, ref msg);
+    same("poly1305", hash.hex(ref t), "a8061dc1305136c6c22b8baf0c0127a9");
+    let k2 = bx("808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f");
+    let n2 = bx("070000004041424344454647");
+    let aad = bx("50515253c0c1c2c3c4c5c6c7");
+    let sealed = crypto.seal(ref k2, ref n2, ref aad, ref plain);
+    same("seal", hash.hex(ref sealed), "d31a8d34648e60db7b86afbc53ef7ec2a4aded51296e08fea9e2b5a736ee62d63dbea45e8ca9671282fafb69da92728b1a71de0a9e060b2905d6a5b67ecd3b3692ddbd7f2d778b8c9803aee328091b58fab324e4fad675945585808b4831d7bc3ff4def08e4b7a9de576d26586cec64b6116" + "1ae10b594f09e26a7e902ecbd0600691");
+    match crypto.open(ref k2, ref n2, ref aad, ref sealed) {
+        case Some(b) -> print("open {b.len() == plain.len()}");
+        case None -> print("open None");
+    }
+    let mut bad = crypto.seal(ref k2, ref n2, ref aad, ref plain);
+    bad[3] = bad[3] ^ 1;
+    print("tampered {crypto.open(ref k2, ref n2, ref aad, ref bad).is_none()} wrong key {crypto.open(ref key, ref n2, ref aad, ref sealed).is_none()}");
+    let u8[] e = [];
+    let es = crypto.seal(ref k2, ref n2, ref e, ref e);
+    print("empty {es.len()} {crypto.open(ref k2, ref n2, ref e, ref es).is_some()} short {crypto.open(ref k2, ref n2, ref e, ref e).is_none()}");
+    let h1 = hash.unhex("0g").is_none();
+    let h2 = hash.unhex("abc").is_none();
+    let db = bx("DEADbeef");
+    print("unhex {h1} {h2} {hash.hex(ref db)}");
+}
+"#;
+
 #[test]
 fn jwc_std_hash_random() {
     if !have_clang() { return; }
@@ -1563,8 +1623,8 @@ fn jwc_std_browser() {
     let out = Command::new(jwc()).args(["build", "--clang", &native::clang(), "--link"]).arg(&mock).arg("-o").arg(&exe).arg(&path).output().unwrap();
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     let got = Command::new(&exe).current_dir(&dir).env("JWE_MOCK_SCRIPT", "script.txt").env("JWE_MOCK_LOG", "log.txt").output().unwrap();
-    assert_eq!(String::from_utf8_lossy(&got.stdout), "窓の大きさは 1〜100000 にしてください\nmock false true false\n1 Err(そのタブはありません) Ok(()) Ok(()) Ok(())\nOk(()) Ok(()) Ok(()) Ok(()) Err(そのタブはありません)\nSome(Ready)\nNavStarted(1, http://a/)\nUrlChanged(1, http://a/)\nTitleChanged(1, title:http://a/)\nNavFinished(1, http://a/, 0)\nHistoryChanged(1, false, false)\nNavStarted(1, http://b/)\nUrlChanged(1, http://b/)\nTitleChanged(1, title:http://b/)\nNavFinished(1, http://b/, 0)\nHistoryChanged(1, true, false)\nNavStarted(1, http://a/)\nUrlChanged(1, http://a/)\nTitleChanged(1, title:http://a/)\nNavFinished(1, http://a/, 0)\nHistoryChanged(1, false, true)\nChromeMessage({\"a\":1})\nkey NewTab\nNewTabRequested(0, http://n/)\n閉じる\n");
-    assert_eq!(std::fs::read_to_string(dir.join("log.txt")).unwrap(), "open 0 試し\ntab_new 1\nnavigate 1 http://a/\nnavigate 1 http://b/\nback 1\nchrome_load 40\nchrome_post 0 こんにちは\nset_title 0 題\ntab_close 1\nclose 0\n");
+    assert_eq!(String::from_utf8_lossy(&got.stdout), "窓の大きさは 1〜100000 にしてください\nmock false true false\n1 Err(そのタブはありません) Ok(()) Ok(()) Ok(())\nErr(エンジンの操作が失敗しました（5）) Ok(()) Err(引数が正しくありません) Err(そのタブはありません)\nOk(()) Ok(()) Ok(()) Ok(()) Err(そのタブはありません)\nfalse Ok(()) Ok(()) Ok(()) Err(引数が正しくありません)\nSome(Ready)\nNavStarted(1, http://a/)\nUrlChanged(1, http://a/)\nTitleChanged(1, title:http://a/)\nNavFinished(1, http://a/, 0)\nHistoryChanged(1, false, false)\nNavStarted(1, http://b/)\nUrlChanged(1, http://b/)\nTitleChanged(1, title:http://b/)\nNavFinished(1, http://b/, 0)\nHistoryChanged(1, true, false)\nNavStarted(1, http://a/)\nUrlChanged(1, http://a/)\nTitleChanged(1, title:http://a/)\nNavFinished(1, http://a/, 0)\nHistoryChanged(1, false, true)\nChromeMessage({\"a\":1})\nkey NewTab\nNewTabRequested(0, http://n/)\n閉じる\n");
+    assert_eq!(std::fs::read_to_string(dir.join("log.txt")).unwrap(), "open 0 試し\ntab_new 1\nnavigate 1 http://a/\nnavigate 1 http://b/\nback 1\nfill 1 http://a u (3)\nfill_refused 1 http://b\nchrome_load 40\nchrome_post 0 こんにちは\nset_title 0 題\ntab_close 1\nchrome_height 0 full\nchrome_height 0 30\nwindow 0 2\nclose 0\n");
     let _ = std::fs::remove_dir_all(dir);
 }
 
@@ -1593,7 +1653,9 @@ fn main() {
     print(info.name, info.script, info.chrome_view, info.persist);
     let tab = match e.tab_new() { case Ok(t) -> t; case Err(m) -> { print(m); return; } };
     print(tab, e.tab_show(99), e.navigate(tab, "http://a/"), e.navigate(tab, "http://b/"), e.back(tab));
+    print(e.chrome_height(30), e.fill_login(tab, "http://a", "u", "p:w"), e.fill_login(tab, "http://b", "u", "p"), e.fill_login(99, "http://a", "u", "p"));
     print(e.chrome_load("<p>枠</p>", 40), e.chrome_post("こんにちは"), e.set_title("題"), e.tab_close(tab), e.tab_close(tab));
+    print(info.frameless, e.chrome_height(-1), e.chrome_height(30), e.window(2), e.window(9));
     print(e.poll());
     loop {
         match e.wait(-1) {

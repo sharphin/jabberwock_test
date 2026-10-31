@@ -159,6 +159,29 @@ pub fn str hex(ref u8[] b) {
     s
 }
 
+fn i64 nibble(i64 c) {
+    if c >= 48 && c <= 57 { return c - 48; }
+    if c >= 97 && c <= 102 { return c - 87; }
+    if c >= 65 && c <= 70 { return c - 55; }
+    -1
+}
+
+/// 16 進の文字列（大文字・小文字どちらでも）をバイトに戻す。長さが奇数か、16 進でない文字があれば None
+pub fn Option<u8[]> unhex(str s) {
+    let b = s.bytes();
+    if b.len() % 2 != 0 { return None; }
+    let u8[] mut out = [];
+    let mut i = 0;
+    while i < b.len() {
+        let hi = nibble(b[i] as i64);
+        let lo = nibble(b[i + 1] as i64);
+        if hi < 0 || lo < 0 { return None; }
+        out.push((hi * 16 + lo) as u8);
+        i += 2;
+    }
+    Some(out)
+}
+
 /// 同じ中身か（長さが同じなら、どこで違っても同じだけ時間をかける。MAC などの秘密の値を比べるとき用）
 pub fn bool equal(ref u8[] a, ref u8[] b) {
     if a.len() != b.len() { return false; }

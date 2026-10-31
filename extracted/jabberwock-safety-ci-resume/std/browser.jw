@@ -74,7 +74,9 @@ pub struct Info {
     bool script;      // ページの JavaScript が動く
     bool chrome_view; // 外枠を HTML で出せる（chrome_load / chrome_post）
     bool persist;     // Cookie などを残せる
+    bool frameless;   // OS のタイトルバーがなく、外枠が窓の一番上まで来る（外枠が ー □ × を出し、window を呼ぶ）
 }
+
 
 /// 開いたエンジン
 pub struct Engine {
@@ -82,7 +84,7 @@ pub struct Engine {
 
     fn Info info() {
         let c = h.caps();
-        Info { name: h.name(), script: c % 2 == 1, chrome_view: (c / 2) % 2 == 1, persist: (c / 4) % 2 == 1 }
+        Info { name: h.name(), script: c % 2 == 1, chrome_view: (c / 2) % 2 == 1, persist: (c / 4) % 2 == 1, frameless: (c / 8) % 2 == 1 }
     }
 
     /// イベントがあれば取り出す（待たない）
@@ -146,6 +148,19 @@ pub struct Engine {
 
     /// Cookie・キャッシュ・サイトのデータを全部消す
     fn mut Result<(), str> clear_site_data() { done(h.call(12, 0, "", 0)) }
+
+    /// 外枠の高さを変える（論理ピクセル）。負なら外枠が窓全体を覆い、タブのページは隠れる（設定画面など）
+    fn mut Result<(), str> chrome_height(i64 height) { done(h.call(13, 0, "", if height < 0 { -1 } else { height })) }
+
+    /// 窓の操作（jw_engine.h の JWE_WINDOW_*）。op は 1 押している間マウスで動かす・2 最小化・3 最大化の切り替え・4 最小化を戻して手前に出す。
+    /// Info.frameless の外枠のボタンから呼ぶ。1〜4 の外なら Err
+    fn mut Result<(), str> window(i64 op) { done(h.call(14, 0, "", op)) }
+
+    /// タブのログインの欄にユーザー名とパスワードを入れる（金庫から、利用者が押したときだけ）。
+    /// site は "https://example.com" の形の出どころ。今のページの出どころが完全に同じときだけ入れ、違えば Err で何もしない
+    fn mut Result<(), str> fill_login(i64 tab, str site, str user, str password) {
+        done(h.call(15, tab, "{site.byte_len()}:{user.byte_len()}:" + site + user + password, 0))
+    }
 }
 
 /// エンジンを開く。最初のイベントは Ready（それより前の navigate も受け付ける）
