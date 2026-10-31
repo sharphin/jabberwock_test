@@ -1,0 +1,30 @@
+// Windows の実機で std.pg を確かめるサンプル（PostgreSQL のサーバーがあるときだけ）。
+// 使い方: pg_check.exe ホスト ポート ユーザー パスワード データベース tls（tls は on か off）
+// 例:     .\pg_check.exe localhost 5432 postgres secret postgres off
+use std.pg;
+
+fn Result<(), str> run(pg.Config cfg) {
+    let mut db = pg.connect(cfg)?;
+    let r = db.query("SELECT version(), (SELECT ssl::text FROM pg_stat_ssl WHERE pid = pg_backend_pid()), $1::text || '!'", ["こんにちは"])?;
+    print("version", r.rows[0][0]);
+    print("tls", r.rows[0][1], "echo", r.rows[0][2]);
+    db.exec("CREATE TEMP TABLE jw_check (id int, name text)", [])?;
+    print("insert", db.exec_opt("INSERT INTO jw_check VALUES ($1, $2), ($3, $4)", [Some("1"), Some("山田"), Some("2"), None])?);
+    let rows = db.query("SELECT id, name FROM jw_check ORDER BY id", [])?;
+    print("rows", rows.rows);
+    pg.close(db)?;
+    Ok(())
+}
+
+fn main() {
+    let a = args();
+    if a.len() != 6 {
+        print("使い方: pg_check ホスト ポート ユーザー パスワード データベース tls（on か off）");
+        return;
+    }
+    let cfg = pg.Config { host: a[0], port: a[1].to_int().unwrap_or(5432), user: a[2], password: a[3], database: a[4], tls: a[5] == "on" };
+    match run(cfg) {
+        case Ok(_) -> print("おわり");
+        case Err(e) -> print("Err", e);
+    }
+}

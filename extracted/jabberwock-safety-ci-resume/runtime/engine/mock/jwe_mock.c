@@ -135,7 +135,7 @@ JweStatus jwe_open(const JweConfig *cfg, JweEngine **out) {
     const char *s = getenv("JWE_MOCK_SCRIPT");
     if (s && *s) e->script = fopen(s, "r");
     const char *l = getenv("JWE_MOCK_LOG");
-    if (l && *l) e->log = fopen(l, "w");
+    if (l && *l) e->log = fopen(l, "wb");
     logf_(e, "open", 0, cfg->title, cfg->title_len);
     push(e, JWE_EV_READY, 0, 0, NULL, 0);
     *out = e;

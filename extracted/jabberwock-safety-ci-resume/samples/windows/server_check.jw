@@ -1,0 +1,40 @@
+// Windows の実機で std.http のサーバーを確かめるサンプル。
+// 動かしたら、ブラウザで http://127.0.0.1:8080/ を開く。http://127.0.0.1:8080/stop を開くと終わる。
+use std.http;
+use std.date;
+
+fn Result<(), str> run() {
+    let mut srv = http.listen("127.0.0.1", 8080)?;
+    let mut count = 0;
+    loop {
+        let mut req = srv.next()?;
+        count += 1;
+        if req.path == "/stop" {
+            req.respond(200, "text/plain; charset=utf-8", "終わります（{count} 件目）")?;
+            break;
+        }
+        if req.path == "/favicon.ico" {
+            req.respond(404, "text/plain; charset=utf-8", "ありません")?;
+            continue;
+        }
+        let name = req.query.get("name").unwrap_or("だれか");
+        let page = "<!doctype html><meta charset=\"utf-8\"><title>jabberwock</title>" +
+            "<h1>こんにちは、" + escape(name) + " さん</h1>" +
+            "<p>" + escape(req.method) + " " + escape(req.path) + "（{count} 件目、" + date.now().format() + "）</p>" +
+            "<form><input name=\"name\" placeholder=\"名前\"><button>送る</button></form>" +
+            "<p><a href=\"/stop\">終わる</a></p>";
+        req.respond(200, "text/html; charset=utf-8", page)?;
+    }
+    http.stop(srv);
+    Ok(())
+}
+
+/// HTML に入れる前に < > & " を置き換える
+fn str escape(str s) { s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;") }
+
+fn main() {
+    match run() {
+        case Ok(_) -> print("おわり");
+        case Err(e) -> print("Err", e);
+    }
+}
