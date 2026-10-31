@@ -305,6 +305,64 @@ pub fn Result<(), str> remove(str path) {{ __fs_remove(path) }}
 /// 名前を変える。to があれば置き換える
 pub fn Result<(), str> rename(str from, str to) {{ __fs_rename(from, to) }}
 
+/// ファイル・ディレクトリの情報
+pub struct Info {{
+    // 中身の大きさ（バイト。ファイルでなければ 0）
+    i64 size;
+    bool is_file;
+    bool is_dir;
+    // path そのものがシンボリックリンク（Windows ではリパースポイント）か。ほかの欄はたどった先のもの
+    bool is_link;
+    // 更新時刻（1970-01-01 UTC からのミリ秒。Windows は秒の単位）
+    i64 modified_ms;
+}}
+
+/// 情報を読む（なければ Err。リンクの先がなければ is_file も is_dir も false）
+pub fn Result<Info, str> stat(str path) {{
+    let v = __fs_stat(path)?;
+    Ok(Info {{ size: v[1], is_file: v[0] == 0, is_dir: v[0] == 1, is_link: v[3] == 1, modified_ms: v[2] }})
+}}
+
+/// ファイルか（なければ false）
+pub fn bool is_file(str path) {{
+    match stat(path) {{
+        case Ok(i) -> i.is_file;
+        case Err(e) -> false;
+    }}
+}}
+
+/// ディレクトリか（なければ false）
+pub fn bool is_dir(str path) {{
+    match stat(path) {{
+        case Ok(i) -> i.is_dir;
+        case Err(e) -> false;
+    }}
+}}
+
+/// ファイルを写す。to があれば上書きする（安全な上書きではない。途中で失敗すると to は途中までになる）
+pub fn Result<(), str> copy(str from, str to) {{
+    if from == to {{ return Err("写す元と先が同じです: " + from); }}
+    if !is_file(from) {{ return Err("写す元がファイルではありません: " + from); }}
+    let mut src = open(from)?;
+    let mut dst = create(to)?;
+    loop {{
+        let chunk = src.read(1048576)?;
+        if chunk.len() == 0 {{ break; }}
+        dst.write(chunk)?;
+    }}
+    close(src)?;
+    close(dst)
+}}
+
+/// ファイルか、ディレクトリを中身ごと消す。リンクはたどらず、リンクそのものを消す（なければ Err）
+pub fn Result<(), str> remove_all(str path) {{
+    let info = stat(path)?;
+    if info.is_dir && !info.is_link {{
+        for name in list_dir(path)? {{ remove_all(path + "/" + name)?; }}
+    }}
+    remove(path)
+}}
+
 /// 安全な上書き: `path + ".tmp"` に全部書いて閉じてから path へ名前を変える。
 /// 途中で失敗しても path は元のまま（読む側には古い中身か新しい中身のどちらかが見える）。電源断まで耐えるとは約束しない
 pub fn Result<(), str> write_atomic(str path, u8[] data) {{

@@ -1486,6 +1486,7 @@ struct FnGen {
         }
         if kind == "strs" { v = llvm.vt(b.val("load %list, ptr " + from), ty.Ty.List(own ty.Ty.Str)); }
         if kind == "bytes" { v = llvm.vt(b.val("load %list, ptr " + from), ty.Ty.List(own ty.Ty.Int("u8"))); }
+        if kind == "ints" { v = llvm.vt(b.val("load %list, ptr " + from), ty.Ty.List(own ty.i64t())); }
         let ov = make_enum(m, want, "Ok", [v])?;
         b.op("store " + lt + " " + ov + ", ptr " + res);
         b.br(done);
@@ -1951,6 +1952,14 @@ struct FnGen {
             let ok = b.val("call i32 @jw_fs_list(ptr " + vals[0].v + ", ptr " + out + ", ptr " + err + ")");
             release(vals, all);
             return result_of(m, want, ok, err, "strs", out);
+        }
+        if name == "__fs_stat" {
+            let out = b.alloca("%list");
+            b.op("store %list zeroinitializer, ptr " + out);
+            let err = b.alloca("ptr");
+            let ok = b.val("call i32 @jw_fs_stat(ptr " + vals[0].v + ", ptr " + out + ", ptr " + err + ")");
+            release(vals, all);
+            return result_of(m, want, ok, err, "ints", out);
         }
         if name == "__fs_make_dir" || name == "__fs_remove" {
             let err = b.alloca("ptr");

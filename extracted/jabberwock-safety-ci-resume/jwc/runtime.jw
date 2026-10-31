@@ -4218,6 +4218,7 @@ void jw_random_bytes(int64_t n, WList *out, const WSite *at) {{
 #ifdef _WIN32
 #include <io.h>
 #include <direct.h>
+#include <sys/stat.h>
 #else
 #include <dirent.h>
 #include <sys/stat.h>
@@ -4320,6 +4321,63 @@ int32_t jw_fs_make_dir(WStr *path, WStr **err) {{
     free(cp);
     if (!ok) *err = message("ディレクトリを作れません: ", path);
     return ok;
+}}
+
+#ifdef _WIN32
+__declspec(dllimport) unsigned long __stdcall GetFileAttributesW(const wchar_t *);
+#endif
+
+// 情報: out に [種類（0 ファイル・1 ディレクトリ・2 そのほか）, 大きさ（バイト）, 更新時刻（1970 年からのミリ秒）, リンクか（1 か 0）]。
+// リンクはたどった先の情報（先がなければ種類は 2、大きさは 0）
+int32_t jw_fs_stat(WStr *path, WList *out, WStr **err) {{
+    if (!path_ok(path, err)) return 0;
+    char *cp = c_str(path);
+    int64_t kind = 2, size = 0, mtime = 0, link = 0;
+    int ok = !res_fail("stat");
+#ifdef _WIN32
+    wchar_t *w = to_wide(cp);
+    unsigned long attr = ok ? GetFileAttributesW(w) : 0xFFFFFFFFUL;
+    if (attr == 0xFFFFFFFFUL) {{
+        ok = 0;
+    }} else {{
+        link = (attr & 0x400UL) != 0; // FILE_ATTRIBUTE_REPARSE_POINT
+        struct _stat64 st;
+        if (_wstat64(w, &st) == 0) {{
+            kind = (st.st_mode & _S_IFMT) == _S_IFDIR ? 1 : (st.st_mode & _S_IFMT) == _S_IFREG ? 0 : 2;
+            size = kind == 0 ? (int64_t)st.st_size : 0;
+            mtime = (int64_t)st.st_mtime * 1000;
+        }} else if (!link) {{
+            ok = 0;
+        }}
+    }}
+    free(w);
+#else
+    struct stat st;
+    if (!ok || lstat(cp, &st) != 0) {{
+        ok = 0;
+    }} else {{
+        link = S_ISLNK(st.st_mode) ? 1 : 0;
+        if (!link || stat(cp, &st) == 0) {{
+            kind = S_ISDIR(st.st_mode) ? 1 : S_ISREG(st.st_mode) ? 0 : 2;
+            size = kind == 0 ? (int64_t)st.st_size : 0;
+#ifdef __APPLE__
+            mtime = (int64_t)st.st_mtimespec.tv_sec * 1000 + st.st_mtimespec.tv_nsec / 1000000;
+#else
+            mtime = (int64_t)st.st_mtim.tv_sec * 1000 + st.st_mtim.tv_nsec / 1000000;
+#endif
+        }}
+    }}
+#endif
+    free(cp);
+    if (!ok) {{
+        *err = message("情報を読めません: ", path);
+        return 0;
+    }}
+    int64_t v[4] = {{kind, size, mtime, link}};
+    jw_list_reserve(out, 8, 4);
+    memcpy(out->data, v, sizeof v);
+    out->len = 4;
+    return 1;
 }}
 
 // ファイルか、空のディレクトリを消す

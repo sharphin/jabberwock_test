@@ -1153,6 +1153,76 @@ fn main() {
 }
 "##;
 
+/// std.fs の stat・is_file・is_dir・copy・remove_all。remove_all がリンクの先を消さないことも見る（リンクは Rust 側で作るので unix だけ）
+#[cfg(unix)]
+#[test]
+fn jwc_std_fs_tree() {
+    if !have_clang() { return; }
+    let dir = std::env::temp_dir().join(format!("jw-jwc-fstree-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("keep")).unwrap();
+    std::fs::write(dir.join("keep/precious.txt"), "消えてはいけない").unwrap();
+    std::fs::create_dir_all(dir.join("t/sub")).unwrap();
+    std::fs::write(dir.join("t/a.txt"), "abc").unwrap();
+    std::fs::write(dir.join("t/sub/b.txt"), "").unwrap();
+    std::os::unix::fs::symlink(dir.join("keep"), dir.join("t/to_keep")).unwrap();
+    std::os::unix::fs::symlink(dir.join("nowhere"), dir.join("t/broken")).unwrap();
+    let path = dir.join("main.jw");
+    std::fs::write(&path, FS_TREE_SRC).unwrap();
+    let exe = dir.join("main");
+    let out = Command::new(jwc()).args(["build", "--clang", &native::clang(), "-o"]).arg(&exe).arg(&path).output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let before = std::fs::metadata(dir.join("t/a.txt")).unwrap().modified().unwrap();
+    let ms = before.duration_since(std::time::UNIX_EPOCH).unwrap().as_millis();
+    let got = Command::new(&exe).current_dir(&dir).arg(ms.to_string()).output().unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&got.stdout),
+        "3 true false false true\n0 false true false\n0 false true true\n0 false false true\n\
+         true false false false\n情報を読めません: nai\n\
+         ok abc 3\n写す元と先が同じです: t/a.txt\n写す元がファイルではありません: t\n写す元がファイルではありません: nai\n\
+         false true\n情報を読めません: nai\n"
+    );
+    assert_eq!(std::fs::read_to_string(dir.join("keep/precious.txt")).unwrap(), "消えてはいけない");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[cfg(unix)]
+const FS_TREE_SRC: &str = r##"use std.fs;
+
+fn show(str p, i64 ms) {
+    match fs.stat(p) {
+        case Ok(i) -> print(i.size, i.is_file, i.is_dir, i.is_link, i.modified_ms == ms);
+        case Err(e) -> print(e);
+    }
+}
+
+fn Result<(), str> run() {
+    let a = args();
+    let ms = a[0].to_int().unwrap_or(-1);
+    show("t/a.txt", ms);
+    match fs.stat("t") { case Ok(i) -> print(i.size, i.is_file, i.is_dir, i.is_link); case Err(e) -> print(e); }
+    match fs.stat("t/to_keep") { case Ok(i) -> print(i.size, i.is_file, i.is_dir, i.is_link); case Err(e) -> print(e); }
+    match fs.stat("t/broken") { case Ok(i) -> print(i.size, i.is_file, i.is_dir, i.is_link); case Err(e) -> print(e); }
+    print(fs.is_file("t/a.txt"), fs.is_file("t"), fs.is_dir("t/a.txt"), fs.is_dir("nai"));
+    show("nai", ms);
+    fs.copy("t/a.txt", "c.txt")?;
+    let mut f = fs.open("c.txt")?;
+    let body = f.read_text()?;
+    fs.close(f)?;
+    print("ok", body, body.len());
+    let froms = ["t/a.txt", "t", "nai"];
+    for (i, to) in ["t/a.txt", "x", "x"] {
+        match fs.copy(froms[i], to) { case Ok(_) -> print("?"); case Err(e) -> print(e); }
+    }
+    fs.remove_all("t")?;
+    print(fs.exists("t"), fs.exists("keep/precious.txt"));
+    match fs.remove_all("nai") { case Ok(_) -> print("?"); case Err(e) -> print(e); }
+    Ok(())
+}
+
+fn main() { match run() { case Ok(_) -> {} case Err(e) -> print("err", e); } }
+"##;
+
 #[test]
 fn jwc_std_url_fs_time() {
     if !have_clang() { return; }

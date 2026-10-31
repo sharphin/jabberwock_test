@@ -30,6 +30,7 @@ const RES_DECLS = "declare i32 @jw_fs_open(ptr, i64, ptr, ptr)\n" +
     "declare i32 @jw_fs_make_dir(ptr, ptr)\n" +
     "declare i32 @jw_fs_remove(ptr, ptr)\n" +
     "declare i32 @jw_fs_rename(ptr, ptr, ptr)\n" +
+    "declare i32 @jw_fs_stat(ptr, ptr, ptr)\n" +
     "declare i32 @jw_net_connect(ptr, i64, ptr, ptr)\n" +
     "declare i32 @jw_net_listen(ptr, i64, ptr, ptr)\n" +
     "declare i32 @jw_tcp_read(ptr, i64, ptr, ptr, ptr)\n" +

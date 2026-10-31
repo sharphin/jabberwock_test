@@ -89,7 +89,7 @@ fn main() {
 |---|---|
 | `std.math` | `gcd(a, b)`・`lcm(a, b)`・`pow(base, exp)`（exp は 0 以上）・`clamp(x, lo, hi)`（どれも i64）、`pi()`・`floor(x)`・`ceil(x)`・`round(x)`（f64。round はちょうど半分なら 0 から遠い方） |
 | `std.text` | `pad_left(s, width, fill)`・`pad_right(s, width, fill)`（fill は 1 文字）・`reverse(s)`・`count(s, sub)`（重ならずに数える。sub が空なら実行時エラー）・`is_digits(s)`（空でなく全部 0〜9）・`from_utf8(ref bytes)`（`Option<str>`。正しい UTF-8 でなければ None） |
-| `std.fs` | `open(path)`・`create(path)`・`append(path)`・`close(f)` と資源の型 `File`、`exists(path)`・`list_dir(path)`・`make_dir(path)`・`remove(path)`・`rename(from, to)`・`write_atomic(path, bytes)`・`write_text_atomic(path, s)`（[1.3](#13-資源と-stdfsjwc-だけ)） |
+| `std.fs` | `open(path)`・`create(path)`・`append(path)`・`close(f)` と資源の型 `File`、`exists(path)`・`list_dir(path)`・`make_dir(path)`・`remove(path)`・`rename(from, to)`・`write_atomic(path, bytes)`・`write_text_atomic(path, s)`・`stat(path)` と `Info`・`is_file(path)`・`is_dir(path)`・`copy(from, to)`・`remove_all(path)`（[1.3](#13-資源と-stdfsjwc-だけ)） |
 | `std.env` | `get(name)`（`Option<str>`）（[1.6](#16-stdenvstdtimestdjsonjwc-だけ)） |
 | `std.time` | `now()`・`sleep(ms)`・`unix_ms()` と `Instant`（[1.6](#16-stdenvstdtimestdjsonjwc-だけ)） |
 | `std.json` | `parse(s)`・`stringify(ref v)`・`quote(s)` と `Json`（[1.6](#16-stdenvstdtimestdjsonjwc-だけ)） |
@@ -134,6 +134,12 @@ fn Result<(), str> save() {
 - ディレクトリ: `fs.exists(path)`（`bool`。ファイルでもディレクトリでも）・`fs.list_dir(path)`（`Result<str[], str>`。`.` と `..` を除き、名前の順。UTF-8 でない名前があれば Err）・
   `fs.make_dir(path)`（親はあること。もうあれば Err）・`fs.remove(path)`（ファイルか空のディレクトリ）。
 - `fs.rename(from, to)`: 名前を変える。to があれば置き換える。
+- 情報: `fs.stat(path)`（`Result<Info, str>`。なければ Err）。`Info` は `size`（中身のバイト数。ファイルでなければ 0）・`is_file`・`is_dir`・
+  `is_link`（path そのものがシンボリックリンクか。Windows ではリパースポイント）・`modified_ms`（更新時刻。1970-01-01 UTC からのミリ秒。Windows は秒の単位）。
+  リンクなら is_link 以外はたどった先のもの（先がなければ is_file も is_dir も false で、size は 0）。
+  `fs.is_file(path)`・`fs.is_dir(path)`（`bool`。なければ false）。
+- `fs.copy(from, to)`: ファイルを写す（to があれば上書き。安全な上書きではない）。from と to が同じ文字列、または from がファイルでなければ Err。
+- `fs.remove_all(path)`: ファイルか、ディレクトリを中身ごと消す。リンクはたどらず、リンクそのものを消す（リンクの先は残る）。なければ Err。途中で失敗すると、そこまでに消したものは戻らない。
 - 安全な上書き: `fs.write_atomic(path, bytes)`・`fs.write_text_atomic(path, s)`。`path + ".tmp"` に全部書いて閉じてから path へ名前を変える。
   途中で失敗すれば path は元のまま（一時ファイルは消す）。読む側には古い中身か新しい中身のどちらかが見える。電源断まで耐えるとは約束しない。
 - 実行時ライブラリは資源を表で持ち、値は「札」（場所の番号と世代）。閉じた札を使うと実行時エラー（型検査を通ったプログラムでは起きないはずの、念のための検査）。
