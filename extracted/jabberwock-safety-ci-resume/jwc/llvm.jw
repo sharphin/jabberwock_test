@@ -494,7 +494,7 @@ pub struct Module {
     fn str output() {
         let body = code.join("");
         let res = if body.contains("@jw_res_") || body.contains("@jw_fs_") || body.contains("@jw_file_") || body.contains("@jw_net_")
-            || body.contains("@jw_tcp_") || body.contains("@jw_listener_") || body.contains("@jw_env_get(") || body.contains("@jw_time_") || body.contains("@jw_browser_") || body.contains("@jw_tls_") { RES_DECLS } else { "" };
+            || body.contains("@jw_tcp_") || body.contains("@jw_listener_") || body.contains("@jw_env_get(") || body.contains("@jw_time_") || body.contains("@jw_browser_") || body.contains("@jw_tls_") || body.contains("@jw_random_") { RES_DECLS } else { "" };
         PRELUDE + res + types.join("") + "\n" + globals.join("") + "\n" + body + TBAA
     }
 

@@ -11,6 +11,8 @@
 
 use std.net;
 use std.text;
+use std.hash;
+use std.base64;
 
 /// つなぐ先
 pub struct Config {
@@ -352,11 +354,11 @@ fn Result<(), str> login(ref mut Conn c, ref Config cfg) {
             let salt = r.take(4)?;
             let pu = (cfg.password + cfg.user).bytes();
             let d1 = md5(ref pu);
-            let u8[] mut x = hex(ref d1).bytes();
+            let u8[] mut x = hash.hex(ref d1).bytes();
             for b in salt { x.push(b); }
             let d2 = md5(ref x);
             let u8[] mut p = [];
-            put_cstr(ref mut p, "md5" + hex(ref d2));
+            put_cstr(ref mut p, "md5" + hash.hex(ref d2));
             c.send(112, ref p)?;
         } else if code == 10 {
             // SASL: 使える方式の名前の並び
@@ -368,7 +370,7 @@ fn Result<(), str> login(ref mut Conn c, ref Config cfg) {
             }
             if !found { return Err("PostgreSQL のサーバーが SCRAM-SHA-256 を使えません"); }
             let rnd = __random_bytes(18);
-            let nonce = base64(ref rnd);
+            let nonce = base64.encode(ref rnd);
             scram.client_first_bare = "n=,r=" + nonce;
             let first = "n,," + scram.client_first_bare;
             let u8[] mut p = [];
@@ -426,20 +428,20 @@ struct Scram {
         let mine = client_first_bare.slice(5, client_first_bare.len());
         if !nonce.starts_with(mine) || nonce.len() <= mine.len() { return Err("SCRAM の nonce が合いません"); }
         if iters < 1 || iters > 10000000 { return Err("SCRAM の繰り返しの数が正しくありません"); }
-        let salt = unbase64(salt_b64)?;
+        let salt = base64.decode(salt_b64)?;
         server_first = sf;
         let pw = password.bytes();
-        salted = pbkdf2(ref pw, ref salt, iters);
+        salted = hash.pbkdf2_sha256(ref pw, ref salt, iters);
         let without_proof = "c=biws,r=" + nonce;
         auth_message = client_first_bare + "," + sf + "," + without_proof;
         let ck = "Client Key".bytes();
-        let client_key = hmac(ref salted, ref ck);
-        let stored = sha256(ref client_key);
+        let client_key = hash.hmac_sha256(ref salted, ref ck);
+        let stored = hash.sha256(ref client_key);
         let am = auth_message.bytes();
-        let sig = hmac(ref stored, ref am);
+        let sig = hash.hmac_sha256(ref stored, ref am);
         let u8[] mut proof = [];
         for (i, k) in client_key { proof.push(k ^ sig[i]); }
-        Ok(without_proof + ",p=" + base64(ref proof))
+        Ok(without_proof + ",p=" + base64.encode(ref proof))
     }
 
     /// サーバーの最後の知らせ（v=…）で、サーバーがパスワードを知っていることを確かめる
@@ -447,10 +449,10 @@ struct Scram {
         if auth_message == "" { return Err("PostgreSQL のサーバーが思っていない SCRAM の知らせを送りました"); }
         if sfin.starts_with("e=") { return Err("PostgreSQL の SCRAM の認証に失敗しました: " + sfin.slice(2, sfin.len())); }
         let sk = "Server Key".bytes();
-        let server_key = hmac(ref salted, ref sk);
+        let server_key = hash.hmac_sha256(ref salted, ref sk);
         let am = auth_message.bytes();
-        let sig = hmac(ref server_key, ref am);
-        let want = base64(ref sig);
+        let sig = hash.hmac_sha256(ref server_key, ref am);
+        let want = base64.encode(ref sig);
         let mut got = "";
         for part in sfin.split(",") {
             if part.starts_with("v=") { got = part.slice(2, part.len()); }
@@ -460,146 +462,7 @@ struct Scram {
     }
 }
 
-/// PBKDF2-HMAC-SHA-256 で 32 バイト（SCRAM の Hi）
-fn u8[] pbkdf2(ref u8[] password, ref u8[] salt, i64 iters) {
-    let key = hmac_key(password);
-    let u8[] mut s = salt.map((x) -> x);
-    put_i32(ref mut s, 1);
-    let mut u = key.sign(ref s);
-    let mut out = u.map((x) -> x);
-    for k in range(1, iters) {
-        u = key.sign(ref u);
-        for i in range(32) { out[i] = out[i] ^ u[i]; }
-    }
-    out
-}
-
-// ---------------------------------------------------------------- SHA-256・HMAC・MD5・base64
-
-fn i64[] sha_k() {
-    [1116352408, 1899447441, 3049323471, 3921009573, 961987163, 1508970993, 2453635748, 2870763221,
-     3624381080, 310598401, 607225278, 1426881987, 1925078388, 2162078206, 2614888103, 3248222580,
-     3835390401, 4022224774, 264347078, 604807628, 770255983, 1249150122, 1555081692, 1996064986,
-     2554220882, 2821834349, 2952996808, 3210313671, 3336571891, 3584528711, 113926993, 338241895,
-     666307205, 773529912, 1294757372, 1396182291, 1695183700, 1986661051, 2177026350, 2456956037,
-     2730485921, 2820302411, 3259730800, 3345764771, 3516065817, 3600352804, 4094571909, 275423344,
-     430227734, 506948616, 659060556, 883997877, 958139571, 1322822218, 1537002063, 1747873779,
-     1955562222, 2024104815, 2227730452, 2361852424, 2428436474, 2756734187, 3204031479, 3329325298]
-}
-
-fn i64[] sha_init() { [1779033703, 3144134277, 1013904242, 2773480762, 1359893119, 2600822924, 528734635, 1541459225] }
-
-fn i64 rotr(i64 x, i64 n) { ((x >> n) | (x << (32 - n))) & 4294967295 }
-
-/// 64 バイトのブロックを 1 つ混ぜる
-fn sha_block(ref mut i64[] h, ref u8[] data, i64 at, ref i64[] k) {
-    let i64[] mut w = [];
-    for t in range(16) {
-        let p = at + t * 4;
-        w.push(((data[p] as i64) << 24) | ((data[p + 1] as i64) << 16) | ((data[p + 2] as i64) << 8) | (data[p + 3] as i64));
-    }
-    for t in range(16, 64) {
-        let x = w[t - 15];
-        let y = w[t - 2];
-        let s0 = rotr(x, 7) ^ rotr(x, 18) ^ (x >> 3);
-        let s1 = rotr(y, 17) ^ rotr(y, 19) ^ (y >> 10);
-        w.push((w[t - 16] + s0 + w[t - 7] + s1) & 4294967295);
-    }
-    let mut a = h[0];
-    let mut b = h[1];
-    let mut c = h[2];
-    let mut d = h[3];
-    let mut e = h[4];
-    let mut f = h[5];
-    let mut g = h[6];
-    let mut hh = h[7];
-    for t in range(64) {
-        let s1 = rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25);
-        let ch = (e & f) ^ ((e ^ 4294967295) & g);
-        let t1 = (hh + s1 + ch + k[t] + w[t]) & 4294967295;
-        let s0 = rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22);
-        let maj = (a & b) ^ (a & c) ^ (b & c);
-        let t2 = (s0 + maj) & 4294967295;
-        hh = g;
-        g = f;
-        f = e;
-        e = (d + t1) & 4294967295;
-        d = c;
-        c = b;
-        b = a;
-        a = (t1 + t2) & 4294967295;
-    }
-    h[0] = (h[0] + a) & 4294967295;
-    h[1] = (h[1] + b) & 4294967295;
-    h[2] = (h[2] + c) & 4294967295;
-    h[3] = (h[3] + d) & 4294967295;
-    h[4] = (h[4] + e) & 4294967295;
-    h[5] = (h[5] + f) & 4294967295;
-    h[6] = (h[6] + g) & 4294967295;
-    h[7] = (h[7] + hh) & 4294967295;
-}
-
-/// 状態 h から、前に done バイト混ぜたあとの data を混ぜて、32 バイトの値にする
-fn u8[] sha_finish(ref i64[] start, i64 done, ref u8[] data) {
-    let k = sha_k();
-    let mut h = start.map((x) -> x);
-    let u8[] mut m = data.map((x) -> x);
-    let bits = (done + data.len()) * 8;
-    m.push(128);
-    while m.len() % 64 != 56 { m.push(0); }
-    for i in range(8) { m.push(((bits >> (56 - i * 8)) & 255) as u8); }
-    let mut at = 0;
-    while at < m.len() {
-        sha_block(ref mut h, ref m, at, ref k);
-        at += 64;
-    }
-    let u8[] mut out = [];
-    for x in h {
-        out.push(((x >> 24) & 255) as u8);
-        out.push(((x >> 16) & 255) as u8);
-        out.push(((x >> 8) & 255) as u8);
-        out.push((x & 255) as u8);
-    }
-    out
-}
-
-fn u8[] sha256(ref u8[] data) {
-    let init = sha_init();
-    sha_finish(ref init, 0, data)
-}
-
-/// HMAC-SHA-256 の鍵（内側と外側の 64 バイトを混ぜた状態を持つ）
-struct HmacKey {
-    i64[] inner;
-    i64[] outer;
-
-    fn u8[] sign(ref u8[] msg) {
-        let ih = sha_finish(ref inner, 64, msg);
-        sha_finish(ref outer, 64, ref ih)
-    }
-}
-
-fn HmacKey hmac_key(ref u8[] key) {
-    let k = sha_k();
-    let u8[] mut kb = if key.len() > 64 { sha256(key) } else { key.map((x) -> x) };
-    while kb.len() < 64 { kb.push(0); }
-    let u8[] mut ip = [];
-    let u8[] mut op = [];
-    for x in kb {
-        ip.push(x ^ 54);
-        op.push(x ^ 92);
-    }
-    let mut inner = sha_init();
-    sha_block(ref mut inner, ref ip, 0, ref k);
-    let mut outer = sha_init();
-    sha_block(ref mut outer, ref op, 0, ref k);
-    HmacKey { inner: inner, outer: outer }
-}
-
-fn u8[] hmac(ref u8[] key, ref u8[] msg) {
-    let hk = hmac_key(key);
-    hk.sign(msg)
-}
+// ---------------------------------------------------------------- MD5（md5 の認証だけに使う）
 
 fn i64[] md5_s() {
     [7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20,
@@ -619,7 +482,7 @@ fn i64[] md5_k() {
 
 fn i64 rotl(i64 x, i64 n) { ((x << n) | (x >> (32 - n))) & 4294967295 }
 
-/// MD5（md5 の認証だけに使う）
+/// MD5
 fn u8[] md5(ref u8[] data) {
     let s = md5_s();
     let k = md5_k();
@@ -673,56 +536,4 @@ fn u8[] md5(ref u8[] data) {
         for i in range(4) { out.push(((x >> (i * 8)) & 255) as u8); }
     }
     out
-}
-
-/// 小文字の 16 進
-fn str hex(ref u8[] b) {
-    let digits = "0123456789abcdef".chars();
-    let mut s = "";
-    for x in b {
-        let v = x as i64;
-        s += digits[v >> 4] + digits[v & 15];
-    }
-    s
-}
-
-fn str b64_chars() { "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/" }
-
-fn str base64(ref u8[] b) {
-    let cs = b64_chars().chars();
-    let mut s = "";
-    let mut i = 0;
-    while i < b.len() {
-        let n = b.len() - i;
-        let x0 = b[i] as i64;
-        let x1 = if n > 1 { b[i + 1] as i64 } else { 0 };
-        let x2 = if n > 2 { b[i + 2] as i64 } else { 0 };
-        let v = (x0 << 16) | (x1 << 8) | x2;
-        s += cs[(v >> 18) & 63] + cs[(v >> 12) & 63];
-        s += if n > 1 { cs[(v >> 6) & 63] } else { "=" };
-        s += if n > 2 { cs[v & 63] } else { "=" };
-        i += 3;
-    }
-    s
-}
-
-fn Result<u8[], str> unbase64(str s) {
-    let cs = b64_chars();
-    let u8[] mut out = [];
-    let mut acc = 0;
-    let mut nbits = 0;
-    for ch in s.chars() {
-        if ch == "=" { break; }
-        let v = match cs.find(ch) {
-            case Some(i) -> i;
-            case None -> return Err("base64 が読めません");
-        };
-        acc = ((acc << 6) | v) & 16777215;
-        nbits += 6;
-        if nbits >= 8 {
-            nbits -= 8;
-            out.push(((acc >> nbits) & 255) as u8);
-        }
-    }
-    Ok(out)
 }

@@ -1,0 +1,35 @@
+// 標準ライブラリ std.random: OS の乱数（暗号に使える）。`use std.random;` と書いて使う
+//   let key = random.bytes(32);          // u8[]
+//   let n = random.int(1, 7);            // 1〜6（hi は含まない）
+// Linux・macOS は getentropy、Windows は BCryptGenRandom。取り出せなければ実行時エラー。種を決めて同じ並びを出す乱数はまだない。
+
+/// n バイト（n が負なら実行時エラー）
+pub fn u8[] bytes(i64 n) { __random_bytes(n) }
+
+/// lo 以上 hi 未満の整数（どの値も同じ確からしさ）。hi <= lo か、hi - lo が i64 に収まらなければ実行時エラー
+pub fn i64 int(i64 lo, i64 hi) {
+    assert(lo < hi);
+    let span = hi - lo;
+    let half = 4611686018427387904; // 2^62
+    if span > half {
+        // 当たる確率は 1/2 より大きい
+        loop {
+            let v = draw63();
+            if v < span { return lo + v; }
+        }
+    }
+    // 2^62 の中で span の倍数に収まる範囲だけ使う（偏りをなくす）
+    let limit = half - half % span;
+    loop {
+        let v = draw63() & (half - 1);
+        if v < limit { return lo + v % span; }
+    }
+}
+
+/// 0 以上 2^63 未満
+fn i64 draw63() {
+    let b = __random_bytes(8);
+    let mut v = (b[0] as i64) & 127;
+    for i in range(1, 8) { v = (v << 8) | (b[i] as i64); }
+    v
+}

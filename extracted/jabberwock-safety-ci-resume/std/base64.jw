@@ -1,0 +1,53 @@
+// 標準ライブラリ std.base64: base64（RFC 4648 の標準の文字。`=` で埋める）。`use std.base64;` と書いて使う
+//   let s = base64.encode(ref data);      // str
+//   let back = base64.decode(s)?;         // u8[]。base64 でなければ Err
+// .jw だけで書いている。URL 用の文字（`-` と `_`）はまだない。
+
+fn str chars() { "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/" }
+
+/// base64 の文字列にする
+pub fn str encode(ref u8[] b) {
+    let cs = chars().chars();
+    let mut s = "";
+    let mut i = 0;
+    while i < b.len() {
+        let n = b.len() - i;
+        let x0 = b[i] as i64;
+        let x1 = if n > 1 { b[i + 1] as i64 } else { 0 };
+        let x2 = if n > 2 { b[i + 2] as i64 } else { 0 };
+        let v = (x0 << 16) | (x1 << 8) | x2;
+        s += cs[(v >> 18) & 63] + cs[(v >> 12) & 63];
+        s += if n > 1 { cs[(v >> 6) & 63] } else { "=" };
+        s += if n > 2 { cs[v & 63] } else { "=" };
+        i += 3;
+    }
+    s
+}
+
+/// base64 の文字列を戻す。長さが 4 の倍数でない・ほかの文字がある・`=` が途中にある・余りのビットが 0 でないなら Err（空白や改行も受け付けない）
+pub fn Result<u8[], str> decode(str s) {
+    let cs = chars();
+    let xs = s.chars();
+    if xs.len() % 4 != 0 { return Err("base64 の長さが 4 の倍数ではありません"); }
+    let mut pad = 0;
+    if xs.len() > 0 && xs[xs.len() - 1] == "=" { pad = 1; }
+    if pad == 1 && xs[xs.len() - 2] == "=" { pad = 2; }
+    let u8[] mut out = [];
+    let mut acc = 0;
+    let mut nbits = 0;
+    for (i, ch) in xs {
+        if i >= xs.len() - pad { break; }
+        let v = match cs.find(ch) {
+            case Some(k) -> k;
+            case None -> return Err("base64 にない文字があります: " + ch);
+        };
+        acc = ((acc << 6) | v) & 16777215;
+        nbits += 6;
+        if nbits >= 8 {
+            nbits -= 8;
+            out.push(((acc >> nbits) & 255) as u8);
+        }
+    }
+    if acc & ((1 << nbits) - 1) != 0 { return Err("base64 の終わりの余りのビットが 0 ではありません"); }
+    Ok(out)
+}

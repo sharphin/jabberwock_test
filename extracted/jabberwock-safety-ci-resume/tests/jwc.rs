@@ -1060,6 +1060,99 @@ fn main() {
 }
 "#;
 
+/// std.hash・std.base64・std.random。ハッシュは決まった値（FIPS 180-4・RFC 4231・RFC 7914 の例）と比べ、乱数は範囲と長さだけ見る
+#[test]
+fn jwc_std_hash_random() {
+    if !have_clang() { return; }
+    let dir = std::env::temp_dir().join(format!("jw-jwc-hash-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("main.jw");
+    std::fs::write(&path, HASH_SRC).unwrap();
+    let exe = dir.join("main");
+    let out = Command::new(jwc()).args(["build", "--clang", &native::clang(), "-o"]).arg(&exe).arg(&path).output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let got = Command::new(&exe).output().unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&got.stdout),
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\n\
+         ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\n\
+         248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1\n\
+         cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0\n\
+         b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7\n\
+         60e431591ee0b67f0d8a26aacbf5b77f8e0bc6213728c5140546040f0ee37f54\n\
+         55ac046e56e3089fec1691c22544b605f94185216dde0465e68b9d57c20dacbc\n\
+         true false false\n\
+         ,Zg==,Zm8=,Zm9v,Zm9vYg==,Zm9vYmE=,Zm9vYmFy\n\
+         [102, 111, 111, 98, 97]\n0\n\
+         base64 の長さが 4 の倍数ではありません\nbase64 にない文字があります: =\nbase64 にない文字があります: *\n\
+         base64 の終わりの余りのビットが 0 ではありません\nbase64 の終わりの余りのビットが 0 ではありません\n\
+         32 true true true\n"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+const HASH_SRC: &str = r##"use std.hash;
+use std.base64;
+use std.random;
+
+fn show(ref u8[] b) { print(hash.hex(ref b)); }
+
+fn main() {
+    for s in ["", "abc", "abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"] {
+        let b = s.bytes();
+        let d = hash.sha256(ref b);
+        show(ref d);
+    }
+    let u8[] mut million = [];
+    for i in range(1000000) { million.push(97); }
+    let dm = hash.sha256(ref million);
+    show(ref dm);
+    // RFC 4231 の 1 と 6（鍵がブロックより長い）
+    let u8[] mut k1 = [];
+    for i in range(20) { k1.push(11); }
+    let m1 = "Hi There".bytes();
+    let h1 = hash.hmac_sha256(ref k1, ref m1);
+    show(ref h1);
+    let u8[] mut k6 = [];
+    for i in range(131) { k6.push(170); }
+    let m6 = "Test Using Larger Than Block-Size Key - Hash Key First".bytes();
+    let h6 = hash.hmac_sha256(ref k6, ref m6);
+    show(ref h6);
+    // RFC 7914 の PBKDF2-HMAC-SHA256 の例（最初の 32 バイト）
+    let pw = "passwd".bytes();
+    let salt = "salt".bytes();
+    let p = hash.pbkdf2_sha256(ref pw, ref salt, 1);
+    show(ref p);
+    let other = h1.map((x) -> x);
+    let short = "Hi".bytes();
+    print(hash.equal(ref h1, ref other), hash.equal(ref h1, ref h6), hash.equal(ref h1, ref short));
+    let str[] mut parts = [];
+    for s in ["", "f", "fo", "foo", "foob", "fooba", "foobar"] {
+        let b = s.bytes();
+        parts.push(base64.encode(ref b));
+    }
+    print(parts.join(","));
+    match base64.decode("Zm9vYmE=") { case Ok(b) -> print(b); case Err(e) -> print(e); }
+    match base64.decode("") { case Ok(b) -> print(b.len()); case Err(e) -> print(e); }
+    for s in ["Zm9", "Zm=v", "Zm*v", "Zm9=", "Zh=="] {
+        match base64.decode(s) { case Ok(b) -> print("?", b); case Err(e) -> print(e); }
+    }
+    let key = random.bytes(32);
+    let mut in_range = true;
+    let mut seen_lo = false;
+    let mut seen_hi = false;
+    for i in range(2000) {
+        let n = random.int(1, 7);
+        if n < 1 || n > 6 { in_range = false; }
+        if n == 1 { seen_lo = true; }
+        if n == 6 { seen_hi = true; }
+        let w = random.int(-9223372036854775807, 9223372036854775807);
+        if w == 9223372036854775807 { in_range = false; }
+    }
+    print(key.len(), in_range, seen_lo, seen_hi);
+}
+"##;
+
 #[test]
 fn jwc_std_url_fs_time() {
     if !have_clang() { return; }

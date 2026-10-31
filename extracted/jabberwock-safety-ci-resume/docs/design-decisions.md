@@ -787,3 +787,8 @@ let x = pick(true, 1, 2);
   SCRAM の nonce のために、OS の乱数を取り出す内部の関数 `__random_bytes(n)`（標準ライブラリの中だけ。Linux は getentropy、Windows は BCryptGenRandom。
   取り出せなければ実行時エラー）を足した。SHA-256・HMAC・PBKDF2・MD5・base64 は std/pg.jw の中に書いた（公開はしない）。
   テストは Linux だけで、その場で initdb・pg_ctl で試験用のサーバーを立てる（root なら postgres の利用者で立てる）。
+- std.hash・std.base64・std.random（2026-10-31、オーナーの選択「提案の順に進める」の 1 つ目）: std.pg のために書いた SHA-256・HMAC・PBKDF2・base64 と、
+  内部の乱数 `__random_bytes` を公開した（std.pg はこれらを使う。MD5 は弱いので std.pg の中だけに残した）。
+  hash.equal は秘密の値（MAC など）を比べるときに、どこで違ったかが時間でわからないようにする。base64.decode は厳しく読む（あいまいな形を受け付けない）。
+  random.int は偏りが出ないように、幅の倍数に収まらない値を捨てて引き直す。種を決めた乱数（同じ並びを出すもの）は、使い道がはっきりするまで作らない。
+  あわせて、乱数だけを使うプログラムで実行時ライブラリの宣言が出ていなかった（std.pg は std.net も使うので気づかなかった）のを直した。

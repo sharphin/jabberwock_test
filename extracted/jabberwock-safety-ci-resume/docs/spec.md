@@ -100,6 +100,9 @@ fn main() {
 | `std.tls` | `connect(host, port)`・`close(s)` と資源の型 `TlsStream`（[1.9](#19-stdtlsjwc-だけ)） |
 | `std.gzip` | `decompress(ref data, limit)`・`compress(ref data)`・`crc32(ref data)`（[1.10](#110-stdgzipjwc-だけ)） |
 | `std.pg` | `connect(cfg)`・`close(db)` と `Config`・`Conn`・`Rows`（[1.11](#111-stdpgjwc-だけ)） |
+| `std.hash` | `sha256(ref data)`・`hmac_sha256(ref key, ref msg)`・`pbkdf2_sha256(ref password, ref salt, iters)`・`hex(ref data)`・`equal(ref a, ref b)`（[1.12](#112-stdhashstdbase64stdrandomjwc-だけ)） |
+| `std.base64` | `encode(ref data)`・`decode(s)`（[1.12](#112-stdhashstdbase64stdrandomjwc-だけ)） |
+| `std.random` | `bytes(n)`・`int(lo, hi)`（[1.12](#112-stdhashstdbase64stdrandomjwc-だけ)） |
 
 - 詳しい動き（一周・実行時エラーになる条件）は `std/*.jw` の各関数の説明に書いてある。
 
@@ -314,6 +317,28 @@ pg.close(db)?;
   `get(row, col)`（`Option<str>`）は row 行目の名前が col の列の値（その列がなければ None）。
 - `pg.close(db)`（`Result<(), str>`）: 終わりの知らせ（Terminate）を送ってから閉じる。送れなければ Err だが、どちらでも閉じる。
 - TLS ではつながない（同じ機械か、信頼できるネットワークの中で使う）。パスワードは SASLprep（Unicode の正規化）をせずにそのまま使う。
+
+### 1.12 std.hash・std.base64・std.random（jwc だけ）
+
+```
+use std.hash;
+use std.base64;
+use std.random;
+let d = hash.sha256(ref data);                    // u8[]（32 バイト）
+print(hash.hex(ref d), base64.encode(ref d));
+let back = base64.decode("aGk=")?;                 // [104, 105]
+let key = random.bytes(32);                        // OS の乱数
+let die = random.int(1, 7);                        // 1〜6
+```
+
+- `std.hash`（.jw だけで書いている）: `sha256(ref data)`（SHA-256。32 バイト）・`hmac_sha256(ref key, ref msg)`（HMAC-SHA-256。key は何バイトでもよい）・
+  `pbkdf2_sha256(ref password, ref salt, iters)`（PBKDF2-HMAC-SHA-256 の最初の 32 バイト。iters が 1 未満なら実行時エラー）・
+  `hex(ref data)`（小文字の 16 進の `str`）・`equal(ref a, ref b)`（`bool`。長さが同じなら、どこで違っても同じだけ時間をかけて比べる）。
+- `std.base64`: `encode(ref data)`（標準の文字と `=` の埋め）・`decode(s)`（`Result<u8[], str>`）。decode は、長さが 4 の倍数でない・
+  ほかの文字（空白や改行も）がある・`=` が終わり以外にある・終わりの余りのビットが 0 でないなら Err。
+- `std.random`（暗号に使える OS の乱数。Linux・macOS は getentropy、Windows は BCryptGenRandom。取り出せなければ実行時エラー）:
+  `bytes(n)`（`u8[]`。n が負なら実行時エラー）・`int(lo, hi)`（lo 以上 hi 未満の i64 を同じ確からしさで。hi <= lo か、hi - lo があふれるなら実行時エラー）。
+  種を決めて同じ並びを出す乱数はない。
 
 ## 2. 字句
 
