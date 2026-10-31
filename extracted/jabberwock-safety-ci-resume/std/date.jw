@@ -1,0 +1,185 @@
+// 標準ライブラリ std.date: 日付と時刻（いつも UTC。グレゴリオ暦を過去にも延ばす）。`use std.date;` と書いて使う
+//   let d = date.now();                                     // DateTime（今の UTC）
+//   print(d.format());                                      // "2026-10-31T10:37:52.123Z"
+//   let t = date.parse("2026-10-31T19:37:52+09:00")?;       // 時差は UTC に直す
+//   let next = date.from_unix_ms(t.unix_ms() + 86400000);   // 1 日（86400000 ミリ秒）あと
+//   print(next.weekday());                                  // 1（月）〜 7（日）
+// .jw だけで書いている。年は 0〜9999。うるう秒は扱わない（秒は 0〜59）。地域の時刻（タイムゾーンの決まり）はまだない。
+
+use std.time;
+
+/// UTC の日時
+pub struct DateTime {
+    i64 year;
+    i64 month;
+    i64 day;
+    i64 hour;
+    i64 minute;
+    i64 second;
+    // ミリ秒（0〜999）
+    i64 ms;
+
+    /// 1970-01-01T00:00:00Z からのミリ秒（前なら負）
+    fn i64 unix_ms() {
+        let days = days_from_civil(year, month, day);
+        (((days * 24 + hour) * 60 + minute) * 60 + second) * 1000 + ms
+    }
+
+    /// 曜日。ISO 8601 の番号で 1（月）〜 7（日）
+    fn i64 weekday() {
+        // 1970-01-01 は木曜（4）
+        floor_mod(days_from_civil(year, month, day) + 3, 7) + 1
+    }
+
+    /// その年の何日目か（1 月 1 日が 1）
+    fn i64 day_of_year() { days_from_civil(year, month, day) - days_from_civil(year, 1, 1) + 1 }
+
+    /// ISO 8601（RFC 3339）の形。ミリ秒が 0 なら書かない（"2026-10-31T10:37:52Z"）
+    fn str format() {
+        let mut s = format_date() + "T" + two(hour) + ":" + two(minute) + ":" + two(second);
+        if ms != 0 { s += "." + pad(ms, 3); }
+        s + "Z"
+    }
+
+    /// 日付だけ（"2026-10-31"）
+    fn str format_date() { pad(year, 4) + "-" + two(month) + "-" + two(day) }
+}
+
+/// 1 日のミリ秒
+const DAY_MS = 86400000;
+
+/// 今の UTC
+pub fn DateTime now() { from_unix_ms(time.unix_ms()) }
+
+/// 1970-01-01T00:00:00Z からのミリ秒から作る。0〜9999 年に入らなければ実行時エラー
+pub fn DateTime from_unix_ms(i64 t) {
+    assert(t >= MIN_MS && t <= MAX_MS);
+    let days = floor_div(t, DAY_MS);
+    let rest = t - days * DAY_MS;
+    // civil_from_days（Howard Hinnant の方法。0 年 3 月 1 日を始まりにして数える）
+    let z = days + 719468;
+    let era = floor_div(z, 146097);
+    let doe = z - era * 146097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + (if m <= 2 { 1 } else { 0 });
+    DateTime { year: y, month: m, day: d, hour: rest / 3600000, minute: rest / 60000 % 60, second: rest / 1000 % 60, ms: rest % 1000 }
+}
+
+/// 年月日と時刻から作る。どれかが範囲の外（2 月 30 日など）なら Err
+pub fn Result<DateTime, str> make(i64 year, i64 month, i64 day, i64 hour, i64 minute, i64 second, i64 ms) {
+    if year < 0 || year > 9999 { return Err("年は 0〜9999 です: {year}"); }
+    if month < 1 || month > 12 { return Err("月は 1〜12 です: {month}"); }
+    if day < 1 || day > days_in_month(year, month) { return Err("{year} 年 {month} 月に {day} 日はありません"); }
+    if hour < 0 || hour > 23 || minute < 0 || minute > 59 || second < 0 || second > 59 { return Err("時刻が正しくありません: " + two(hour) + ":" + two(minute) + ":" + two(second)); }
+    if ms < 0 || ms > 999 { return Err("ミリ秒は 0〜999 です: {ms}"); }
+    Ok(DateTime { year: year, month: month, day: day, hour: hour, minute: minute, second: second, ms: ms })
+}
+
+/// うるう年か
+pub fn bool is_leap(i64 year) { (year % 4 == 0 && year % 100 != 0) || year % 400 == 0 }
+
+/// その月の日の数。month が 1〜12 でなければ実行時エラー
+pub fn i64 days_in_month(i64 year, i64 month) {
+    assert(month >= 1 && month <= 12);
+    if month == 2 { return if is_leap(year) { 29 } else { 28 }; }
+    if month == 4 || month == 6 || month == 9 || month == 11 { 30 } else { 31 }
+}
+
+/// ISO 8601（RFC 3339）の日付か日時を読む。読める形:
+///   "2026-10-31"（その日の 0 時 UTC）・"2026-10-31T10:37:52Z"・"2026-10-31T10:37:52.5+09:00"（t と z の小文字、T の代わりの空白もよい）
+/// 秒の小数は 9 桁まで読み、ミリ秒より細かい分は切り捨てる。時差があれば UTC に直す。ほかの形・ない日付なら Err
+pub fn Result<DateTime, str> parse(str s) {
+    let cs = s.chars();
+    let bad = "日時の形が読めません（2026-10-31T10:37:52Z のように書いてください）: " + s;
+    if cs.len() < 10 || cs[4] != "-" || cs[7] != "-" { return Err(bad); }
+    let year = digits(ref cs, 0, 4);
+    let month = digits(ref cs, 5, 2);
+    let day = digits(ref cs, 8, 2);
+    if year < 0 || month < 0 || day < 0 { return Err(bad); }
+    if cs.len() == 10 { return make(year, month, day, 0, 0, 0, 0); }
+    let sep = cs[10];
+    if sep != "T" && sep != "t" && sep != " " { return Err(bad); }
+    if cs.len() < 20 || cs[13] != ":" || cs[16] != ":" { return Err(bad); }
+    let hour = digits(ref cs, 11, 2);
+    let minute = digits(ref cs, 14, 2);
+    let second = digits(ref cs, 17, 2);
+    if hour < 0 || minute < 0 || second < 0 { return Err(bad); }
+    let mut i = 19;
+    let mut ms = 0;
+    if cs[i] == "." {
+        i += 1;
+        let from = i;
+        while i < cs.len() && digits(ref cs, i, 1) >= 0 {
+            if i - from < 3 { ms = ms * 10 + digits(ref cs, i, 1); }
+            i += 1;
+        }
+        let n = i - from;
+        if n == 0 || n > 9 { return Err(bad); }
+        if n == 1 { ms *= 100; } else if n == 2 { ms *= 10; }
+    }
+    if i >= cs.len() { return Err(bad); }
+    let mut offset = 0;
+    if cs[i] == "Z" || cs[i] == "z" {
+        if i + 1 != cs.len() { return Err(bad); }
+    } else if cs[i] == "+" || cs[i] == "-" {
+        if i + 6 != cs.len() || cs[i + 3] != ":" { return Err(bad); }
+        let oh = digits(ref cs, i + 1, 2);
+        let om = digits(ref cs, i + 4, 2);
+        if oh < 0 || om < 0 || oh > 23 || om > 59 { return Err(bad); }
+        offset = (oh * 60 + om) * 60000;
+        if cs[i] == "-" { offset = -offset; }
+    } else {
+        return Err(bad);
+    }
+    let local = make(year, month, day, hour, minute, second, ms)?;
+    let t = local.unix_ms() - offset;
+    if t < MIN_MS || t > MAX_MS { return Err("UTC に直すと 0〜9999 年に入りません: " + s); }
+    Ok(from_unix_ms(t))
+}
+
+// 0000-01-01T00:00:00.000Z と 9999-12-31T23:59:59.999Z
+const MIN_MS = -62167219200000;
+const MAX_MS = 253402300799999;
+
+/// 1970-01-01 からの日の数（days_from_civil。Howard Hinnant の方法）
+fn i64 days_from_civil(i64 y0, i64 m, i64 d) {
+    let y = if m <= 2 { y0 - 1 } else { y0 };
+    let era = floor_div(y, 400);
+    let yoe = y - era * 400;
+    let mp = if m > 2 { m - 3 } else { m + 9 };
+    let doy = (153 * mp + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146097 + doe - 719468
+}
+
+fn i64 floor_div(i64 a, i64 b) {
+    let q = a / b;
+    if (a % b != 0) && ((a < 0) != (b < 0)) { q - 1 } else { q }
+}
+
+fn i64 floor_mod(i64 a, i64 b) { a - floor_div(a, b) * b }
+
+/// cs[from..from+n] が数字だけならその数、でなければ -1
+fn i64 digits(ref str[] cs, i64 from, i64 n) {
+    if from + n > cs.len() { return -1; }
+    let mut v = 0;
+    for i in range(from, from + n) {
+        match "0123456789".find(cs[i]) {
+            case Some(k) -> v = v * 10 + k;
+            case None -> return -1;
+        }
+    }
+    v
+}
+
+fn str two(i64 n) { pad(n, 2) }
+
+fn str pad(i64 n, i64 width) {
+    let mut s = "{n}";
+    while s.len() < width { s = "0" + s; }
+    s
+}

@@ -734,6 +734,92 @@ fn main() {
 }
 "#;
 
+/// std.date・std.csv・std.regex。決まった値と比べる（日付は Python の datetime で出した値）
+#[test]
+fn jwc_std_date_csv_regex() {
+    if !have_clang() { return; }
+    let dir = std::env::temp_dir().join(format!("jw-jwc-dcr-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("main.jw");
+    std::fs::write(&path, DCR_SRC).unwrap();
+    let exe = dir.join("main");
+    let out = Command::new(jwc()).args(["build", "--clang", &native::clang(), "-o"]).arg(&exe).arg(&path).output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let got = Command::new(&exe).output().unwrap();
+    let _ = std::fs::remove_dir_all(dir);
+    assert_eq!(
+        String::from_utf8_lossy(&got.stdout),
+        "2026-10-31T10:37:52Z 1793443072000 6 304\n\
+         1969-12-31T23:59:59.500Z -500 3 365\n\
+         0000-01-01T00:00:00Z -62167219200000 6 1\n\
+         2024-02-29T17:30:00Z 1709227800000 4 60\n\
+         Err 2023 年 2 月に 29 日はありません\n\
+         Err 日時の形が読めません（2026-10-31T10:37:52Z のように書いてください）: 2026-10-31T10:00:00\n\
+         Err UTC に直すと 0〜9999 年に入りません: 0000-01-01T00:00:00+01:00\n\
+         9999-12-31T23:59:59.999Z 28 29\n\
+         [[name, age], [山田, 太郎, 30], [a\"b\nc, ]] true\n\
+         Err CSV の 1 行目: 囲んでいない値の中に `\"` があります（`\"` で囲んで `\"\"` と書いてください）\n\
+         Err CSV の 2 行目の `\"` が閉じていません\n\
+         4 11 Some(03-1234) Some(03) Some(1234) None\n\
+         2-1 $  44-33 $  x\n\
+         [a, b, c, , d] [hello, foo_bar, 42] [0-0, 1-3, 3-3, 4-4]\n\
+         Some(aaa) Some(aa) Some(a|b) true false\n\
+         false false\n\
+         Err 正規表現の 3 文字目: 繰り返しが重なっています（かっこで囲んでください）\n\
+         Err 正規表現が大きすぎます（繰り返しの回数を減らしてください）\n\
+         ok\n"
+    );
+}
+
+const DCR_SRC: &str = r#"use std.date;
+use std.csv;
+use std.regex;
+
+fn Result<(), str> run() {
+    for s in ["2026-10-31T19:37:52+09:00", "1969-12-31T23:59:59.5Z", "0000-01-01T00:00:00Z", "2024-02-29 12:00:00-05:30",
+              "2023-02-29", "2026-10-31T10:00:00", "0000-01-01T00:00:00+01:00"] {
+        match date.parse(s) {
+            case Ok(d) -> print(d.format(), d.unix_ms(), d.weekday(), d.day_of_year());
+            case Err(e) -> print("Err", e);
+        }
+    }
+    print(date.from_unix_ms(253402300799999).format(), date.days_in_month(1900, 2), date.days_in_month(2000, 2));
+
+    let rows = csv.parse("name,age\r\n\"山田, 太郎\",30\n\"a\"\"b\nc\",")?;
+    let again = csv.parse(csv.format(ref rows))?;
+    print(rows, csv.format(ref again) == csv.format(ref rows));
+    for s in ["a\"b", "x\n\"abc"] {
+        match csv.parse(s) { case Ok(r) -> print(r); case Err(m) -> print("Err", m); }
+    }
+
+    let tel = regex.compile("(\\d+)-(\\d+)(x)?")?;
+    match tel.find("tel 03-1234") {
+        case Some(m) -> print(m.start, m.end, m.group(0), m.group(1), m.group(2), m.group(3));
+        case None -> print("None");
+    }
+    let sw = regex.compile("(\\d+)-(\\d+)")?;
+    print(sw.replace_all("1-2 33-44 x", "$2-$1 $$ $9"));
+    let sp = regex.compile("\\s*,\\s*")?;
+    let w = regex.compile("\\b\\w+\\b")?;
+    let ex = regex.compile("x*")?;
+    print(sp.split("a , b,c ,, d"), w.find_all("hello, 世界 foo_bar 42").map((m) -> m.text), ex.find_all("axxb").map((m) -> "{m.start}-{m.end}"));
+    let g = regex.compile("a{{2,3}}")?;
+    let lazy = regex.compile("a{{2,}}?")?;
+    let lit = regex.compile(regex.escape("a|b"))?;
+    print(g.find("aaaa").map((m) -> m.text), lazy.find("aaaa").map((m) -> m.text), lit.find("xa|b").map((m) -> m.text), lit.is_match("a|b"), lit.is_match("a"));
+    // 後戻りする方式ならとても遅くなるパターン
+    let evil = regex.compile("(a*)*b")?;
+    let evil2 = regex.compile("(a|aa)+$")?;
+    print(evil.is_match("a".repeat(5000)), evil2.is_match("a".repeat(3000) + "b"));
+    for p in ["a**", "(a{{1000}}){{30}}"] {
+        match regex.compile(p) { case Ok(r) -> print("?"); case Err(e) -> print("Err", e); }
+    }
+    Ok(())
+}
+
+fn main() { match run() { case Ok(_) -> print("ok"); case Err(e) -> print("Err", e); } }
+"#;
+
 const HTTP_SRC: &str = r#"use std.net;
 use std.http;
 use std.text;

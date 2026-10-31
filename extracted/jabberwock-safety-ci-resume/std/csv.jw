@@ -1,0 +1,96 @@
+// 標準ライブラリ std.csv: CSV（RFC 4180）の読み書き。`use std.csv;` と書いて使う
+//   let rows = csv.parse("name,age\r\n\"山田, 太郎\",30\r\n")?;   // str[][]: [[name, age], [山田, 太郎, 30]]
+//   let s = csv.format(ref rows);                                  // "name,age\r\n\"山田, 太郎\",30\r\n"
+// .jw だけで書いている。区切りは `,`、行の終わりは CRLF か LF。値はどれも文字列（数や型には直さない）。
+
+/// CSV を読む。`"` で囲んだ値の中には `,`・改行・`""`（`"` 1 つ）を書ける。
+/// 終わりの改行のあとに空の行は作らない。囲んでいない値の中の `"`・閉じた `"` のあとの余計な文字・閉じていない `"` は Err（何行目かを書く）
+pub fn Result<str[][], str> parse(str s) {
+    let cs = s.chars();
+    let str[][] mut rows = [];
+    let str[] mut row = [];
+    let mut field = "";
+    let mut i = 0;
+    let mut line = 1;
+    // 今の値を読み始めたところか（行の始めの空の値と、何もない行の終わりを見分ける）
+    let mut fresh = true;
+    while i < cs.len() {
+        let c = cs[i];
+        if fresh && c == "\"" {
+            // 囲んだ値
+            let start = line;
+            i += 1;
+            let mut closed = false;
+            while i < cs.len() {
+                let q = cs[i];
+                if q == "\"" {
+                    if i + 1 < cs.len() && cs[i + 1] == "\"" {
+                        field += "\"";
+                        i += 2;
+                    } else {
+                        closed = true;
+                        i += 1;
+                        break;
+                    }
+                } else {
+                    if q == "\n" { line += 1; }
+                    field += q;
+                    i += 1;
+                }
+            }
+            if !closed { return Err("CSV の {start} 行目の `\"` が閉じていません"); }
+            if i < cs.len() && cs[i] != "," && cs[i] != "\n" && cs[i] != "\r" {
+                return Err("CSV の {line} 行目: 閉じた `\"` のあとに `,` か改行がありません");
+            }
+            fresh = false;
+        } else if c == "," {
+            row.push(field);
+            field = "";
+            fresh = true;
+            i += 1;
+        } else if c == "\r" || c == "\n" {
+            if c == "\r" && i + 1 < cs.len() && cs[i + 1] == "\n" { i += 1; }
+            row.push(field);
+            field = "";
+            rows.push(row);
+            row = [];
+            fresh = true;
+            line += 1;
+            i += 1;
+        } else if c == "\"" {
+            return Err("CSV の {line} 行目: 囲んでいない値の中に `\"` があります（`\"` で囲んで `\"\"` と書いてください）");
+        } else {
+            field += c;
+            fresh = false;
+            i += 1;
+        }
+    }
+    // 終わりに改行がない最後の行
+    if !fresh || row.len() > 0 {
+        row.push(field);
+        rows.push(row);
+    }
+    Ok(rows)
+}
+
+/// CSV にする。`,`・`"`・改行を含む値は `"` で囲み、`"` は `""` にする。行の終わりはどれも CRLF
+pub fn str format(ref str[][] rows) {
+    let mut out = "";
+    for row in rows {
+        for (i, v) in row {
+            if i > 0 { out += ","; }
+            out += quote(v);
+        }
+        out += "\r\n";
+    }
+    out
+}
+
+/// 値 1 つを CSV の形にする（要るときだけ `"` で囲む）
+pub fn str quote(str v) {
+    if v.contains(",") || v.contains("\"") || v.contains("\n") || v.contains("\r") {
+        "\"" + v.replace("\"", "\"\"") + "\""
+    } else {
+        v
+    }
+}

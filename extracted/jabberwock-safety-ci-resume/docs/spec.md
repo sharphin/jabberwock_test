@@ -103,6 +103,9 @@ fn main() {
 | `std.hash` | `sha256(ref data)`・`hmac_sha256(ref key, ref msg)`・`pbkdf2_sha256(ref password, ref salt, iters)`・`hex(ref data)`・`equal(ref a, ref b)`（[1.12](#112-stdhashstdbase64stdrandomjwc-だけ)） |
 | `std.base64` | `encode(ref data)`・`decode(s)`（[1.12](#112-stdhashstdbase64stdrandomjwc-だけ)） |
 | `std.random` | `bytes(n)`・`int(lo, hi)`（[1.12](#112-stdhashstdbase64stdrandomjwc-だけ)） |
+| `std.date` | `now()`・`from_unix_ms(t)`・`make(...)`・`parse(s)`・`is_leap(y)`・`days_in_month(y, m)` と `DateTime`（[1.13](#113-stddatestdcsvstdregexjwc-だけ)） |
+| `std.csv` | `parse(s)`・`format(ref rows)`・`quote(v)`（[1.13](#113-stddatestdcsvstdregexjwc-だけ)） |
+| `std.regex` | `compile(pattern)`・`escape(s)` と `Regex`・`Match`（[1.13](#113-stddatestdcsvstdregexjwc-だけ)） |
 
 - 詳しい動き（一周・実行時エラーになる条件）は `std/*.jw` の各関数の説明に書いてある。
 
@@ -374,6 +377,41 @@ let die = random.int(1, 7);                        // 1〜6
 - `std.random`（暗号に使える OS の乱数。Linux・macOS は getentropy、Windows は BCryptGenRandom。取り出せなければ実行時エラー）:
   `bytes(n)`（`u8[]`。n が負なら実行時エラー）・`int(lo, hi)`（lo 以上 hi 未満の i64 を同じ確からしさで。hi <= lo か、hi - lo があふれるなら実行時エラー）。
   種を決めて同じ並びを出す乱数はない。
+
+### 1.13 std.date・std.csv・std.regex（jwc だけ）
+
+```
+use std.date;
+use std.csv;
+use std.regex;
+let d = date.parse("2026-10-31T19:37:52+09:00")?;    // DateTime（UTC に直す）
+print(d.format(), d.weekday(), d.unix_ms());          // 2026-10-31T10:37:52Z 6 1793443072000
+let rows = csv.parse("a,\"b,c\"\r\n1,2\r\n")?;      // [[a, b,c], [1, 2]]
+let re = regex.compile("(\\d+)-(\\d+)")?;
+print(re.replace_all("1-2 3-4", "$2-$1"));            // 2-1 4-3
+```
+
+- `std.date`（.jw だけ）: いつも UTC で、グレゴリオ暦を過去にも延ばす。年は 0〜9999。うるう秒・地域の時刻（タイムゾーンの決まり）は扱わない。
+  - `DateTime`: `year`・`month`（1〜12）・`day`・`hour`・`minute`・`second`（0〜59）・`ms`（0〜999）。メソッドは `unix_ms()`（1970-01-01T00:00:00Z からのミリ秒。前なら負）・
+    `weekday()`（ISO 8601 の 1＝月〜7＝日）・`day_of_year()`（1 月 1 日が 1）・`format()`（`2026-10-31T10:37:52Z`。ミリ秒が 0 でなければ `.123` を付ける）・`format_date()`（`2026-10-31`）。
+  - `now()`（今の UTC）・`from_unix_ms(t)`（0〜9999 年に入らなければ実行時エラー）・`make(year, month, day, hour, minute, second, ms)`（`Result`。ない日付・範囲の外なら Err）・
+    `is_leap(year)`・`days_in_month(year, month)`（month が 1〜12 でなければ実行時エラー）。
+  - `parse(s)`（`Result<DateTime, str>`）: `2026-10-31`（0 時 UTC）か `2026-10-31T10:37:52`＋秒の小数（1〜9 桁。ミリ秒より細かい分は切り捨て）＋`Z` か `±HH:MM`。
+    `T` と `Z` は小文字でもよく、`T` の代わりに空白でもよい。時差は UTC に直す（直して範囲を出れば Err）。時差のない日時・ほかの形・ない日付は Err。
+- `std.csv`（.jw だけ。RFC 4180）: 区切りは `,`、行の終わりは CRLF か LF、値はどれも文字列。
+  - `parse(s)`（`Result<str[][], str>`）: `"` で囲んだ値の中には `,`・改行・`""`（`"` 1 つ）を書ける。終わりの改行のあとに空の行は作らない（空の行は `[""]` の 1 行）。
+    囲んでいない値の中の `"`・閉じた `"` のあとの余計な文字・閉じていない `"` は Err（何行目かを書く）。
+  - `format(ref rows)`: `,`・`"`・改行を含む値は `"` で囲み `"` を `""` にして、どの行も CRLF で終える。値のない行（`[]`）は空の行になり、読み直すと `[""]` になる。`quote(v)` は値 1 つ分。
+- `std.regex`（.jw だけ）: 後戻りしない方式（Pike の VM）で、かかる時間はいつも「文字列の長さ × パターンの大きさ」に比べた程度。位置は文字単位（`slice` と同じ）。
+  - 書ける形: 文字・`.`（改行のほかの 1 文字）・`[abc]` `[a-z]` `[^...]`（先頭の `]` と端の `-` はその文字）・`\d` `\w` `\s`（ASCII の数字・英数字と `_`・空白と \t〜\r）と `\D` `\W` `\S`（`[...]` の中には書けない）・
+    `^` `$`（文字列の始めと終わり。行ごとではない）・`\b` `\B`（単語の境目。単語の文字は `\w`）・`(...)`・`(?:...)`・`|`・
+    `*` `+` `?` `{m}` `{m,}` `{m,n}`（回数は 1000 まで。後ろに `?` で短い方を選ぶ）・`\n` `\t` `\r`・`\` と記号。後方参照・先読み・フラグはない。
+    形が違う・繰り返しが重なる（`a**`）・組み立てた命令が 20000 を超えるなら、compile が Err（何文字目かを書く）。
+  - 合うところは、いちばん左から始まるもの。同じ位置なら、`|` は左、繰り返しは長い方（`?` を付けたものは短い方）を先に選ぶ（Perl と同じ選び方）。
+    ただし、空に合いうる中身の繰り返しの中の組が何を受け取るかは、Perl・Python と違うことがある。
+  - `Regex` のメソッド: `is_match(s)`・`find(s)`（`Option<Match>`）・`find_all(s)`（重ならずに左から。空に合ったら 1 文字進める）・
+    `replace_all(s, rep)`（rep の `$0`〜`$9` は全体と組の中身、`$$` は `$`。ない組・合わなかった組は空）・`split(s)`（空に合うところでは分けない）。
+  - `Match`: `start`・`end`・`text`・`groups`（`Option<str>[]`。[0] は全体）・`group(k)`。`regex.escape(s)` は記号に `\` を付ける。
 
 ## 2. 字句
 

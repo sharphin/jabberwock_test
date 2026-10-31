@@ -4,6 +4,8 @@ pub fn str[] names() {
     let str[] mut out = [];
     out.push("base64");
     out.push("browser");
+    out.push("csv");
+    out.push("date");
     out.push("env");
     out.push("fs");
     out.push("gzip");
@@ -14,6 +16,7 @@ pub fn str[] names() {
     out.push("net");
     out.push("pg");
     out.push("random");
+    out.push("regex");
     out.push("text");
     out.push("time");
     out.push("tls");
@@ -253,6 +256,295 @@ fn str status(i64 r) {{
         case 4 -> "このエンジンにはその機能がありません";
         default -> "エンジンの操作が失敗しました（{{-r}}）";
     }}
+}}
+""");
+    }
+    if name == "csv" {
+        return Some("""
+// 標準ライブラリ std.csv: CSV（RFC 4180）の読み書き。`use std.csv;` と書いて使う
+//   let rows = csv.parse("name,age\\r\\n\\"山田, 太郎\\",30\\r\\n")?;   // str[][]: [[name, age], [山田, 太郎, 30]]
+//   let s = csv.format(ref rows);                                  // "name,age\\r\\n\\"山田, 太郎\\",30\\r\\n"
+// .jw だけで書いている。区切りは `,`、行の終わりは CRLF か LF。値はどれも文字列（数や型には直さない）。
+
+/// CSV を読む。`"` で囲んだ値の中には `,`・改行・`""`（`"` 1 つ）を書ける。
+/// 終わりの改行のあとに空の行は作らない。囲んでいない値の中の `"`・閉じた `"` のあとの余計な文字・閉じていない `"` は Err（何行目かを書く）
+pub fn Result<str[][], str> parse(str s) {{
+    let cs = s.chars();
+    let str[][] mut rows = [];
+    let str[] mut row = [];
+    let mut field = "";
+    let mut i = 0;
+    let mut line = 1;
+    // 今の値を読み始めたところか（行の始めの空の値と、何もない行の終わりを見分ける）
+    let mut fresh = true;
+    while i < cs.len() {{
+        let c = cs[i];
+        if fresh && c == "\\"" {{
+            // 囲んだ値
+            let start = line;
+            i += 1;
+            let mut closed = false;
+            while i < cs.len() {{
+                let q = cs[i];
+                if q == "\\"" {{
+                    if i + 1 < cs.len() && cs[i + 1] == "\\"" {{
+                        field += "\\"";
+                        i += 2;
+                    }} else {{
+                        closed = true;
+                        i += 1;
+                        break;
+                    }}
+                }} else {{
+                    if q == "\\n" {{ line += 1; }}
+                    field += q;
+                    i += 1;
+                }}
+            }}
+            if !closed {{ return Err("CSV の {{start}} 行目の `\\"` が閉じていません"); }}
+            if i < cs.len() && cs[i] != "," && cs[i] != "\\n" && cs[i] != "\\r" {{
+                return Err("CSV の {{line}} 行目: 閉じた `\\"` のあとに `,` か改行がありません");
+            }}
+            fresh = false;
+        }} else if c == "," {{
+            row.push(field);
+            field = "";
+            fresh = true;
+            i += 1;
+        }} else if c == "\\r" || c == "\\n" {{
+            if c == "\\r" && i + 1 < cs.len() && cs[i + 1] == "\\n" {{ i += 1; }}
+            row.push(field);
+            field = "";
+            rows.push(row);
+            row = [];
+            fresh = true;
+            line += 1;
+            i += 1;
+        }} else if c == "\\"" {{
+            return Err("CSV の {{line}} 行目: 囲んでいない値の中に `\\"` があります（`\\"` で囲んで `\\"\\"` と書いてください）");
+        }} else {{
+            field += c;
+            fresh = false;
+            i += 1;
+        }}
+    }}
+    // 終わりに改行がない最後の行
+    if !fresh || row.len() > 0 {{
+        row.push(field);
+        rows.push(row);
+    }}
+    Ok(rows)
+}}
+
+/// CSV にする。`,`・`"`・改行を含む値は `"` で囲み、`"` は `""` にする。行の終わりはどれも CRLF
+pub fn str format(ref str[][] rows) {{
+    let mut out = "";
+    for row in rows {{
+        for (i, v) in row {{
+            if i > 0 {{ out += ","; }}
+            out += quote(v);
+        }}
+        out += "\\r\\n";
+    }}
+    out
+}}
+
+/// 値 1 つを CSV の形にする（要るときだけ `"` で囲む）
+pub fn str quote(str v) {{
+    if v.contains(",") || v.contains("\\"") || v.contains("\\n") || v.contains("\\r") {{
+        "\\"" + v.replace("\\"", "\\"\\"") + "\\""
+    }} else {{
+        v
+    }}
+}}
+""");
+    }
+    if name == "date" {
+        return Some("""
+// 標準ライブラリ std.date: 日付と時刻（いつも UTC。グレゴリオ暦を過去にも延ばす）。`use std.date;` と書いて使う
+//   let d = date.now();                                     // DateTime（今の UTC）
+//   print(d.format());                                      // "2026-10-31T10:37:52.123Z"
+//   let t = date.parse("2026-10-31T19:37:52+09:00")?;       // 時差は UTC に直す
+//   let next = date.from_unix_ms(t.unix_ms() + 86400000);   // 1 日（86400000 ミリ秒）あと
+//   print(next.weekday());                                  // 1（月）〜 7（日）
+// .jw だけで書いている。年は 0〜9999。うるう秒は扱わない（秒は 0〜59）。地域の時刻（タイムゾーンの決まり）はまだない。
+
+use std.time;
+
+/// UTC の日時
+pub struct DateTime {{
+    i64 year;
+    i64 month;
+    i64 day;
+    i64 hour;
+    i64 minute;
+    i64 second;
+    // ミリ秒（0〜999）
+    i64 ms;
+
+    /// 1970-01-01T00:00:00Z からのミリ秒（前なら負）
+    fn i64 unix_ms() {{
+        let days = days_from_civil(year, month, day);
+        (((days * 24 + hour) * 60 + minute) * 60 + second) * 1000 + ms
+    }}
+
+    /// 曜日。ISO 8601 の番号で 1（月）〜 7（日）
+    fn i64 weekday() {{
+        // 1970-01-01 は木曜（4）
+        floor_mod(days_from_civil(year, month, day) + 3, 7) + 1
+    }}
+
+    /// その年の何日目か（1 月 1 日が 1）
+    fn i64 day_of_year() {{ days_from_civil(year, month, day) - days_from_civil(year, 1, 1) + 1 }}
+
+    /// ISO 8601（RFC 3339）の形。ミリ秒が 0 なら書かない（"2026-10-31T10:37:52Z"）
+    fn str format() {{
+        let mut s = format_date() + "T" + two(hour) + ":" + two(minute) + ":" + two(second);
+        if ms != 0 {{ s += "." + pad(ms, 3); }}
+        s + "Z"
+    }}
+
+    /// 日付だけ（"2026-10-31"）
+    fn str format_date() {{ pad(year, 4) + "-" + two(month) + "-" + two(day) }}
+}}
+
+/// 1 日のミリ秒
+const DAY_MS = 86400000;
+
+/// 今の UTC
+pub fn DateTime now() {{ from_unix_ms(time.unix_ms()) }}
+
+/// 1970-01-01T00:00:00Z からのミリ秒から作る。0〜9999 年に入らなければ実行時エラー
+pub fn DateTime from_unix_ms(i64 t) {{
+    assert(t >= MIN_MS && t <= MAX_MS);
+    let days = floor_div(t, DAY_MS);
+    let rest = t - days * DAY_MS;
+    // civil_from_days（Howard Hinnant の方法。0 年 3 月 1 日を始まりにして数える）
+    let z = days + 719468;
+    let era = floor_div(z, 146097);
+    let doe = z - era * 146097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 {{ mp + 3 }} else {{ mp - 9 }};
+    let y = yoe + era * 400 + (if m <= 2 {{ 1 }} else {{ 0 }});
+    DateTime {{ year: y, month: m, day: d, hour: rest / 3600000, minute: rest / 60000 % 60, second: rest / 1000 % 60, ms: rest % 1000 }}
+}}
+
+/// 年月日と時刻から作る。どれかが範囲の外（2 月 30 日など）なら Err
+pub fn Result<DateTime, str> make(i64 year, i64 month, i64 day, i64 hour, i64 minute, i64 second, i64 ms) {{
+    if year < 0 || year > 9999 {{ return Err("年は 0〜9999 です: {{year}}"); }}
+    if month < 1 || month > 12 {{ return Err("月は 1〜12 です: {{month}}"); }}
+    if day < 1 || day > days_in_month(year, month) {{ return Err("{{year}} 年 {{month}} 月に {{day}} 日はありません"); }}
+    if hour < 0 || hour > 23 || minute < 0 || minute > 59 || second < 0 || second > 59 {{ return Err("時刻が正しくありません: " + two(hour) + ":" + two(minute) + ":" + two(second)); }}
+    if ms < 0 || ms > 999 {{ return Err("ミリ秒は 0〜999 です: {{ms}}"); }}
+    Ok(DateTime {{ year: year, month: month, day: day, hour: hour, minute: minute, second: second, ms: ms }})
+}}
+
+/// うるう年か
+pub fn bool is_leap(i64 year) {{ (year % 4 == 0 && year % 100 != 0) || year % 400 == 0 }}
+
+/// その月の日の数。month が 1〜12 でなければ実行時エラー
+pub fn i64 days_in_month(i64 year, i64 month) {{
+    assert(month >= 1 && month <= 12);
+    if month == 2 {{ return if is_leap(year) {{ 29 }} else {{ 28 }}; }}
+    if month == 4 || month == 6 || month == 9 || month == 11 {{ 30 }} else {{ 31 }}
+}}
+
+/// ISO 8601（RFC 3339）の日付か日時を読む。読める形:
+///   "2026-10-31"（その日の 0 時 UTC）・"2026-10-31T10:37:52Z"・"2026-10-31T10:37:52.5+09:00"（t と z の小文字、T の代わりの空白もよい）
+/// 秒の小数は 9 桁まで読み、ミリ秒より細かい分は切り捨てる。時差があれば UTC に直す。ほかの形・ない日付なら Err
+pub fn Result<DateTime, str> parse(str s) {{
+    let cs = s.chars();
+    let bad = "日時の形が読めません（2026-10-31T10:37:52Z のように書いてください）: " + s;
+    if cs.len() < 10 || cs[4] != "-" || cs[7] != "-" {{ return Err(bad); }}
+    let year = digits(ref cs, 0, 4);
+    let month = digits(ref cs, 5, 2);
+    let day = digits(ref cs, 8, 2);
+    if year < 0 || month < 0 || day < 0 {{ return Err(bad); }}
+    if cs.len() == 10 {{ return make(year, month, day, 0, 0, 0, 0); }}
+    let sep = cs[10];
+    if sep != "T" && sep != "t" && sep != " " {{ return Err(bad); }}
+    if cs.len() < 20 || cs[13] != ":" || cs[16] != ":" {{ return Err(bad); }}
+    let hour = digits(ref cs, 11, 2);
+    let minute = digits(ref cs, 14, 2);
+    let second = digits(ref cs, 17, 2);
+    if hour < 0 || minute < 0 || second < 0 {{ return Err(bad); }}
+    let mut i = 19;
+    let mut ms = 0;
+    if cs[i] == "." {{
+        i += 1;
+        let from = i;
+        while i < cs.len() && digits(ref cs, i, 1) >= 0 {{
+            if i - from < 3 {{ ms = ms * 10 + digits(ref cs, i, 1); }}
+            i += 1;
+        }}
+        let n = i - from;
+        if n == 0 || n > 9 {{ return Err(bad); }}
+        if n == 1 {{ ms *= 100; }} else if n == 2 {{ ms *= 10; }}
+    }}
+    if i >= cs.len() {{ return Err(bad); }}
+    let mut offset = 0;
+    if cs[i] == "Z" || cs[i] == "z" {{
+        if i + 1 != cs.len() {{ return Err(bad); }}
+    }} else if cs[i] == "+" || cs[i] == "-" {{
+        if i + 6 != cs.len() || cs[i + 3] != ":" {{ return Err(bad); }}
+        let oh = digits(ref cs, i + 1, 2);
+        let om = digits(ref cs, i + 4, 2);
+        if oh < 0 || om < 0 || oh > 23 || om > 59 {{ return Err(bad); }}
+        offset = (oh * 60 + om) * 60000;
+        if cs[i] == "-" {{ offset = -offset; }}
+    }} else {{
+        return Err(bad);
+    }}
+    let local = make(year, month, day, hour, minute, second, ms)?;
+    let t = local.unix_ms() - offset;
+    if t < MIN_MS || t > MAX_MS {{ return Err("UTC に直すと 0〜9999 年に入りません: " + s); }}
+    Ok(from_unix_ms(t))
+}}
+
+// 0000-01-01T00:00:00.000Z と 9999-12-31T23:59:59.999Z
+const MIN_MS = -62167219200000;
+const MAX_MS = 253402300799999;
+
+/// 1970-01-01 からの日の数（days_from_civil。Howard Hinnant の方法）
+fn i64 days_from_civil(i64 y0, i64 m, i64 d) {{
+    let y = if m <= 2 {{ y0 - 1 }} else {{ y0 }};
+    let era = floor_div(y, 400);
+    let yoe = y - era * 400;
+    let mp = if m > 2 {{ m - 3 }} else {{ m + 9 }};
+    let doy = (153 * mp + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146097 + doe - 719468
+}}
+
+fn i64 floor_div(i64 a, i64 b) {{
+    let q = a / b;
+    if (a % b != 0) && ((a < 0) != (b < 0)) {{ q - 1 }} else {{ q }}
+}}
+
+fn i64 floor_mod(i64 a, i64 b) {{ a - floor_div(a, b) * b }}
+
+/// cs[from..from+n] が数字だけならその数、でなければ -1
+fn i64 digits(ref str[] cs, i64 from, i64 n) {{
+    if from + n > cs.len() {{ return -1; }}
+    let mut v = 0;
+    for i in range(from, from + n) {{
+        match "0123456789".find(cs[i]) {{
+            case Some(k) -> v = v * 10 + k;
+            case None -> return -1;
+        }}
+    }}
+    v
+}}
+
+fn str two(i64 n) {{ pad(n, 2) }}
+
+fn str pad(i64 n, i64 width) {{
+    let mut s = "{{n}}";
+    while s.len() < width {{ s = "0" + s; }}
+    s
 }}
 """);
     }
@@ -2615,6 +2907,643 @@ fn i64 draw63() {{
     for i in range(1, 8) {{ v = (v << 8) | (b[i] as i64); }}
     v
 }}
+""");
+    }
+    if name == "regex" {
+        return Some("""
+// 標準ライブラリ std.regex: 正規表現。`use std.regex;` と書いて使う
+//   let re = regex.compile("(\\\\d+)-(\\\\d+)")?;
+//   print(re.is_match("tel 03-1234"));                     // true
+//   match re.find("tel 03-1234") {{ case Some(m) -> print(m.start, m.text, m.group(1)); case None -> {{}} }}   // 4 03-1234 Some(03)
+//   print(re.replace_all("1-2 3-4", "$2-$1"));             // "2-1 4-3"
+// .jw だけで書いている。後戻りをしない方式（Pike の VM）で、時間はいつも 文字列の長さ × パターンの大きさ に比べた程度（ひどく遅くなるパターンはない）。
+// 位置は文字単位（str の slice・find と同じ）。後方参照と先読みはない（後戻りなしでは作れないため）。
+
+/// 繰り返しの回数 {{m,n}} の上限
+const MAX_REPEAT = 1000;
+/// 組み立てた命令の数の上限
+const MAX_PROGRAM = 20000;
+
+// 命令の種類
+const OP_CHAR = 0;
+const OP_ANY = 1;
+const OP_CLASS = 2;
+const OP_SPLIT = 3;
+const OP_JMP = 4;
+const OP_SAVE = 5;
+const OP_BOL = 6;
+const OP_EOL = 7;
+const OP_WORDB = 8;
+const OP_NWORDB = 9;
+const OP_MATCH = 10;
+
+// 構文の木の種類
+const N_EMPTY = 0;
+const N_CHAR = 1;
+const N_ANY = 2;
+const N_CLASS = 3;
+const N_CAT = 4;
+const N_ALT = 5;
+const N_GROUP = 6;
+const N_REPEAT = 7;
+const N_BOL = 8;
+const N_EOL = 9;
+const N_WORDB = 10;
+const N_NWORDB = 11;
+
+/// 組み立てた正規表現
+pub struct Regex {{
+    // 書いたパターン
+    str pattern;
+    // かっこの組の数（(?:...) は数えない）
+    i64 groups;
+    Inst[] prog;
+    Class[] classes;
+    // 読むあいだだけ使う（パターンの文字・読んでいる位置・構文の木）
+    str[] src;
+    i64 ppos;
+    Node[] nodes;
+
+    /// s のどこかに合うか
+    fn bool is_match(str s) {{
+        let cs = s.chars();
+        let codes = cs.map((c) -> c.code());
+        match run(ref codes, 0) {{
+            case Some(c) -> true;
+            case None -> false;
+        }}
+    }}
+
+    /// 最初に合うところ（いちばん左。同じ位置なら、選択肢は左を、繰り返しは長い方（`*?` などは短い方）を選ぶ）
+    fn Option<Match> find(str s) {{
+        let cs = s.chars();
+        let codes = cs.map((c) -> c.code());
+        match run(ref codes, 0) {{
+            case Some(caps) -> Some(make_match(s, ref caps));
+            case None -> None;
+        }}
+    }}
+
+    /// 重ならずに合うところを左から全部
+    fn Match[] find_all(str s) {{
+        let cs = s.chars();
+        let codes = cs.map((c) -> c.code());
+        let Match[] mut out = [];
+        let mut from = 0;
+        while from <= codes.len() {{
+            match run(ref codes, from) {{
+                case Some(caps) -> {{
+                    let st = caps[0];
+                    let en = caps[1];
+                    out.push(make_match(s, ref caps));
+                    // 空に合ったら 1 文字進める（同じところで止まらないように）
+                    from = if en == st {{ en + 1 }} else {{ en }};
+                }}
+                case None -> break;
+            }}
+        }}
+        out
+    }}
+
+    /// 合うところを全部 rep に置き換える。rep の `$0`〜`$9` は合ったところとかっこの中（合わなかった組は空）、`$$` は `$`
+    fn str replace_all(str s, str rep) {{
+        let ms = find_all(s);
+        let rc = rep.chars();
+        let mut out = "";
+        let mut last = 0;
+        for m in ms {{
+            out += s.slice(last, m.start);
+            let mut i = 0;
+            while i < rc.len() {{
+                if rc[i] == "$" && i + 1 < rc.len() {{
+                    let d = rc[i + 1];
+                    if d == "$" {{
+                        out += "$";
+                        i += 2;
+                        continue;
+                    }}
+                    match "0123456789".find(d) {{
+                        case Some(k) -> {{
+                            if k < m.groups.len() {{
+                                match m.groups[k] {{
+                                    case Some(g) -> out += g;
+                                    case None -> {{}}
+                                }}
+                            }}
+                            i += 2;
+                            continue;
+                        }}
+                        case None -> {{}}
+                    }}
+                }}
+                out += rc[i];
+                i += 1;
+            }}
+            last = m.end;
+        }}
+        out + s.slice(last, s.len())
+    }}
+
+    /// 合うところで分ける（合うところは含めない。空に合うところでは分けない）
+    fn str[] split(str s) {{
+        let ms = find_all(s);
+        let str[] mut out = [];
+        let mut last = 0;
+        for m in ms {{
+            if m.end == m.start {{ continue; }}
+            out.push(s.slice(last, m.start));
+            last = m.end;
+        }}
+        out.push(s.slice(last, s.len()));
+        out
+    }}
+
+    fn Match make_match(str s, ref i64[] caps) {{
+        let Option<str>[] mut gs = [];
+        for k in range(groups + 1) {{
+            let a = caps[2 * k];
+            let b = caps[2 * k + 1];
+            if a >= 0 && b >= 0 {{ gs.push(Some(s.slice(a, b))); }} else {{ gs.push(None); }}
+        }}
+        Match {{ start: caps[0], end: caps[1], text: s.slice(caps[0], caps[1]), groups: gs }}
+    }}
+
+    /// from から後ろで、最初に合うところの組の位置（Pike の VM。スレッドを優先の順に並べ、合ったら優先の低いものを捨てる）
+    fn Option<i64[]> run(ref i64[] codes, i64 from) {{
+        let n = prog.len();
+        let i64[] mut mark = [];
+        for i in range(n) {{ mark.push(0); }}
+        let mut gen = 1;
+        let i64[] mut cpcs = [];
+        let i64[][] mut ccaps = [];
+        let i64[] mut best = [];
+        let mut found = false;
+        let mut pos = from;
+        add(ref mut cpcs, ref mut ccaps, ref mut mark, gen, 0, fresh(), pos, codes);
+        loop {{
+            gen += 1;
+            let i64[] mut npcs = [];
+            let i64[][] mut ncaps = [];
+            for (t, pc) in cpcs {{
+                let op = prog[pc].op;
+                if op == OP_MATCH {{
+                    found = true;
+                    best = ccaps[t].map((x) -> x);
+                    break;
+                }}
+                if pos < codes.len() && step(op, prog[pc].x, codes[pos]) {{
+                    let cp = ccaps[t].map((x) -> x);
+                    add(ref mut npcs, ref mut ncaps, ref mut mark, gen, pc + 1, cp, pos + 1, codes);
+                }}
+            }}
+            if pos >= codes.len() {{ break; }}
+            if !found {{ add(ref mut npcs, ref mut ncaps, ref mut mark, gen, 0, fresh(), pos + 1, codes); }}
+            if npcs.len() == 0 && found {{ break; }}
+            cpcs = npcs;
+            ccaps = ncaps;
+            pos += 1;
+        }}
+        if found {{ Some(best) }} else {{ None }}
+    }}
+
+    fn i64[] fresh() {{
+        let i64[] mut c = [];
+        for i in range(2 * (groups + 1)) {{ c.push(-1); }}
+        c
+    }}
+
+    /// 1 文字を読む命令が code に合うか
+    fn bool step(i64 op, i64 x, i64 code) {{
+        if op == OP_CHAR {{ return code == x; }}
+        if op == OP_ANY {{ return code != 10; }}
+        if op == OP_CLASS {{ return classes[x].has(code); }}
+        false
+    }}
+
+    /// pc から、文字を読まずに進める命令をたどってスレッドを足す（同じ位置で同じ pc は 1 度だけ）
+    fn add(ref mut i64[] pcs, ref mut i64[][] caps, ref mut i64[] mark, i64 gen, i64 pc, i64[] cp, i64 pos, ref i64[] codes) {{
+        if mark[pc] == gen {{ return; }}
+        mark[pc] = gen;
+        let op = prog[pc].op;
+        if op == OP_JMP {{
+            add(pcs, caps, mark, gen, prog[pc].x, cp, pos, codes);
+        }} else if op == OP_SPLIT {{
+            let other = cp.map((x) -> x);
+            add(pcs, caps, mark, gen, prog[pc].x, cp, pos, codes);
+            add(pcs, caps, mark, gen, prog[pc].y, other, pos, codes);
+        }} else if op == OP_SAVE {{
+            let mut c2 = cp;
+            c2[prog[pc].x] = pos;
+            add(pcs, caps, mark, gen, pc + 1, c2, pos, codes);
+        }} else if op == OP_BOL {{
+            if pos == 0 {{ add(pcs, caps, mark, gen, pc + 1, cp, pos, codes); }}
+        }} else if op == OP_EOL {{
+            if pos == codes.len() {{ add(pcs, caps, mark, gen, pc + 1, cp, pos, codes); }}
+        }} else if op == OP_WORDB || op == OP_NWORDB {{
+            let before = pos > 0 && is_word(codes[pos - 1]);
+            let after = pos < codes.len() && is_word(codes[pos]);
+            if (before != after) == (op == OP_WORDB) {{ add(pcs, caps, mark, gen, pc + 1, cp, pos, codes); }}
+        }} else {{
+            pcs.push(pc);
+            caps.push(cp);
+        }}
+    }}
+
+    // ---- パターンを読む（読むあいだだけ src・ppos・nodes を使う）
+
+    fn str error(str why) {{ "正規表現の {{ppos + 1}} 文字目: " + why }}
+
+    fn mut i64 put(i64 kind, i64 a, i64 b, i64 c, i64[] kids) {{
+        nodes.push(Node {{ kind: kind, a: a, b: b, c: c, kids: kids }});
+        nodes.len() - 1
+    }}
+
+    fn bool at(str s) {{ ppos < src.len() && src[ppos] == s }}
+
+    /// a|b|...
+    fn mut Result<i64, str> alt() {{
+        let i64[] mut kids = [cat()?];
+        while at("|") {{
+            ppos += 1;
+            kids.push(cat()?);
+        }}
+        if kids.len() == 1 {{ return Ok(kids[0]); }}
+        Ok(put(N_ALT, 0, 0, 0, kids))
+    }}
+
+    /// 並び（`|` か `)` か終わりまで）
+    fn mut Result<i64, str> cat() {{
+        let i64[] mut kids = [];
+        while ppos < src.len() && !at("|") && !at(")") {{
+            kids.push(repeat()?);
+        }}
+        if kids.len() == 0 {{ return Ok(put(N_EMPTY, 0, 0, 0, [])); }}
+        if kids.len() == 1 {{ return Ok(kids[0]); }}
+        Ok(put(N_CAT, 0, 0, 0, kids))
+    }}
+
+    /// 1 つの要素と、その後ろの繰り返し
+    fn mut Result<i64, str> repeat() {{
+        let e = atom()?;
+        if ppos >= src.len() {{ return Ok(e); }}
+        let mut lo = 0;
+        let mut hi = 0;
+        let c = src[ppos];
+        if c == "*" {{
+            lo = 0;
+            hi = -1;
+            ppos += 1;
+        }} else if c == "+" {{
+            lo = 1;
+            hi = -1;
+            ppos += 1;
+        }} else if c == "?" {{
+            lo = 0;
+            hi = 1;
+            ppos += 1;
+        }} else if c == "{{{{" {{
+            ppos += 1;
+            lo = number()?;
+            hi = lo;
+            if at(",") {{
+                ppos += 1;
+                hi = if at("}}}}") {{ -1 }} else {{ number()? }};
+            }}
+            if !at("}}}}") {{ return Err(error("`{{{{` の繰り返しの回数が閉じていません")); }}
+            ppos += 1;
+            if hi >= 0 && hi < lo {{ return Err(error("繰り返しの回数が {{lo}} から {{hi}} になっています")); }}
+            if lo > MAX_REPEAT || hi > MAX_REPEAT {{ return Err(error("繰り返しの回数は {{MAX_REPEAT}} までです")); }}
+        }} else {{
+            return Ok(e);
+        }}
+        let mut greedy = 1;
+        if at("?") {{
+            greedy = 0;
+            ppos += 1;
+        }}
+        if ppos < src.len() && (at("*") || at("+") || at("?") || at("{{{{")) {{ return Err(error("繰り返しが重なっています（かっこで囲んでください）")); }}
+        Ok(put(N_REPEAT, lo, hi, greedy, [e]))
+    }}
+
+    fn mut Result<i64, str> number() {{
+        let from = ppos;
+        let mut v = 0;
+        while ppos < src.len() {{
+            match "0123456789".find(src[ppos]) {{
+                case Some(d) -> {{
+                    if v > MAX_REPEAT {{ return Err(error("繰り返しの回数は {{MAX_REPEAT}} までです")); }}
+                    v = v * 10 + d;
+                    ppos += 1;
+                }}
+                case None -> break;
+            }}
+        }}
+        if ppos == from {{ return Err(error("`{{{{` のあとに回数がありません")); }}
+        Ok(v)
+    }}
+
+    fn mut Result<i64, str> atom() {{
+        let c = src[ppos];
+        if c == "(" {{
+            ppos += 1;
+            let mut idx = -1;
+            if at("?") {{
+                if ppos + 1 < src.len() && src[ppos + 1] == ":" {{
+                    ppos += 2;
+                }} else {{
+                    return Err(error("`(?` のあとは `:` だけが書けます（先読みなどはありません）"));
+                }}
+            }} else {{
+                groups += 1;
+                idx = groups;
+            }}
+            let inner = alt()?;
+            if !at(")") {{ return Err(error("`(` が閉じていません")); }}
+            ppos += 1;
+            return Ok(put(N_GROUP, idx, 0, 0, [inner]));
+        }}
+        if c == "[" {{ return class(); }}
+        if c == "*" || c == "+" || c == "?" || c == "{{{{" {{ return Err(error("`{{c}}` の前に繰り返すものがありません")); }}
+        ppos += 1;
+        if c == "." {{ return Ok(put(N_ANY, 0, 0, 0, [])); }}
+        if c == "^" {{ return Ok(put(N_BOL, 0, 0, 0, [])); }}
+        if c == "$" {{ return Ok(put(N_EOL, 0, 0, 0, [])); }}
+        if c == "\\\\" {{
+            if ppos >= src.len() {{ return Err(error("終わりに `\\\\` だけがあります")); }}
+            let e = src[ppos];
+            ppos += 1;
+            if e == "b" {{ return Ok(put(N_WORDB, 0, 0, 0, [])); }}
+            if e == "B" {{ return Ok(put(N_NWORDB, 0, 0, 0, [])); }}
+            if e == "d" || e == "w" || e == "s" || e == "D" || e == "W" || e == "S" {{
+                let i64[] mut lo = [];
+                let i64[] mut hi = [];
+                shorthand(e.to_lower(), ref mut lo, ref mut hi);
+                classes.push(Class {{ lo: lo, hi: hi, neg: e == "D" || e == "W" || e == "S" }});
+                return Ok(put(N_CLASS, classes.len() - 1, 0, 0, []));
+            }}
+            let code = escaped(e)?;
+            return Ok(put(N_CHAR, code, 0, 0, []));
+        }}
+        Ok(put(N_CHAR, c.code(), 0, 0, []))
+    }}
+
+    /// `\\` のあとの 1 文字の番号（\\n \\t \\r と記号）
+    fn Result<i64, str> escaped(str e) {{
+        if e == "n" {{ return Ok(10); }}
+        if e == "t" {{ return Ok(9); }}
+        if e == "r" {{ return Ok(13); }}
+        let k = e.code();
+        let alnum = (k >= 48 && k <= 57) || (k >= 65 && k <= 90) || (k >= 97 && k <= 122);
+        if alnum || k > 127 {{ return Err(error("`\\\\{{e}}` は使えません")); }}
+        Ok(k)
+    }}
+
+    /// [...]
+    fn mut Result<i64, str> class() {{
+        let start = ppos;
+        ppos += 1;
+        let mut neg = false;
+        if at("^") {{
+            neg = true;
+            ppos += 1;
+        }}
+        let i64[] mut lo = [];
+        let i64[] mut hi = [];
+        let mut first = true;
+        loop {{
+            if ppos >= src.len() {{
+                ppos = start;
+                return Err(error("`[` が閉じていません"));
+            }}
+            if at("]") && !first {{ break; }}
+            first = false;
+            let mut a = src[ppos].code();
+            ppos += 1;
+            if a == 92 {{
+                if ppos >= src.len() {{ continue; }}
+                let e = src[ppos];
+                ppos += 1;
+                if e == "d" || e == "w" || e == "s" {{
+                    shorthand(e, ref mut lo, ref mut hi);
+                    continue;
+                }}
+                if e == "D" || e == "W" || e == "S" {{ return Err(error("[...] の中に `\\\\{{e}}` は書けません")); }}
+                a = escaped(e)?;
+            }}
+            let mut b = a;
+            if at("-") && ppos + 1 < src.len() && src[ppos + 1] != "]" {{
+                ppos += 1;
+                b = src[ppos].code();
+                ppos += 1;
+                if b == 92 {{
+                    if ppos >= src.len() {{ continue; }}
+                    let e = src[ppos];
+                    ppos += 1;
+                    b = escaped(e)?;
+                }}
+                if b < a {{ return Err(error("範囲の始めが終わりより大きくなっています")); }}
+            }}
+            lo.push(a);
+            hi.push(b);
+        }}
+        ppos += 1;
+        classes.push(Class {{ lo: lo, hi: hi, neg: neg }});
+        Ok(put(N_CLASS, classes.len() - 1, 0, 0, []))
+    }}
+
+    // ---- 命令を組み立てる
+
+    fn mut Result<i64, str> emit(i64 op, i64 x, i64 y) {{
+        if prog.len() >= MAX_PROGRAM {{ return Err("正規表現が大きすぎます（繰り返しの回数を減らしてください）"); }}
+        prog.push(Inst {{ op: op, x: x, y: y }});
+        Ok(prog.len() - 1)
+    }}
+
+    fn mut Result<(), str> node(i64 id) {{
+        let kind = nodes[id].kind;
+        let a = nodes[id].a;
+        if kind == N_EMPTY {{
+            return Ok(());
+        }} else if kind == N_CHAR {{
+            emit(OP_CHAR, a, 0)?;
+        }} else if kind == N_ANY {{
+            emit(OP_ANY, 0, 0)?;
+        }} else if kind == N_CLASS {{
+            emit(OP_CLASS, a, 0)?;
+        }} else if kind == N_BOL {{
+            emit(OP_BOL, 0, 0)?;
+        }} else if kind == N_EOL {{
+            emit(OP_EOL, 0, 0)?;
+        }} else if kind == N_WORDB {{
+            emit(OP_WORDB, 0, 0)?;
+        }} else if kind == N_NWORDB {{
+            emit(OP_NWORDB, 0, 0)?;
+        }} else if kind == N_CAT {{
+            for k in nodes[id].kids {{ node(k)?; }}
+        }} else if kind == N_GROUP {{
+            let inner = nodes[id].kids[0];
+            if a >= 0 {{ emit(OP_SAVE, 2 * a, 0)?; }}
+            node(inner)?;
+            if a >= 0 {{ emit(OP_SAVE, 2 * a + 1, 0)?; }}
+        }} else if kind == N_ALT {{
+            let n = nodes[id].kids.len();
+            let i64[] mut jumps = [];
+            for i in range(n) {{
+                let k = nodes[id].kids[i];
+                if i + 1 < n {{
+                    let sp = emit(OP_SPLIT, 0, 0)?;
+                    prog[sp].x = prog.len();
+                    node(k)?;
+                    jumps.push(emit(OP_JMP, 0, 0)?);
+                    prog[sp].y = prog.len();
+                }} else {{
+                    node(k)?;
+                }}
+            }}
+            for j in jumps {{ prog[j].x = prog.len(); }}
+        }} else {{
+            // N_REPEAT: 少なくとも lo 回、多くて hi 回（-1 なら上限なし）
+            let lo = a;
+            let hi = nodes[id].b;
+            let greedy = nodes[id].c == 1;
+            let inner = nodes[id].kids[0];
+            for i in range(lo) {{ node(inner)?; }}
+            if hi < 0 {{
+                let sp = emit(OP_SPLIT, 0, 0)?;
+                node(inner)?;
+                emit(OP_JMP, sp, 0)?;
+                branch(sp, sp + 1, prog.len(), greedy);
+            }} else {{
+                let i64[] mut splits = [];
+                for i in range(hi - lo) {{
+                    let sp = emit(OP_SPLIT, 0, 0)?;
+                    splits.push(sp);
+                    node(inner)?;
+                }}
+                let end = prog.len();
+                for sp in splits {{ branch(sp, sp + 1, end, greedy); }}
+            }}
+        }}
+        Ok(())
+    }}
+
+    /// SPLIT の行き先を決める（greedy なら繰り返す方を先に試す）
+    fn mut branch(i64 sp, i64 body, i64 out, bool greedy) {{
+        if greedy {{
+            prog[sp].x = body;
+            prog[sp].y = out;
+        }} else {{
+            prog[sp].x = out;
+            prog[sp].y = body;
+        }}
+    }}
+}}
+
+/// 合ったところ
+pub struct Match {{
+    // 文字単位の位置（start から end の手前まで）
+    i64 start;
+    i64 end;
+    str text;
+    // [0] は合ったところ全体、[k] は k 番目のかっこの中（合わなかった組は None）
+    Option<str>[] groups;
+
+    /// k 番目のかっこの中（0 なら全体。そんな組がないか、合わなかったなら None）
+    fn Option<str> group(i64 k) {{
+        if k < 0 || k >= groups.len() {{ return None; }}
+        groups[k]
+    }}
+}}
+
+/// パターンを組み立てる。書ける形:
+///   文字・`.`（改行のほかの 1 文字）・`[abc]` `[a-z]` `[^...]`・`\\d` `\\w` `\\s`（ASCII の数字・英数字と _・空白）と `\\D` `\\W` `\\S`・
+///   `^` `$`（文字列の始めと終わり）・`\\b` `\\B`（単語の境目）・`(...)`（組）・`(?:...)`（数えない組）・`|`・
+///   `*` `+` `?` `{{m}}` `{{m,}}` `{{m,n}}`（後ろに `?` を付けると短い方を選ぶ）・`\\n` `\\t` `\\r`・`\\` と記号（その記号そのもの）。
+/// 形が違えば Err（どこかを書く）
+pub fn Result<Regex, str> compile(str pattern) {{
+    let mut re = Regex {{ pattern: pattern, groups: 0, prog: [], classes: [], src: pattern.chars(), ppos: 0, nodes: [] }};
+    let root = re.alt()?;
+    if re.ppos < re.src.len() {{
+        // alt は `)` で止まる
+        return Err(re.error("対応する `(` のない `)` があります"));
+    }}
+    re.emit(OP_SAVE, 0, 0)?;
+    re.node(root)?;
+    re.emit(OP_SAVE, 1, 0)?;
+    re.emit(OP_MATCH, 0, 0)?;
+    re.src = [];
+    re.nodes = [];
+    Ok(re)
+}}
+
+/// 記号をそのままの文字として扱うように `\\` を付ける（ユーザーの文字列をパターンに入れるとき）
+pub fn str escape(str s) {{
+    let mut out = "";
+    for c in s.chars() {{
+        if "\\\\.^$|?*+()[]{{{{}}}}-".contains(c) {{ out += "\\\\"; }}
+        out += c;
+    }}
+    out
+}}
+
+struct Inst {{
+    i64 op;
+    i64 x;
+    i64 y;
+}}
+
+/// 文字の集まり（[...]・\\d など）。範囲 lo[i]〜hi[i] のどれかに入るか（neg なら入らないか）
+struct Class {{
+    i64[] lo;
+    i64[] hi;
+    bool neg;
+
+    fn bool has(i64 code) {{
+        let mut inside = false;
+        for (i, l) in lo {{
+            if code >= l && code <= hi[i] {{
+                inside = true;
+                break;
+            }}
+        }}
+        inside != neg
+    }}
+}}
+
+struct Node {{
+    i64 kind;
+    i64 a;
+    i64 b;
+    i64 c;
+    i64[] kids;
+}}
+
+
+/// \\d \\w \\s の範囲を足す
+fn shorthand(str e, ref mut i64[] lo, ref mut i64[] hi) {{
+    if e == "d" {{
+        lo.push(48);
+        hi.push(57);
+    }} else if e == "w" {{
+        lo.push(48);
+        hi.push(57);
+        lo.push(65);
+        hi.push(90);
+        lo.push(95);
+        hi.push(95);
+        lo.push(97);
+        hi.push(122);
+    }} else {{
+        // 空白・\\t・\\n・\\v・\\f・\\r
+        lo.push(32);
+        hi.push(32);
+        lo.push(9);
+        hi.push(13);
+    }}
+}}
+
+fn bool is_word(i64 c) {{ (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c == 95 }}
+
 """);
     }
     if name == "text" {
