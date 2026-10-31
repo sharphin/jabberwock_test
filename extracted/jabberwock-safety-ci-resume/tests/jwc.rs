@@ -789,6 +789,7 @@ fn jwc_std_tls() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+#[cfg(unix)]
 const TLS_SRC: &str = r#"use std.http;
 use std.tls;
 
@@ -852,6 +853,7 @@ fn jwc_std_gzip() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+#[cfg(unix)]
 const GZIP_SRC: &str = r#"use std.gzip;
 use std.fs;
 

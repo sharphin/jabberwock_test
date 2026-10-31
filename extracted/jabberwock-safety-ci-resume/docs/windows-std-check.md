@@ -7,7 +7,7 @@ clang の入れ方は [native.md](native.md) の「Windows」を見る。
 ## 1. 自動テスト（std.net・std.http）
 
 ```
-cargo test --release --test jwc jwc_std_net jwc_std_http
+cargo test --release --test jwc -- jwc_std_net jwc_std_http
 ```
 
 - 2 件とも `ok` なら成功。jwc を作るところから始まるので、数分かかる。

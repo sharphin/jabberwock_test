@@ -3936,7 +3936,7 @@ static unsigned long tls_verify(WTls *t, wchar_t *target) {
     WChainCtx *chain = NULL;
     unsigned long why = 0x800B010AUL;
     // 途中の証明書は、相手が送ってきたもの（cert->store）からも探す
-    if (g_tls.get_chain(NULL, cert, NULL, cert->store, &cp, 0, NULL, &chain) && chain) {
+    if (g_tls.get_chain(NULL, cert, NULL, cert->store, &cp, 0, NULL, (void **)&chain) && chain) {
         WSslPolicy ssl = {sizeof ssl, 2 /* AUTHTYPE_SERVER */, 0, target};
         WPolicyPara pp = {sizeof pp, 0, &ssl};
         WPolicyStatus ps;
