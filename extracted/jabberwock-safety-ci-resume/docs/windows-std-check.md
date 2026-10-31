@@ -147,6 +147,28 @@ random 16 true
   `timeout err: 時間切れです`・`bad host: 送り先の名前が分かりません: no.such.host.invalid`・`rebind: UDP で待ち受けられません: 127.0.0.1`・`unbound`。
 - 127.0.0.1 だけを使うので、ファイアウォールの確かめが出たら「キャンセル」でよい。
 
+**process_check**（std.process。子のプロセスとパイプでやりとりする）:
+
+```
+.\jwc.exe build -o process_child.exe samples\windows\process_child.jw
+.\jwc.exe build -o process_check.exe samples\windows\process_check.jw
+.\process_check.exe process_child.exe
+```
+
+- 想定どおりなら 13 行で、`read 'got: hello'`・`read: 時間切れです`・`exited false`・`code 3`・`exited true`・`after exit len 0`・
+  `write after exit: Err`・`kill ok`・`closed: 子の入力はもう閉じています`・`read2 'eof'`・`code2 0`・`killed code nonzero true`・
+  `コマンドを起動できません: no-such-command-xyz`。
+
+**clipboard_check**（std.clipboard。いまクリップボードにあるものは消える）:
+
+```
+.\jwc.exe build -o clipboard_check.exe samples\windows\clipboard_check.jw
+.\clipboard_check.exe
+```
+
+- 想定どおりなら `get Ok(ひみつ pass)`・`clear_if Ok(true)`・`get after Ok()`・`clear_if old Ok(false)`・`get Ok(上書き)`・`clear Ok(())`・`get Ok()`。
+- 動かしたあと Windows キー + V でクリップボードの履歴を開き、`ひみつ pass` が載っていなければ、秘密の印も効いている（`ふつう` と `上書き` は載ってよい）。
+
 **pg_check**（std.pg。PostgreSQL のサーバーがあるときだけ）:
 
 ```

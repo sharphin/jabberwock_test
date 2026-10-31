@@ -43,11 +43,11 @@ fn bool is_builtin(str n) {
     n == "print" || n == "eprint" || n == "drop" || n == "assert" || n == "read_line" || n == "args" || n == "spawn"
         || n == "chan" || n == "exit" || n == "read_file" || n == "write_file" || n == "run_command" || n == "chr"
         || n == "__fs_open" || n == "__res_close" || n == "__fs_exists" || n == "__fs_list" || n == "__fs_make_dir" || n == "__fs_remove" || n == "__fs_rename" || n == "__fs_stat"
-        || n == "__net_connect" || n == "__net_listen" || n == "__net_udp_bind" || n == "__env_get" || n == "__time_now_ns" || n == "__time_unix_ms" || n == "__time_sleep_ms" || n == "__time_local_offset" || n == "__browser_open" || n == "__tls_connect" || n == "__tls_upgrade" || n == "__random_bytes"
+        || n == "__net_connect" || n == "__net_listen" || n == "__net_udp_bind" || n == "__process_start" || n == "__clip_set" || n == "__clip_get" || n == "__clip_clear" || n == "__env_get" || n == "__time_now_ns" || n == "__time_unix_ms" || n == "__time_sleep_ms" || n == "__time_local_offset" || n == "__browser_open" || n == "__tls_connect" || n == "__tls_upgrade" || n == "__random_bytes"
 }
 
 /// コンパイラが知っている資源の型（`resource` で書けるのはこれだけ）
-fn bool known_resource(str n) { n == "std:fs.File" || n == "std:net.TcpStream" || n == "std:net.TcpListener" || n == "std:net.UdpSocket" || n == "std:browser.Handle" || n == "std:tls.TlsStream" }
+fn bool known_resource(str n) { n == "std:fs.File" || n == "std:net.TcpStream" || n == "std:net.TcpListener" || n == "std:net.UdpSocket" || n == "std:process.Child" || n == "std:browser.Handle" || n == "std:tls.TlsStream" }
 
 /// 最後の `.` の位置（なければ -1）
 fn i64 last_dot(str s) {
@@ -2369,6 +2369,11 @@ pub struct Checker {
         } else if name == "insert" {
             want = 2;
         } else if name == "reverse" {
+        } else if name == "wipe" {
+            // 秘密の値（鍵・パスワード）を使い終わったら、場所ごと 0 で上書きして空にする。u8[] だけ
+            if !(ty.is(elem, "Int") && ty.show(elem) == "u8") {
+                return Err(diag.make("wipe は u8[] に使います").at(span, "`{ty.show(elem)}` のリストです"));
+            }
         } else if name == "join" {
             if !ty.is(elem, "Str") || argv.len() != 1 {
                 return Err(diag.make("join は文字列のリストに使います")
@@ -2583,6 +2588,31 @@ pub struct Checker {
             if argv.len() > 0 { return Err(arity_error(name, 0, argv.len(), span)); }
             require_mut(recv, rt, span, "資源を `{name}` で使おうとした")?;
             return Ok(ty.Ty.Enum("Result", own [ty.Ty.Res("std:net.TcpStream"), ty.Ty.Str]));
+        }
+        if n == "std:process.Child" {
+            // 子のプロセス。読む・書く・待ち時間は TcpStream と同じ形
+            if name == "exited" || name == "close_input" {
+                if argv.len() > 0 { return Err(arity_error(name, 0, argv.len(), span)); }
+                require_mut(recv, rt, span, "資源を `{name}` で使おうとした")?;
+                return Ok(if name == "exited" { ty.Ty.Bool } else { ty.Ty.Unit });
+            }
+            if name == "read" || name == "set_timeout" {
+                params.push(ty.i64t());
+                if name == "read" { ret = ty.Ty.List(own ty.Ty.Int("u8")); }
+            } else if name == "write" {
+                params.push(ty.Ty.List(own ty.Ty.Int("u8")));
+            } else if name == "write_text" {
+                params.push(ty.Ty.Str);
+            } else if name == "wait" {
+                ret = ty.i64t();
+            } else if name != "kill" {
+                return Err(diag.make("`{ty.show(r)}` にメソッド `{name}` はありません")
+                    .at(span, "`read(n)`・`write(bytes)`・`write_text(s)`・`set_timeout(ms)`・`close_input()`・`exited()`・`wait()`・`kill()` です"));
+            }
+            if argv.len() != params.len() { return Err(arity_error(name, params.len(), argv.len(), span)); }
+            require_mut(recv, rt, span, "資源を `{name}` で使おうとした")?;
+            for (i, a) in argv { expect(a, params[i])?; }
+            return Ok(ty.Ty.Enum("Result", own [ret, ty.Ty.Str]));
         }
         if n == "std:net.UdpSocket" {
             // UDP。受け取りは std.net の recv_from（送り元つき）を通す。recv_raw はその内部の操作
@@ -2967,6 +2997,28 @@ pub struct Checker {
             let w = ty.i64t();
             expect(argv[0], w)?;
             return Ok(ty.Ty.Str);
+        }
+        if name == "__clip_set" || name == "__clip_get" || name == "__clip_clear" {
+            // 標準ライブラリ std.clipboard の中だけで使う
+            if cur_mod != "std:clipboard" {
+                return Err(diag.make("`{name}` は標準ライブラリの中だけで使えます").at(span, "std.clipboard の関数を使ってください"));
+            }
+            let ty.Ty[] mut params = [];
+            if name == "__clip_set" { params.push(ty.Ty.Str); }
+            if name != "__clip_get" { params.push(ty.i64t()); }
+            if argv.len() != params.len() { return Err(arity_error(name, params.len(), argv.len(), span)); }
+            for (i, a) in argv { expect(a, params[i])?; }
+            return Ok(ty.Ty.Enum("Result", own [if name == "__clip_get" { ty.Ty.Str } else { ty.i64t() }, ty.Ty.Str]));
+        }
+        if name == "__process_start" {
+            // 標準ライブラリ std.process の中だけで使う（子のプロセスを起こす内部の操作）
+            if cur_mod != "std:process" {
+                return Err(diag.make("`{name}` は標準ライブラリの中だけで使えます").at(span, "process.start を使ってください"));
+            }
+            if argv.len() != 2 { return Err(arity_error(name, 2, argv.len(), span)); }
+            expect(argv[0], ty.Ty.Str)?;
+            expect(argv[1], ty.Ty.List(own ty.Ty.Str))?;
+            return Ok(ty.Ty.Enum("Result", own [ty.Ty.Res("std:process.Child"), ty.Ty.Str]));
         }
         if name == "exit" || name == "read_file" || name == "write_file" || name == "run_command" {
             let ty.Ty[] mut params = [];

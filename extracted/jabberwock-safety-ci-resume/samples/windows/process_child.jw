@@ -1,0 +1,13 @@
+// 子: 1 行ずつ読んで、大文字にせずに「got: 行」と返す。"quit" で 3 を返して終わる
+fn main() {
+    loop {
+        match read_line() {
+            case None -> { print("eof"); exit(0); }
+            case Some(l) -> {
+                if l == "quit" { exit(3); }
+                if l == "slow" { continue; }
+                print("got: {l}");
+            }
+        }
+    }
+}

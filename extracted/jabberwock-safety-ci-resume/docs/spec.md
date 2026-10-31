@@ -107,6 +107,8 @@ fn main() {
 | `std.date` | `now()`・`from_unix_ms(t)`・`make(...)`・`parse(s)`・`is_leap(y)`・`days_in_month(y, m)` と `DateTime`（[1.13](#113-stddatestdcsvstdregexjwc-だけ)） |
 | `std.csv` | `parse(s)`・`format(ref rows)`・`quote(v)`（[1.13](#113-stddatestdcsvstdregexjwc-だけ)） |
 | `std.regex` | `compile(pattern)`・`escape(s)` と `Regex`・`Match`（[1.13](#113-stddatestdcsvstdregexjwc-だけ)） |
+| `std.process` | `start(cmd, argv)` と資源の型 `Child`（[1.14](#114-stdprocessjwc-だけ)） |
+| `std.clipboard` | `set_text(s, secret)`・`get_text()`・`clear_if(n)`・`clear()`（[1.15](#115-stdclipboardjwc-だけwindows-だけ)） |
 
 - 詳しい動き（一周・実行時エラーになる条件）は `std/*.jw` の各関数の説明に書いてある。
 
@@ -126,7 +128,7 @@ fn Result<(), str> save() {
 ```
 
 - **資源**は外のもの（今は開いたファイルだけ）を持つ値。`resource 名前;` で決めるが、書けるのは標準ライブラリの中だけで、
-  コンパイラが知っている種類（`std.fs` の `File`、`std.net` の `TcpStream`・`TcpListener`・`UdpSocket`、`std.tls` の `TlsStream`、`std.browser` の `Handle`）に限る。数や文字列から作る方法はない（作るのは `fs.open` などだけ）。
+  コンパイラが知っている種類（`std.fs` の `File`、`std.net` の `TcpStream`・`TcpListener`・`UdpSocket`、`std.tls` の `TlsStream`、`std.browser` の `Handle`、`std.process` の `Child`）に限る。数や文字列から作る方法はない（作るのは `fs.open` などだけ）。
 - 値として読むといつもムーブ（2 つ目の持ち主はできない）。`ref` / `ref mut` で借りられる。`for x in` の x などの読むだけの写しは、閉じない。
 - 持ち主がいなくなると黙って閉じる（構造体・リストの中でも）。閉じたときの失敗を知りたいときは `fs.close(f)`（`Result<(), str>`。失敗しても f はもう使えない）。
   `exit` と実行時エラーでは閉じない（ほかの後片づけと同じ。書いた内容は close で確かめる）。
@@ -432,6 +434,42 @@ print(re.replace_all("1-2 3-4", "$2-$1"));            // 2-1 4-3
   - `Regex` のメソッド: `is_match(s)`・`find(s)`（`Option<Match>`）・`find_all(s)`（重ならずに左から。空に合ったら 1 文字進める）・
     `replace_all(s, rep)`（rep の `$0`〜`$9` は全体と組の中身、`$$` は `$`。ない組・合わなかった組は空）・`split(s)`（空に合うところでは分けない）。
   - `Match`: `start`・`end`・`text`・`groups`（`Option<str>[]`。[0] は全体）・`group(k)`。`regex.escape(s)` は記号に `\` を付ける。
+
+### 1.14 std.process（jwc だけ）
+
+```
+use std.process;
+let mut c = process.start("vault", ["--child"])?;   // 待たずに起こす（Child）
+c.write_text("open\n")?;                           // 子の標準入力へ
+c.set_timeout(50)?;                                  // 読む待ち時間（ミリ秒。0 なら待ち続ける）
+let got = c.read(4096)?;                             // 子の標準出力から。子が閉じたら []
+c.close_input();
+let code = c.wait()?;                                // 終了コード
+```
+
+- `process.start(cmd, argv)`（`Result<Child, str>`）: cmd を PATH からも探して、待たずに起こす。子の標準入力・標準出力は親とパイプでつなぎ、
+  標準エラーは親のものをそのまま使う。ほかに開いているファイルやソケットは子へ渡さない。起こせなければ Err。cmd・argv に文字 0 があれば Err。
+- `Child` は資源で、規則は 1.3 と同じ（ムーブだけ・送れない）。持ち主がいなくなるとパイプを閉じる（子は止めない）。
+- Child のメソッド（持ち主が mut であること）: `read(n)`（`u8[]`。最大 n バイト。子が出力を閉じたら空）・`write(bytes)`・`write_text(s)`・
+  `set_timeout(ms)`（読む待ち時間。時間切れは `Err("時間切れです")`。ms が負なら実行時エラー）・`close_input()`（子には入力の終わりに見える。2 度目は何もしない）・
+  `exited()`（`bool`。待たずに、終わったか）・`wait()`（`Result<i64, str>`。終わるまで待って終了コード。シグナルで止まったら -1。2 度目からは同じ値）・
+  `kill()`（止める。もう終わっていれば何もしない）。終わった子や入力を閉じた子へ書くと Err（プログラムは止まらない）。
+- 子の print は、標準出力がパイプなのでためてから書く。子が read_line で次の入力を待つとき・終わるときに書き出される（返事を待つ親と行き違わない）。
+
+### 1.15 std.clipboard（jwc だけ。Windows だけ）
+
+```
+use std.clipboard;
+let n = clipboard.set_text(password, true)?;   // 置いたあとの番号
+clipboard.clear_if(n)?;                         // そのあとだれも変えていなければ消す（Ok(true)）
+let s = clipboard.get_text()?;                  // 文字がなければ ""
+clipboard.clear()?;
+```
+
+- 文字だけ。`set_text(s, secret)`（`Result<i64, str>`。secret が true なら、Windows のクリップボードの履歴・ほかの端末への同期・見張るプログラムに載せない印も置く）・
+  `get_text()`（`Result<str, str>`）・`clear_if(n)`（`Result<bool, str>`。n は set_text の番号で、負なら実行時エラー）・`clear()`。
+- ほかのプログラムがクリップボードを開いたままなら、少し待って何度か試し、だめなら Err。s に文字 0 があれば Err。
+- Linux・macOS では、どれも `Err("この OS ではまだクリップボードを使えません（Windows だけ）")`。
 
 ## 2. 字句
 
@@ -1153,7 +1191,10 @@ for x in v { ... } else { print("空でした"); }
 - メソッドは `len()`（i64）、`push(x)`、`pop()`（`Option<T>`）、`insert(i, x)`、`remove(i)`（取り出した要素 `T`）、
   `reverse()`（逆順にする）、`drain()`（全部の要素を新しいリストに移して返す。元は空になる）、`sort()`、`sort_by(f)`、`sort_unstable()`、`sort_unstable_by(f)`、
   `map(f)`（要素ごとに f を呼んだ結果の新しいリスト）、`filter(f)`（f が true を返した要素だけの新しいリスト）、
-  `join(sep)`（`str[]` だけ。要素を sep でつないだ文字列。元のリストは変えない）。
+  `join(sep)`（`str[]` だけ。要素を sep でつないだ文字列。元のリストは変えない）、
+  `wipe()`（`u8[]` だけ。jwc だけ。取ってある場所を全部 0 で上書きして空にする。鍵やパスワードを使い終わったとき用）。
+- `wipe()` は今の場所だけを消す。push などで大きくなったときに前の場所へ残った中身や、`str` に写した中身・関数に渡して写された中身は消せない
+  （秘密の値は、大きさが決まってから作り、`str` にしないこと）。
 - `map` / `filter` は配列にも使え、元のリストは変えない（mut でなくてよい）。f は要素を `for x in a` の x と同じ形で受け取る
   （コピーできればコピー、own なら `ref T`、構造体などは読むだけの `ref T`）。`filter` はコピーできる要素だけ（残す要素をコピーするため）。
 

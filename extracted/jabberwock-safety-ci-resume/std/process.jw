@@ -1,0 +1,15 @@
+// 標準ライブラリ std.process: 子のプロセスを待たずに起こし、標準入力・標準出力をパイプでつなぐ。`use std.process;` と書いて使う
+//   let mut c = process.start("vault", ["--child"])?;   // cmd は PATH からも探す。標準エラーは親のものをそのまま使う
+//   c.write_text("open\n")?;
+//   c.set_timeout(50)?;                                  // 読む待ち時間（ミリ秒。0 なら待ち続ける）。時間切れは Err("時間切れです")
+//   let got = c.read(4096)?;                             // 最大 4096 バイト。子が出力を閉じたら空のリスト
+//   c.close_input();                                     // 子には入力の終わりに見える
+//   let code = c.wait()?;                                // 終わるまで待つ（シグナルで止まったら -1）
+// Child のメソッド: `read(n)`・`write(bytes)`・`write_text(s)`・`set_timeout(ms)`・`close_input()`・`exited()`（待たずに、終わったか）・
+// `wait()`・`kill()`。Child は資源（ムーブだけ。ほかのスレッドへは渡せない）。持ち主がいなくなるとパイプを閉じる（子は止めない）。
+// 子へ渡すのは標準入力・標準出力・標準エラーだけ（開いているファイルやソケットは渡さない）。
+
+pub resource Child;
+
+/// cmd を argv（cmd の後ろに渡す引数）で起こす。起こせなければ Err
+pub fn Result<Child, str> start(str cmd, str[] argv) { __process_start(cmd, argv) }

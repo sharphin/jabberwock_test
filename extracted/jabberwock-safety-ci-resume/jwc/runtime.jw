@@ -1153,6 +1153,17 @@ void jw_list_reverse(WList *l, int64_t esize, const WSite *why) {{
     jw_list_moved(l, why);
 }}
 
+// 秘密の値を消す: 取ってある場所（cap まで）を 0 で上書きして空にする（場所は残す）。
+// volatile で書くので、あとで読まれないと分かっても消されない。大きくなったときに前の場所へ残った中身までは消せない
+void jw_list_wipe(WList *l, int64_t esize, const WSite *why) {{
+    if (l->data) {{
+        volatile char *p = l->data;
+        for (int64_t i = 0, n = l->cap * esize; i < n; i++) p[i] = 0;
+    }}
+    l->len = 0;
+    jw_list_moved(l, why);
+}}
+
 // 中身の区画を解放する（要素の own は書き出したコードが先に解放する）
 void jw_list_free(WList *l, int64_t esize, const WSite *why) {{
     if (!l->data) return;
@@ -2698,11 +2709,13 @@ static int sock_close(int64_t fd);
 // 種類ごとに OS の資源を手放す。失敗したら 0（それでも手放したとみなす。同じ番号をもう一度閉じない）
 static int browser_free(void *p);
 static int tls_free(WRes *r);
+static int child_free(void *p);
 
 static int res_free_os(WRes *r) {{
     if (r->kind == RES_FILE) return fclose(r->fp) == 0;
     if (r->kind == RES_BROWSER) return browser_free(r->ptr);
     if (r->kind == RES_TLS) return tls_free(r);
+    if (r->kind == 7 /* RES_CHILD */) return child_free(r->ptr);
     return sock_close(r->fd);
 }}
 
@@ -2729,6 +2742,660 @@ void jw_res_drop(void *h, const WSite *site) {{
 }}
 
 void *jw_res_view(void *h) {{ return (void *)((uintptr_t)h | 1); }}
+
+// ---------------------------------------------------------------- 子のプロセス（std.process）
+//
+// process.start(cmd, args) で子を待たずに起こし、子の標準入力・標準出力をパイプでつなぐ（標準エラーは親のものをそのまま使う）。
+// 資源の中身は WChild（ptr）。持ち主がいなくなるとパイプを閉じる（子は止めない。子は入力の終わりで終わるのがふつう）。
+// 読む待ち時間は set_timeout(ms)（0 なら待ち続ける。時間切れは Err("時間切れです")）。相手が閉じたら空のリスト。
+
+#define RES_CHILD 7
+
+int64_t jw_time_now_ns(void);
+
+#ifdef _WIN32
+typedef struct {{
+    unsigned long nLength;
+    void *lpSecurityDescriptor;
+    int bInheritHandle;
+}} WSecAttr;
+
+typedef struct {{
+    unsigned long cb;
+    wchar_t *lpReserved, *lpDesktop, *lpTitle;
+    unsigned long dwX, dwY, dwXSize, dwYSize, dwXCountChars, dwYCountChars, dwFillAttribute, dwFlags;
+    unsigned short wShowWindow, cbReserved2;
+    unsigned char *lpReserved2;
+    void *hStdInput, *hStdOutput, *hStdError;
+}} WStartupW;
+
+typedef struct {{
+    WStartupW StartupInfo;
+    void *lpAttributeList;
+}} WStartupExW;
+
+typedef struct {{
+    void *hProcess, *hThread;
+    unsigned long dwProcessId, dwThreadId;
+}} WProcInfo;
+
+__declspec(dllimport) int __stdcall CreatePipe(void **, void **, WSecAttr *, unsigned long);
+__declspec(dllimport) int __stdcall SetHandleInformation(void *, unsigned long, unsigned long);
+__declspec(dllimport) int __stdcall CreateProcessW(const wchar_t *, wchar_t *, void *, void *, int, unsigned long, void *, const wchar_t *, WStartupW *, WProcInfo *);
+__declspec(dllimport) int __stdcall ReadFile(void *, void *, unsigned long, unsigned long *, void *);
+__declspec(dllimport) int __stdcall WriteFile(void *, const void *, unsigned long, unsigned long *, void *);
+__declspec(dllimport) int __stdcall PeekNamedPipe(void *, void *, unsigned long, unsigned long *, unsigned long *, unsigned long *);
+__declspec(dllimport) int __stdcall GetExitCodeProcess(void *, unsigned long *);
+__declspec(dllimport) int __stdcall TerminateProcess(void *, unsigned);
+__declspec(dllimport) void *__stdcall GetStdHandle(unsigned long);
+__declspec(dllimport) void *__stdcall GetCurrentProcess(void);
+__declspec(dllimport) int __stdcall DuplicateHandle(void *, void *, void *, void **, unsigned long, int, unsigned long);
+__declspec(dllimport) int __stdcall InitializeProcThreadAttributeList(void *, unsigned long, unsigned long, size_t *);
+__declspec(dllimport) int __stdcall UpdateProcThreadAttribute(void *, unsigned long, size_t, void *, size_t, void *, size_t *);
+__declspec(dllimport) void __stdcall DeleteProcThreadAttributeList(void *);
+__declspec(dllimport) unsigned long __stdcall GetLastError(void);
+__declspec(dllimport) void __stdcall Sleep(unsigned long);
+
+#define W_BAD_HANDLE ((void *)(intptr_t)-1)
+
+typedef struct {{
+    void *proc;
+    void *in;  // 子の標準入力へ書く端（閉じたら NULL）
+    void *out; // 子の標準出力を読む端
+    int64_t timeout_ms;
+    int done;
+    int64_t code;
+}} WChild;
+
+static void child_close_pipes(WChild *c) {{
+    if (c->in) CloseHandle(c->in);
+    if (c->out) CloseHandle(c->out);
+    c->in = c->out = NULL;
+}}
+
+static int child_free(void *p) {{
+    WChild *c = p;
+    child_close_pipes(c);
+    if (c->proc) CloseHandle(c->proc);
+    free(c);
+    return 1;
+}}
+
+// 起こす。argv[0] がコマンド（PATH から探す）
+static int child_spawn(char **argv, int64_t n, WChild *c) {{
+    WSecAttr sa;
+    memset(&sa, 0, sizeof sa);
+    sa.nLength = sizeof sa;
+    sa.bInheritHandle = 1;
+    void *in_r = NULL, *in_w = NULL, *out_r = NULL, *out_w = NULL, *err_dup = NULL;
+    if (!CreatePipe(&in_r, &in_w, &sa, 0)) return 0;
+    if (!CreatePipe(&out_r, &out_w, &sa, 0)) {{
+        CloseHandle(in_r);
+        CloseHandle(in_w);
+        return 0;
+    }}
+    // 親の側の端は子へ渡さない
+    SetHandleInformation(in_w, 1 /* HANDLE_FLAG_INHERIT */, 0);
+    SetHandleInformation(out_r, 1, 0);
+    void *err = GetStdHandle((unsigned long)-12 /* STD_ERROR_HANDLE */);
+    if (err && err != W_BAD_HANDLE)
+        if (!DuplicateHandle(GetCurrentProcess(), err, GetCurrentProcess(), &err_dup, 0, 1, 2 /* DUPLICATE_SAME_ACCESS */)) err_dup = NULL;
+    // 渡すハンドルを 3 つ（2 つ）だけに限る（ソケットなど、ほかの受け継げるハンドルを子へ渡さない）
+    void *handles[3] = {{in_r, out_w, err_dup}};
+    unsigned long nh = err_dup ? 3 : 2;
+    size_t asz = 0;
+    InitializeProcThreadAttributeList(NULL, 1, 0, &asz);
+    void *attrs = jw_checked_malloc(asz ? asz : 64);
+    int ok = InitializeProcThreadAttributeList(attrs, 1, 0, &asz) &&
+             UpdateProcThreadAttribute(attrs, 0, 0x20002 /* PROC_THREAD_ATTRIBUTE_HANDLE_LIST */, handles, nh * sizeof(void *), NULL, NULL);
+    WSb *b = jw_sb_new();
+    for (int64_t i = 0; i <= n; i++) {{
+        if (i > 0) jw_sb_push(b, " ", 1);
+        quote_arg(b, argv[i]);
+    }}
+    WStr *line = jw_sb_finish(b);
+    char *cl = c_str(line);
+    jw_str_release(line);
+    wchar_t *wline = to_wide(cl);
+    free(cl);
+    WStartupExW si;
+    memset(&si, 0, sizeof si);
+    si.StartupInfo.cb = sizeof si;
+    si.StartupInfo.dwFlags = 0x100; // STARTF_USESTDHANDLES
+    si.StartupInfo.hStdInput = in_r;
+    si.StartupInfo.hStdOutput = out_w;
+    si.StartupInfo.hStdError = err_dup;
+    si.lpAttributeList = attrs;
+    WProcInfo pi;
+    memset(&pi, 0, sizeof pi);
+    if (ok) ok = CreateProcessW(NULL, wline, NULL, NULL, 1, 0x80000 /* EXTENDED_STARTUPINFO_PRESENT */, NULL, NULL, &si.StartupInfo, &pi);
+    DeleteProcThreadAttributeList(attrs);
+    free(attrs);
+    free(wline);
+    CloseHandle(in_r);
+    CloseHandle(out_w);
+    if (err_dup) CloseHandle(err_dup);
+    if (!ok) {{
+        CloseHandle(in_w);
+        CloseHandle(out_r);
+        return 0;
+    }}
+    CloseHandle(pi.hThread);
+    c->proc = pi.hProcess;
+    c->in = in_w;
+    c->out = out_r;
+    return 1;
+}}
+
+// 読む: 1 なら out に読めた分（終わりなら空）、0 なら *why（1 時間切れ、2 失敗）
+static int child_read_os(WChild *c, char *buf, int64_t n, int64_t *got, int *why) {{
+    *got = 0;
+    if (c->timeout_ms > 0) {{
+        int64_t end = jw_time_now_ns() + c->timeout_ms * 1000000;
+        for (;;) {{
+            unsigned long avail = 0;
+            if (!PeekNamedPipe(c->out, NULL, 0, NULL, &avail, NULL)) {{
+                if (GetLastError() == 109 /* ERROR_BROKEN_PIPE */) return 1;
+                *why = 2;
+                return 0;
+            }}
+            if (avail > 0) break;
+            if (jw_time_now_ns() >= end) {{
+                *why = 1;
+                return 0;
+            }}
+            Sleep(2);
+        }}
+    }}
+    unsigned long k = 0;
+    if (!ReadFile(c->out, buf, (unsigned long)n, &k, NULL)) {{
+        if (GetLastError() == 109) return 1;
+        *why = 2;
+        return 0;
+    }}
+    *got = k;
+    return 1;
+}}
+
+static int child_write_os(WChild *c, const char *p, int64_t n) {{
+    while (n > 0) {{
+        unsigned long chunk = n > 0x40000000 ? 0x40000000 : (unsigned long)n, k = 0;
+        if (!WriteFile(c->in, p, chunk, &k, NULL) || k == 0) return 0;
+        p += k;
+        n -= k;
+    }}
+    return 1;
+}}
+
+// 終わったか確かめる。block なら終わるまで待つ
+static void child_reap(WChild *c, int block) {{
+    if (c->done) return;
+    if (WaitForSingleObject(c->proc, block ? 0xFFFFFFFFu : 0) != 0) return;
+    unsigned long code = 0;
+    GetExitCodeProcess(c->proc, &code);
+    c->done = 1;
+    c->code = (int64_t)(int32_t)code;
+}}
+
+static int child_kill_os(WChild *c) {{ return TerminateProcess(c->proc, 1) != 0; }}
+#else
+#include <poll.h>
+#include <fcntl.h>
+#include <signal.h>
+#include <errno.h>
+
+typedef struct {{
+    pid_t pid;
+    int in;  // 子の標準入力へ書く端（閉じたら -1）
+    int out; // 子の標準出力を読む端
+    int64_t timeout_ms;
+    int done;
+    int64_t code;
+}} WChild;
+
+static void child_close_pipes(WChild *c) {{
+    if (c->in >= 0) close(c->in);
+    if (c->out >= 0) close(c->out);
+    c->in = c->out = -1;
+}}
+
+static void child_reap(WChild *c, int block) {{
+    if (c->done) return;
+    int st = 0;
+    pid_t r;
+    do {{
+        r = waitpid(c->pid, &st, block ? 0 : WNOHANG);
+    }} while (r < 0 && errno == EINTR);
+    if (r == c->pid) {{
+        c->done = 1;
+        c->code = WIFEXITED(st) ? WEXITSTATUS(st) : -1;
+    }} else if (r < 0) {{
+        // もう待てない（ほかで待たれた）: 終わったものとする
+        c->done = 1;
+        c->code = -1;
+    }}
+}}
+
+static int child_free(void *p) {{
+    WChild *c = p;
+    child_close_pipes(c);
+    child_reap(c, 0);
+    free(c);
+    return 1;
+}}
+
+static int child_spawn(char **argv, int64_t n, WChild *c) {{
+    (void)n;
+    int in[2], out[2];
+    if (pipe(in) != 0) return 0;
+    if (pipe(out) != 0) {{
+        close(in[0]);
+        close(in[1]);
+        return 0;
+    }}
+    // 親の側の端は子（と、ほかで起こすプロセス）へ渡さない
+    fcntl(in[1], F_SETFD, FD_CLOEXEC);
+    fcntl(out[0], F_SETFD, FD_CLOEXEC);
+    posix_spawn_file_actions_t fa;
+    posix_spawn_file_actions_init(&fa);
+    posix_spawn_file_actions_adddup2(&fa, in[0], 0);
+    posix_spawn_file_actions_adddup2(&fa, out[1], 1);
+    posix_spawn_file_actions_addclose(&fa, in[0]);
+    posix_spawn_file_actions_addclose(&fa, out[1]);
+    pid_t pid;
+    int ok = posix_spawnp(&pid, argv[0], &fa, NULL, argv, environ) == 0;
+    posix_spawn_file_actions_destroy(&fa);
+    close(in[0]);
+    close(out[1]);
+    if (!ok) {{
+        close(in[1]);
+        close(out[0]);
+        return 0;
+    }}
+    c->pid = pid;
+    c->in = in[1];
+    c->out = out[0];
+    return 1;
+}}
+
+static int child_read_os(WChild *c, char *buf, int64_t n, int64_t *got, int *why) {{
+    *got = 0;
+    if (c->timeout_ms > 0) {{
+        int64_t end = jw_time_now_ns() + c->timeout_ms * 1000000;
+        for (;;) {{
+            int64_t left = (end - jw_time_now_ns()) / 1000000;
+            if (left < 0) left = 0;
+            struct pollfd pf = {{c->out, POLLIN, 0}};
+            int r = poll(&pf, 1, (int)(left > 0x7fffffff ? 0x7fffffff : left));
+            if (r > 0) break;
+            if (r == 0) {{
+                *why = 1;
+                return 0;
+            }}
+            if (errno != EINTR) {{
+                *why = 2;
+                return 0;
+            }}
+        }}
+    }}
+    ssize_t k;
+    do {{
+        k = read(c->out, buf, (size_t)n);
+    }} while (k < 0 && errno == EINTR);
+    if (k < 0) {{
+        *why = 2;
+        return 0;
+    }}
+    *got = k;
+    return 1;
+}}
+
+// 閉じたパイプへ書いても SIGPIPE でプログラムを止めない（そのスレッドで止めておき、来ていたら受け取って捨てる）
+static int child_write_os(WChild *c, const char *p, int64_t n) {{
+    sigset_t pipe_set, old;
+    sigemptyset(&pipe_set);
+    sigaddset(&pipe_set, SIGPIPE);
+    pthread_sigmask(SIG_BLOCK, &pipe_set, &old);
+    int ok = 1;
+    while (n > 0) {{
+        ssize_t k = write(c->in, p, (size_t)n);
+        if (k < 0 && errno == EINTR) continue;
+        if (k <= 0) {{
+            ok = 0;
+            break;
+        }}
+        p += k;
+        n -= k;
+    }}
+    if (!ok && errno == EPIPE && !sigismember(&old, SIGPIPE)) {{
+        struct timespec zero = {{0, 0}};
+        while (sigtimedwait(&pipe_set, NULL, &zero) > 0) {{}}
+    }}
+    pthread_sigmask(SIG_SETMASK, &old, NULL);
+    return ok;
+}}
+
+static int child_kill_os(WChild *c) {{ return kill(c->pid, SIGKILL) == 0; }}
+#endif
+
+static WChild *child_get(void *h, const WSite *at) {{ return res_get((uint64_t)(uintptr_t)h, RES_CHILD, at)->ptr; }}
+
+// 起こす。args（str のリスト）はここで解放する
+int32_t jw_process_start(WStr *cmd, WList *args, void **out, WStr **err) {{
+    jw_flush();
+    int64_t n = args->len;
+    WStr **items = (WStr **)args->data;
+    int bad = memchr(cmd->data, 0, (size_t)cmd->len) != NULL || cmd->len == 0;
+    for (int64_t i = 0; i < n; i++) bad = bad || memchr(items[i]->data, 0, (size_t)items[i]->len) != NULL;
+    WChild *c = jw_checked_calloc(1, sizeof(WChild));
+#ifndef _WIN32
+    c->in = c->out = -1;
+#endif
+    int ok = 0;
+    if (!bad && !res_fail("open")) {{
+        char **argv = jw_checked_malloc(sizeof(char *) * (size_t)(n + 2));
+        argv[0] = c_str(cmd);
+        for (int64_t i = 0; i < n; i++) argv[i + 1] = c_str(items[i]);
+        argv[n + 1] = NULL;
+        ok = child_spawn(argv, n, c);
+        for (int64_t i = 0; i <= n; i++) free(argv[i]);
+        free(argv);
+    }}
+    for (int64_t i = 0; i < n; i++) jw_str_release(items[i]);
+    jw_list_free(args, sizeof(WStr *), NULL);
+    if (!ok) {{
+        free(c);
+        *err = message("コマンドを起動できません: ", cmd);
+        return 0;
+    }}
+    uint64_t tok = res_new(RES_CHILD, NULL, -1);
+    if (!tok) {{
+        child_kill_os(c);
+        child_free(c);
+        *err = message("開いている資源が多すぎます: ", cmd);
+        return 0;
+    }}
+    res_at(res_slot(tok))->ptr = c;
+    *out = (void *)(uintptr_t)tok;
+    return 1;
+}}
+
+int32_t jw_child_read(void *h, int64_t n, WList *out, WStr **err, const WSite *at) {{
+    WChild *c = child_get(h, at);
+    if (n < 0) {{
+        begin_error("読む大きさが負です");
+        finish_error(at, "read(n) の n は 0 以上", NULL);
+    }}
+    if (n == 0) return 1;
+    int64_t want = n < 65536 ? n : 65536;
+    jw_list_reserve(out, 1, want);
+    int64_t got = 0;
+    int why = 2;
+    if (res_fail("read") || !child_read_os(c, out->data, want, &got, &why)) {{
+        jw_list_free(out, 1, NULL);
+        out->data = NULL;
+        out->len = out->cap = 0;
+        *err = err_text(why == 1 ? "時間切れです" : "子のプロセスから読めません");
+        return 0;
+    }}
+    out->len = got;
+    return 1;
+}}
+
+static int32_t child_write(WChild *c, const char *p, int64_t n, WStr **err) {{
+#ifdef _WIN32
+    int closed = c->in == NULL;
+#else
+    int closed = c->in < 0;
+#endif
+    if (closed) {{
+        *err = err_text("子の入力はもう閉じています");
+        return 0;
+    }}
+    if (res_fail("write") || !child_write_os(c, p, n)) {{
+        *err = err_text("子のプロセスへ書けません（子が終わったか、入力を閉じました）");
+        return 0;
+    }}
+    return 1;
+}}
+
+// 書くリストはムーブされてきたので、ここで解放する
+int32_t jw_child_write(void *h, WList *data, WStr **err, const WSite *at) {{
+    int32_t ok = child_write(child_get(h, at), data->data, data->len, err);
+    jw_list_free(data, 1, NULL);
+    return ok;
+}}
+
+int32_t jw_child_write_text(void *h, WStr *text, WStr **err, const WSite *at) {{ return child_write(child_get(h, at), text->data, text->len, err); }}
+
+int32_t jw_child_set_timeout(void *h, int64_t ms, WStr **err, const WSite *at) {{
+    WChild *c = child_get(h, at);
+    (void)err;
+    if (ms < 0) {{
+        begin_error("待ち時間が負です");
+        finish_error(at, "set_timeout(ms) の ms は 0 以上（0 なら待ち続ける）", NULL);
+    }}
+    c->timeout_ms = ms;
+    return 1;
+}}
+
+// 子の標準入力を閉じる（子には入力の終わりに見える）。2 度目は何もしない
+void jw_child_close_input(void *h, const WSite *at) {{
+    WChild *c = child_get(h, at);
+#ifdef _WIN32
+    if (c->in) CloseHandle(c->in);
+    c->in = NULL;
+#else
+    if (c->in >= 0) close(c->in);
+    c->in = -1;
+#endif
+}}
+
+// 終わったか（待たない）
+int32_t jw_child_exited(void *h, const WSite *at) {{
+    WChild *c = child_get(h, at);
+    child_reap(c, 0);
+    return c->done;
+}}
+
+// 終わるまで待って終了コード（シグナルで止まったら -1）
+int32_t jw_child_wait(void *h, int64_t *out, WStr **err, const WSite *at) {{
+    WChild *c = child_get(h, at);
+    (void)err;
+    jw_flush();
+    child_reap(c, 1);
+    *out = c->code;
+    return 1;
+}}
+
+// 止める（もう終わっていたら何もしない）
+int32_t jw_child_kill(void *h, WStr **err, const WSite *at) {{
+    WChild *c = child_get(h, at);
+    child_reap(c, 0);
+    if (c->done) return 1;
+    if (!child_kill_os(c)) {{
+        child_reap(c, 0);
+        if (c->done) return 1;
+        *err = err_text("子のプロセスを止められません");
+        return 0;
+    }}
+    return 1;
+}}
+
+// ---------------------------------------------------------------- クリップボード（std.clipboard）
+//
+// 文字だけ。Windows は user32.dll を初めて使うときに読み込む。secret なら、クリップボードの履歴・ほかの端末への同期・
+// 見張るプログラムに載せない印（Windows 10 以降の決まった形式名）を一緒に置く。置いたあとの番号（GetClipboardSequenceNumber）を返し、
+// clear(番号) は、そのあとだれもクリップボードを変えていなければ消す（秘密をもう一度読まずに消すため）。Linux・macOS は今は Err。
+
+#ifdef _WIN32
+__declspec(dllimport) void *__stdcall LoadLibraryW(const wchar_t *);
+__declspec(dllimport) void *__stdcall GetProcAddress(void *, const char *);
+__declspec(dllimport) int __stdcall WideCharToMultiByte(unsigned, unsigned long, const wchar_t *, int, char *, int, const char *, int *);
+__declspec(dllimport) void *__stdcall GlobalAlloc(unsigned, size_t);
+__declspec(dllimport) void *__stdcall GlobalFree(void *);
+__declspec(dllimport) void *__stdcall GlobalLock(void *);
+__declspec(dllimport) int __stdcall GlobalUnlock(void *);
+
+static struct {{
+    int ready; // 0: まだ、1: 使える、-1: 使えない
+    int(__stdcall *open)(void *);
+    int(__stdcall *close)(void);
+    int(__stdcall *empty)(void);
+    void *(__stdcall *set)(unsigned, void *);
+    void *(__stdcall *get)(unsigned);
+    unsigned long(__stdcall *seq)(void);
+    unsigned(__stdcall *reg)(const wchar_t *);
+}} g_clip;
+
+static int clip_ready(void) {{
+    lock(&g_lock);
+    if (g_clip.ready == 0) {{
+        void *m = LoadLibraryW(L"user32.dll");
+        g_clip.ready = -1;
+        if (m) {{
+            *(void **)&g_clip.open = GetProcAddress(m, "OpenClipboard");
+            *(void **)&g_clip.close = GetProcAddress(m, "CloseClipboard");
+            *(void **)&g_clip.empty = GetProcAddress(m, "EmptyClipboard");
+            *(void **)&g_clip.set = GetProcAddress(m, "SetClipboardData");
+            *(void **)&g_clip.get = GetProcAddress(m, "GetClipboardData");
+            *(void **)&g_clip.seq = GetProcAddress(m, "GetClipboardSequenceNumber");
+            *(void **)&g_clip.reg = GetProcAddress(m, "RegisterClipboardFormatW");
+            if (g_clip.open && g_clip.close && g_clip.empty && g_clip.set && g_clip.get && g_clip.seq && g_clip.reg) g_clip.ready = 1;
+        }}
+    }}
+    int ok = g_clip.ready == 1;
+    unlock(&g_lock);
+    return ok;
+}}
+
+// ほかのプログラムが開いていることがあるので、少し待って何度か試す
+static int clip_open(void) {{
+    for (int i = 0; i < 20; i++) {{
+        if (g_clip.open(NULL)) return 1;
+        Sleep(10);
+    }}
+    return 0;
+}}
+
+static void *clip_global(const void *p, size_t n) {{
+    void *g = GlobalAlloc(2 /* GMEM_MOVEABLE */, n ? n : 1);
+    if (!g) return NULL;
+    void *d = GlobalLock(g);
+    if (!d) {{
+        GlobalFree(g);
+        return NULL;
+    }}
+    memcpy(d, p, n);
+    GlobalUnlock(g);
+    return g;
+}}
+
+// 文字を置く。secret なら履歴などに載せない印も置く。*out に置いたあとの番号
+int32_t jw_clip_set(WStr *text, int64_t secret, int64_t *out, WStr **err) {{
+    if (memchr(text->data, 0, (size_t)text->len)) {{
+        *err = err_text("クリップボードに置く文字に文字 0 があります");
+        return 0;
+    }}
+    if (!clip_ready()) {{
+        *err = err_text("クリップボードが使えません（user32.dll を読み込めません）");
+        return 0;
+    }}
+    char *c = c_str(text);
+    wchar_t *w = to_wide(c);
+    free(c);
+    size_t wn = (wcslen(w) + 1) * sizeof(wchar_t);
+    void *g = clip_global(w, wn);
+    // 消える前の写しを残さない
+    for (size_t i = 0; i < wn / sizeof(wchar_t); i++) ((volatile wchar_t *)w)[i] = 0;
+    free(w);
+    if (!g || !clip_open()) {{
+        if (g) GlobalFree(g);
+        *err = err_text("クリップボードを開けません（ほかのプログラムが使っています）");
+        return 0;
+    }}
+    int ok = g_clip.empty() && g_clip.set(13 /* CF_UNICODETEXT */, g) != NULL;
+    if (!ok) GlobalFree(g);
+    if (ok && secret) {{
+        // 決まった形式名。中身は DWORD の 0（「載せない」）。印を置けなくても文字は置けている
+        static const wchar_t *const names[3] = {{L"ExcludeClipboardContentFromMonitorProcessing", L"CanIncludeInClipboardHistory", L"CanUploadToCloudClipboard"}};
+        for (int i = 0; i < 3; i++) {{
+            unsigned f = g_clip.reg(names[i]);
+            uint32_t zero = 0;
+            void *h = f ? clip_global(&zero, sizeof zero) : NULL;
+            if (h && !g_clip.set(f, h)) GlobalFree(h);
+        }}
+    }}
+    g_clip.close();
+    if (!ok) {{
+        *err = err_text("クリップボードに置けません");
+        return 0;
+    }}
+    *out = (int64_t)g_clip.seq();
+    return 1;
+}}
+
+// 置いてある文字（なければ空）
+int32_t jw_clip_get(WStr **out, WStr **err) {{
+    if (!clip_ready()) {{
+        *err = err_text("クリップボードが使えません（user32.dll を読み込めません）");
+        return 0;
+    }}
+    if (!clip_open()) {{
+        *err = err_text("クリップボードを開けません（ほかのプログラムが使っています）");
+        return 0;
+    }}
+    WStr *s = NULL;
+    void *h = g_clip.get(13);
+    const wchar_t *w = h ? GlobalLock(h) : NULL;
+    if (w) {{
+        int n = WideCharToMultiByte(65001, 0, w, -1, NULL, 0, NULL, NULL);
+        char *u = jw_checked_malloc((size_t)(n > 0 ? n : 1));
+        if (n > 0) WideCharToMultiByte(65001, 0, w, -1, u, n, NULL, NULL);
+        s = jw_str_new(u, n > 0 ? n - 1 : 0);
+        free(u);
+        GlobalUnlock(h);
+    }}
+    g_clip.close();
+    *out = s ? s : jw_str_new("", 0);
+    return 1;
+}}
+
+// 消す。seq が 0 以上なら、番号がそのときと同じ（だれも変えていない）ときだけ。*out は消したら 1
+int32_t jw_clip_clear(int64_t seq, int64_t *out, WStr **err) {{
+    *out = 0;
+    if (!clip_ready()) {{
+        *err = err_text("クリップボードが使えません（user32.dll を読み込めません）");
+        return 0;
+    }}
+    if (seq >= 0 && (int64_t)g_clip.seq() != seq) return 1;
+    if (!clip_open()) {{
+        *err = err_text("クリップボードを開けません（ほかのプログラムが使っています）");
+        return 0;
+    }}
+    // 開くまでのあいだに変わっていたら消さない
+    if (seq < 0 || (int64_t)g_clip.seq() == seq) *out = g_clip.empty() ? 1 : 0;
+    g_clip.close();
+    return 1;
+}}
+#else
+static int32_t clip_none(WStr **err) {{
+    *err = err_text("この OS ではまだクリップボードを使えません（Windows だけ）");
+    return 0;
+}}
+int32_t jw_clip_set(WStr *text, int64_t secret, int64_t *out, WStr **err) {{
+    (void)text, (void)secret, (void)out;
+    return clip_none(err);
+}}
+int32_t jw_clip_get(WStr **out, WStr **err) {{
+    (void)out;
+    return clip_none(err);
+}}
+int32_t jw_clip_clear(int64_t seq, int64_t *out, WStr **err) {{
+    (void)seq, (void)out;
+    return clip_none(err);
+}}
+#endif
 
 // ---------------------------------------------------------------- ブラウザのエンジン（std.browser）
 //

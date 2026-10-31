@@ -1,0 +1,39 @@
+// std.process を試す。process_child.exe を同じ場所に作ってから `.\process_check.exe process_child.exe` で動かす。想定の出力は docs/windows-std-check.md
+use std.process;
+
+fn str text(ref u8[] b) {
+    let mut s = "";
+    for x in b { s += chr(x as i64); }
+    s
+}
+
+fn main() {
+    let a = args();
+    let me = a[0];
+    let mut c = match process.start(me, []) { case Ok(x) -> x; case Err(e) -> { print("start: {e}"); return; } };
+    match c.write_text("hello\n") { case Ok(_) -> {} case Err(e) -> print("write: {e}"); }
+    match c.read(100) { case Ok(b) -> print("read '{text(b).trim()}'"); case Err(e) -> print("read: {e}"); }
+    // 届いていなければ時間切れ
+    match c.set_timeout(100) { case Ok(_) -> {} case Err(e) -> print("timeout: {e}"); }
+    match c.write_text("slow\n") { case Ok(_) -> {} case Err(e) -> print("write: {e}"); }
+    match c.read(100) { case Ok(b) -> print("unexpected '{text(b)}'"); case Err(e) -> print("read: {e}"); }
+    print("exited {c.exited()}");
+    match c.write("quit\n".bytes()) { case Ok(_) -> {} case Err(e) -> print("write: {e}"); }
+    match c.wait() { case Ok(n) -> print("code {n}"); case Err(e) -> print("wait: {e}"); }
+    print("exited {c.exited()}");
+    match c.read(100) { case Ok(b) -> print("after exit len {b.len()}"); case Err(e) -> print("read: {e}"); }
+    match c.write_text("x\n") { case Ok(_) -> print("unexpected write ok"); case Err(e) -> print("write after exit: Err"); }
+    match c.kill() { case Ok(_) -> print("kill ok"); case Err(e) -> print("kill: {e}"); }
+    // 入力を閉じると子は eof を出して 0 で終わる
+    let mut d = match process.start(me, []) { case Ok(x) -> x; case Err(e) -> { print("start2: {e}"); return; } };
+    d.close_input();
+    d.close_input();
+    match d.write_text("x\n") { case Ok(_) -> print("unexpected"); case Err(e) -> print("closed: {e}"); }
+    match d.read(100) { case Ok(b) -> print("read2 '{text(b).trim()}'"); case Err(e) -> print("read2: {e}"); }
+    match d.wait() { case Ok(n) -> print("code2 {n}"); case Err(e) -> print("wait2: {e}"); }
+    // 止める
+    let mut k = match process.start(me, []) { case Ok(x) -> x; case Err(e) -> { print("start3: {e}"); return; } };
+    match k.kill() { case Ok(_) -> {} case Err(e) -> print("kill3: {e}"); }
+    match k.wait() { case Ok(n) -> print("killed code nonzero {n != 0}"); case Err(e) -> print("wait3: {e}"); }
+    match process.start("no-such-command-xyz", ["a"]) { case Ok(_) -> print("unexpected"); case Err(e) -> print(e); }
+}

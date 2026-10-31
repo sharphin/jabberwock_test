@@ -4,6 +4,7 @@ pub fn str[] names() {
     let str[] mut out = [];
     out.push("base64");
     out.push("browser");
+    out.push("clipboard");
     out.push("crypto");
     out.push("csv");
     out.push("date");
@@ -16,6 +17,7 @@ pub fn str[] names() {
     out.push("math");
     out.push("net");
     out.push("pg");
+    out.push("process");
     out.push("random");
     out.push("regex");
     out.push("text");
@@ -272,6 +274,34 @@ fn str status(i64 r) {{
         case 4 -> "このエンジンにはその機能がありません";
         default -> "エンジンの操作が失敗しました（{{-r}}）";
     }}
+}}
+""");
+    }
+    if name == "clipboard" {
+        return Some("""
+// 標準ライブラリ std.clipboard: クリップボードの文字。`use std.clipboard;` と書いて使う。今は Windows だけ（ほかの OS では Err）
+//   let n = clipboard.set_text(password, true)?;     // true なら秘密（クリップボードの履歴・ほかの端末への同期に載せない）
+//   time.sleep(30000);
+//   clipboard.clear_if(n)?;                           // そのあとだれも変えていなければ消す（秘密をもう一度読まない）
+//   let s = clipboard.get_text()?;                    // 置いてある文字（なければ ""）
+
+/// 文字を置く。置いたあとの番号を返す（clear_if に渡す）
+pub fn Result<i64, str> set_text(str s, bool secret) {{ __clip_set(s, if secret {{ 1 }} else {{ 0 }}) }}
+
+/// 置いてある文字。文字でなければ ""
+pub fn Result<str, str> get_text() {{ __clip_get() }}
+
+/// set_text のあと、だれもクリップボードを変えていなければ消す。消したら true
+pub fn Result<bool, str> clear_if(i64 n) {{
+    assert(n >= 0);
+    let r = __clip_clear(n)?;
+    Ok(r == 1)
+}}
+
+/// 何が置いてあっても消す
+pub fn Result<(), str> clear() {{
+    __clip_clear(-1)?;
+    Ok(())
 }}
 """);
     }
@@ -3242,6 +3272,25 @@ fn u8[] md5(ref u8[] data) {{
     }}
     out
 }}
+""");
+    }
+    if name == "process" {
+        return Some("""
+// 標準ライブラリ std.process: 子のプロセスを待たずに起こし、標準入力・標準出力をパイプでつなぐ。`use std.process;` と書いて使う
+//   let mut c = process.start("vault", ["--child"])?;   // cmd は PATH からも探す。標準エラーは親のものをそのまま使う
+//   c.write_text("open\\n")?;
+//   c.set_timeout(50)?;                                  // 読む待ち時間（ミリ秒。0 なら待ち続ける）。時間切れは Err("時間切れです")
+//   let got = c.read(4096)?;                             // 最大 4096 バイト。子が出力を閉じたら空のリスト
+//   c.close_input();                                     // 子には入力の終わりに見える
+//   let code = c.wait()?;                                // 終わるまで待つ（シグナルで止まったら -1）
+// Child のメソッド: `read(n)`・`write(bytes)`・`write_text(s)`・`set_timeout(ms)`・`close_input()`・`exited()`（待たずに、終わったか）・
+// `wait()`・`kill()`。Child は資源（ムーブだけ。ほかのスレッドへは渡せない）。持ち主がいなくなるとパイプを閉じる（子は止めない）。
+// 子へ渡すのは標準入力・標準出力・標準エラーだけ（開いているファイルやソケットは渡さない）。
+
+pub resource Child;
+
+/// cmd を argv（cmd の後ろに渡す引数）で起こす。起こせなければ Err
+pub fn Result<Child, str> start(str cmd, str[] argv) {{ __process_start(cmd, argv) }}
 """);
     }
     if name == "random" {

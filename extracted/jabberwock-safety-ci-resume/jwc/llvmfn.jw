@@ -1905,6 +1905,81 @@ struct FnGen {
             let f = if name == "browser.name" { "@jw_browser_name" } else { "@jw_browser_event_text" };
             return Ok(llvm.vt(b.val("call ptr " + f + "(ptr " + vals[0].v + ", ptr " + site + ")"), ty.Ty.Str));
         }
+        if name == "__clip_set" {
+            let out = b.alloca("i64");
+            let err = b.alloca("ptr");
+            let ok = b.val("call i32 @jw_clip_set(ptr " + vals[0].v + ", i64 " + vals[1].v + ", ptr " + out + ", ptr " + err + ")");
+            release(vals, all);
+            return result_of(m, want, ok, err, "int", out);
+        }
+        if name == "__clip_get" {
+            let out = b.alloca("ptr");
+            let err = b.alloca("ptr");
+            let ok = b.val("call i32 @jw_clip_get(ptr " + out + ", ptr " + err + ")");
+            return result_of(m, want, ok, err, "str", out);
+        }
+        if name == "__clip_clear" {
+            let out = b.alloca("i64");
+            let err = b.alloca("ptr");
+            let ok = b.val("call i32 @jw_clip_clear(i64 " + vals[0].v + ", ptr " + out + ", ptr " + err + ")");
+            return result_of(m, want, ok, err, "int", out);
+        }
+        if name == "__process_start" {
+            let lst = b.alloca("%list");
+            b.op("store %list " + vals[1].v + ", ptr " + lst);
+            let out = b.alloca("ptr");
+            let err = b.alloca("ptr");
+            let ok = b.val("call i32 @jw_process_start(ptr " + vals[0].v + ", ptr " + lst + ", ptr " + out + ", ptr " + err + ")");
+            release(vals, 1);
+            return result_of(m, want, ok, err, "res", out);
+        }
+        if name == "child.read" {
+            let out = b.alloca("%list");
+            b.op("store %list zeroinitializer, ptr " + out);
+            let err = b.alloca("ptr");
+            let site = m.site(span, "");
+            let ok = b.val("call i32 @jw_child_read(ptr " + vals[0].v + ", i64 " + vals[1].v + ", ptr " + out + ", ptr " + err + ", ptr " + site + ")");
+            return result_of(m, want, ok, err, "bytes", out);
+        }
+        // 書くリストはムーブされてきたので、jw_child_write が解放する
+        if name == "child.write" {
+            let lst = b.alloca("%list");
+            b.op("store %list " + vals[1].v + ", ptr " + lst);
+            let err = b.alloca("ptr");
+            let site = m.site(span, "");
+            let ok = b.val("call i32 @jw_child_write(ptr " + vals[0].v + ", ptr " + lst + ", ptr " + err + ", ptr " + site + ")");
+            return result_of(m, want, ok, err, "unit", "");
+        }
+        if name == "child.write_text" {
+            let err = b.alloca("ptr");
+            let site = m.site(span, "");
+            let ok = b.val("call i32 @jw_child_write_text(ptr " + vals[0].v + ", ptr " + vals[1].v + ", ptr " + err + ", ptr " + site + ")");
+            release(vals, all);
+            return result_of(m, want, ok, err, "unit", "");
+        }
+        if name == "child.kill" {
+            let err = b.alloca("ptr");
+            let site = m.site(span, "");
+            let ok = b.val("call i32 @jw_child_kill(ptr " + vals[0].v + ", ptr " + err + ", ptr " + site + ")");
+            return result_of(m, want, ok, err, "unit", "");
+        }
+        if name == "child.wait" {
+            let out = b.alloca("i64");
+            let err = b.alloca("ptr");
+            let site = m.site(span, "");
+            let ok = b.val("call i32 @jw_child_wait(ptr " + vals[0].v + ", ptr " + out + ", ptr " + err + ", ptr " + site + ")");
+            return result_of(m, want, ok, err, "int", out);
+        }
+        if name == "child.exited" {
+            let site = m.site(span, "");
+            let r = b.val("call i32 @jw_child_exited(ptr " + vals[0].v + ", ptr " + site + ")");
+            return Ok(llvm.vt(b.val("icmp ne i32 " + r + ", 0"), ty.Ty.Bool));
+        }
+        if name == "child.close_input" {
+            let site = m.site(span, "");
+            b.op("call void @jw_child_close_input(ptr " + vals[0].v + ", ptr " + site + ")");
+            return Ok(llvm.vt("0", ty.Ty.Unit));
+        }
         if name == "udp.port" {
             let site = m.site(span, "");
             return Ok(llvm.vt(b.val("call i64 @jw_udp_port(ptr " + vals[0].v + ", ptr " + site + ")"), ty.i64t()));
@@ -1931,10 +2006,10 @@ struct FnGen {
             let site = m.site(span, "");
             return Ok(llvm.vt(b.val("call i64 @jw_listener_port(ptr " + vals[0].v + ", ptr " + site + ")"), ty.i64t()));
         }
-        if name == "tcp.set_timeout" || name == "tls.set_timeout" || name == "udp.set_timeout" {
+        if name == "tcp.set_timeout" || name == "tls.set_timeout" || name == "udp.set_timeout" || name == "child.set_timeout" {
             let err = b.alloca("ptr");
             let site = m.site(span, "");
-            let ok = b.val("call i32 @jw_" + name.slice(0, 3) + "_set_timeout(ptr " + vals[0].v + ", i64 " + vals[1].v + ", ptr " + err + ", ptr " + site + ")");
+            let ok = b.val("call i32 @jw_" + name.slice(0, name.len() - 12) + "_set_timeout(ptr " + vals[0].v + ", i64 " + vals[1].v + ", ptr " + err + ", ptr " + site + ")");
             return result_of(m, want, ok, err, "unit", "");
         }
         if name == "__env_get" {
@@ -2430,6 +2505,10 @@ struct FnGen {
             }
             if name == "reverse" {
                 b.op("call void @jw_list_reverse(ptr " + pr.ptr + ", i64 " + size + ", ptr " + moved + ")");
+                return Ok(llvm.vt("0", ty.Ty.Unit));
+            }
+            if name == "wipe" {
+                b.op("call void @jw_list_wipe(ptr " + pr.ptr + ", i64 " + size + ", ptr " + moved + ")");
                 return Ok(llvm.vt("0", ty.Ty.Unit));
             }
             // 中身ごと新しいリストへ移し、元は空にする

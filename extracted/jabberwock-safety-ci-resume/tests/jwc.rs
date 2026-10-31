@@ -772,6 +772,103 @@ fn jwc_std_date_csv_regex() {
     );
 }
 
+// std.clipboard は今は Windows だけ。ほかの OS では決まった Err（Windows では samples/windows/clipboard_check.jw で確かめる）
+#[cfg(unix)]
+#[test]
+fn jwc_std_clipboard_unix() {
+    if !have_clang() { return; }
+    let dir = std::env::temp_dir().join(format!("jw-jwc-clip-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("main.jw");
+    std::fs::write(&path, "use std.clipboard;\nfn main() { print(clipboard.set_text(\"a\", true), clipboard.get_text(), clipboard.clear()); }\n").unwrap();
+    let exe = dir.join("main");
+    let out = Command::new(jwc()).args(["build", "--clang", &native::clang(), "-o"]).arg(&exe).arg(&path).output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let got = Command::new(&exe).output().unwrap();
+    let _ = std::fs::remove_dir_all(dir);
+    let e = "Err(この OS ではまだクリップボードを使えません（Windows だけ）)";
+    assert_eq!(String::from_utf8_lossy(&got.stdout), format!("{e} {e} {e}\n"));
+}
+
+// std.process: 子を起こして読む・書く・時間切れ・終了コード・入力を閉じる・止める・起こせないコマンド（子も jwc で作る）
+#[test]
+fn jwc_std_process() {
+    if !have_clang() { return; }
+    let dir = std::env::temp_dir().join(format!("jw-jwc-proc-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut exes = Vec::new();
+    for (name, src) in [("child", PROC_CHILD_SRC), ("parent", PROC_PARENT_SRC)] {
+        let path = dir.join(format!("{name}.jw"));
+        std::fs::write(&path, src).unwrap();
+        let exe = dir.join(name);
+        let out = Command::new(jwc()).args(["build", "--clang", &native::clang(), "-o"]).arg(&exe).arg(&path).output().unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        exes.push(exe);
+    }
+    let got = Command::new(&exes[1]).arg(&exes[0]).output().unwrap();
+    let _ = std::fs::remove_dir_all(dir);
+    assert_eq!(
+        String::from_utf8_lossy(&got.stdout),
+        "read 'got: hello'\nread: 時間切れです\nexited false\ncode 3\nexited true\nafter exit len 0\nwrite after exit: Err\nkill ok\n\
+         closed: 子の入力はもう閉じています\nread2 'eof'\ncode2 0\nkilled code nonzero true\nコマンドを起動できません: no-such-command-xyz\n"
+    );
+}
+
+const PROC_CHILD_SRC: &str = r#"// 子: 1 行ずつ読んで、大文字にせずに「got: 行」と返す。"quit" で 3 を返して終わる
+fn main() {
+    loop {
+        match read_line() {
+            case None -> { print("eof"); exit(0); }
+            case Some(l) -> {
+                if l == "quit" { exit(3); }
+                if l == "slow" { continue; }
+                print("got: {l}");
+            }
+        }
+    }
+}
+"#;
+
+const PROC_PARENT_SRC: &str = r#"use std.process;
+
+fn str text(ref u8[] b) {
+    let mut s = "";
+    for x in b { s += chr(x as i64); }
+    s
+}
+
+fn main() {
+    let a = args();
+    let me = a[0];
+    let mut c = match process.start(me, []) { case Ok(x) -> x; case Err(e) -> { print("start: {e}"); return; } };
+    match c.write_text("hello\n") { case Ok(_) -> {} case Err(e) -> print("write: {e}"); }
+    match c.read(100) { case Ok(b) -> print("read '{text(b).trim()}'"); case Err(e) -> print("read: {e}"); }
+    // 届いていなければ時間切れ
+    match c.set_timeout(100) { case Ok(_) -> {} case Err(e) -> print("timeout: {e}"); }
+    match c.write_text("slow\n") { case Ok(_) -> {} case Err(e) -> print("write: {e}"); }
+    match c.read(100) { case Ok(b) -> print("unexpected '{text(b)}'"); case Err(e) -> print("read: {e}"); }
+    print("exited {c.exited()}");
+    match c.write("quit\n".bytes()) { case Ok(_) -> {} case Err(e) -> print("write: {e}"); }
+    match c.wait() { case Ok(n) -> print("code {n}"); case Err(e) -> print("wait: {e}"); }
+    print("exited {c.exited()}");
+    match c.read(100) { case Ok(b) -> print("after exit len {b.len()}"); case Err(e) -> print("read: {e}"); }
+    match c.write_text("x\n") { case Ok(_) -> print("unexpected write ok"); case Err(e) -> print("write after exit: Err"); }
+    match c.kill() { case Ok(_) -> print("kill ok"); case Err(e) -> print("kill: {e}"); }
+    // 入力を閉じると子は eof を出して 0 で終わる
+    let mut d = match process.start(me, []) { case Ok(x) -> x; case Err(e) -> { print("start2: {e}"); return; } };
+    d.close_input();
+    d.close_input();
+    match d.write_text("x\n") { case Ok(_) -> print("unexpected"); case Err(e) -> print("closed: {e}"); }
+    match d.read(100) { case Ok(b) -> print("read2 '{text(b).trim()}'"); case Err(e) -> print("read2: {e}"); }
+    match d.wait() { case Ok(n) -> print("code2 {n}"); case Err(e) -> print("wait2: {e}"); }
+    // 止める
+    let mut k = match process.start(me, []) { case Ok(x) -> x; case Err(e) -> { print("start3: {e}"); return; } };
+    match k.kill() { case Ok(_) -> {} case Err(e) -> print("kill3: {e}"); }
+    match k.wait() { case Ok(n) -> print("killed code nonzero {n != 0}"); case Err(e) -> print("wait3: {e}"); }
+    match process.start("no-such-command-xyz", ["a"]) { case Ok(_) -> print("unexpected"); case Err(e) -> print(e); }
+}
+"#;
+
 // std.net の UDP: 送り元つきの受け取り・長いまとまりの切り捨て・空のまとまり・時間切れ・名前の誤り・同じ番号の取り直し
 #[test]
 fn jwc_std_udp() {
@@ -1352,7 +1449,7 @@ fn jwc_std_crypto() {
     let _ = std::fs::remove_dir_all(dir);
     assert_eq!(
         String::from_utf8_lossy(&got.stdout),
-        "ok chacha20\nok poly1305\nok seal\nopen true\ntampered true wrong key true\nempty 16 true short true\nunhex true true deadbeef\n"
+        "ok chacha20\nok poly1305\nok seal\nopen true\ntampered true wrong key true\nempty 16 true short true\nunhex true true deadbeef\nwipe 1 7\n"
     );
 }
 
@@ -1394,6 +1491,10 @@ fn main() {
     let h2 = hash.unhex("abc").is_none();
     let db = bx("DEADbeef");
     print("unhex {h1} {h2} {hash.hex(ref db)}");
+    let mut secret = bx("00ff00ff");
+    secret.wipe();
+    secret.push(7);
+    print("wipe {secret.len()} {secret[0]}");
 }
 "#;
 

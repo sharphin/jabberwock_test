@@ -40,6 +40,18 @@ const RES_DECLS = "declare i32 @jw_fs_open(ptr, i64, ptr, ptr)\n" +
     "declare i32 @jw_listener_accept(ptr, ptr, ptr, ptr)\n" +
     "declare i64 @jw_listener_port(ptr, ptr)\n" +
     "declare i32 @jw_udp_bind(ptr, i64, ptr, ptr)\n" +
+    "declare i32 @jw_process_start(ptr, ptr, ptr, ptr)\n" +
+    "declare i32 @jw_clip_set(ptr, i64, ptr, ptr)\n" +
+    "declare i32 @jw_clip_get(ptr, ptr)\n" +
+    "declare i32 @jw_clip_clear(i64, ptr, ptr)\n" +
+    "declare i32 @jw_child_read(ptr, i64, ptr, ptr, ptr)\n" +
+    "declare i32 @jw_child_write(ptr, ptr, ptr, ptr)\n" +
+    "declare i32 @jw_child_write_text(ptr, ptr, ptr, ptr)\n" +
+    "declare i32 @jw_child_set_timeout(ptr, i64, ptr, ptr)\n" +
+    "declare i32 @jw_child_kill(ptr, ptr, ptr)\n" +
+    "declare i32 @jw_child_wait(ptr, ptr, ptr, ptr)\n" +
+    "declare i32 @jw_child_exited(ptr, ptr)\n" +
+    "declare void @jw_child_close_input(ptr, ptr)\n" +
     "declare i32 @jw_udp_send_to(ptr, ptr, ptr, i64, ptr, ptr)\n" +
     "declare i32 @jw_udp_recv_raw(ptr, i64, ptr, ptr, ptr)\n" +
     "declare i32 @jw_udp_set_timeout(ptr, i64, ptr, ptr)\n" +
@@ -502,8 +514,10 @@ pub struct Module {
     fn str output() {
         let body = code.join("");
         let res = if body.contains("@jw_res_") || body.contains("@jw_fs_") || body.contains("@jw_file_") || body.contains("@jw_net_")
-            || body.contains("@jw_tcp_") || body.contains("@jw_listener_") || body.contains("@jw_udp_") || body.contains("@jw_env_get(") || body.contains("@jw_time_") || body.contains("@jw_browser_") || body.contains("@jw_tls_") || body.contains("@jw_random_") { RES_DECLS } else { "" };
-        PRELUDE + res + types.join("") + "\n" + globals.join("") + "\n" + body + TBAA
+            || body.contains("@jw_tcp_") || body.contains("@jw_listener_") || body.contains("@jw_udp_") || body.contains("@jw_process_") || body.contains("@jw_child_") || body.contains("@jw_clip_") || body.contains("@jw_env_get(") || body.contains("@jw_time_") || body.contains("@jw_browser_") || body.contains("@jw_tls_") || body.contains("@jw_random_") { RES_DECLS } else { "" };
+        // wipe は jwc だけのメソッド（Rust 版と突き合わせる出力を変えないよう、使ったときだけ宣言する）
+        let wipe = if body.contains("@jw_list_wipe(") { "declare void @jw_list_wipe(ptr, i64, ptr)\n" } else { "" };
+        PRELUDE + res + wipe + types.join("") + "\n" + globals.join("") + "\n" + body + TBAA
     }
 
     fn mut i64 fresh() {
