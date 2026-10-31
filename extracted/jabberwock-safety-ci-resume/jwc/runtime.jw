@@ -3914,7 +3914,7 @@ static int tls_handshake(WSock fd, WTls *t, wchar_t *target) {{
         WSecDesc id = {{0, 2, in}};
         WSecBuf o = {{0, 2, NULL}};
         WSecDesc odesc = {{0, 1, &o}};
-        st = g_tls.init(&g_tls.cred, &t->ctx, target, TLS_ISC_FLAGS, 0, 0, &id, 0, NULL, &odesc, &attr, NULL);
+        st = g_tls.init(&g_tls.cred, &t->ctx, target, TLS_ISC_FLAGS, 0, 0, &id, 0, &t->ctx, &odesc, &attr, NULL);
         if (st == SEC_INCOMPLETE) continue;
         if (o.p) {{
             int sent = o.cb == 0 || tls_send_all(fd, o.p, (int)o.cb);
@@ -4027,7 +4027,7 @@ static int tls_free(WRes *r) {{
             WSecBuf o = {{0, 2, NULL}};
             WSecDesc od = {{0, 1, &o}};
             unsigned long attr = 0;
-            if (g_tls.init(&g_tls.cred, &t->ctx, NULL, TLS_ISC_FLAGS, 0, 0, NULL, 0, NULL, &od, &attr, NULL) >= 0 && o.p) {{
+            if (g_tls.init(&g_tls.cred, &t->ctx, NULL, TLS_ISC_FLAGS, 0, 0, NULL, 0, &t->ctx, &od, &attr, NULL) >= 0 && o.p) {{
                 tls_send_all((WSock)r->fd, o.p, (int)o.cb);
             }}
             if (o.p) g_tls.free_buf(o.p);
