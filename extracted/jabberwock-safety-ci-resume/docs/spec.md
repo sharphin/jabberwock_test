@@ -58,8 +58,9 @@ fn main() {
 - ほかのモジュールの名前は、いつも `モジュール名.名前` と書く（関数・構造体・enum・interface・静的メソッド `geom.Point.at(1, 2)`・enum の値 `geom.Shape.Box(1, 2)`・型 `geom.Point[]`）。
 - ほかのファイルから使えるのは `pub` をつけた定義だけ。構造体のメソッド・フィールド、enum の種類は、型が `pub` なら使える。
 - モジュールの中では、自分の定義は名前だけで書ける。`use` は書いたファイルの中でだけ効く（使うモジュールが使っているモジュールは見えない）。
-- モジュールの中から、最初のファイル（main）の関数は呼べない（値としても使えない）。使う関数はモジュールの中に置くか、関数の値として引数で渡す。
-  jwc だけ（Rust 版は呼べてしまう。凍結のため直さない）。
+- モジュールの中から、最初のファイル（main）の関数と型（構造体・enum・interface）は使えない（関数は値としても使えない）。
+  使うものはモジュールの中に置くか、別のモジュールに分けて use する（関数なら、関数の値として引数で渡してもよい）。
+  どのプログラムにも最初からある `Option`・`Result`・`ok_or` は使える。jwc だけ（Rust 版は使えてしまう。凍結のため直さない）。
 - 違うモジュールに同じ名前の定義があってよい。
 - `use` が輪になる（a が b を使い、b が a を使う）のはエラー。
 - 変数や引数に、そのファイルで `use` したモジュールと同じ名前はつけられない。構造体のフィールドにはつけてよい（`b.geom.x` の `geom` はフィールド）。
@@ -166,8 +167,13 @@ let p = http.post("http://127.0.0.1:8080/p", "application/json", "{{}}")?;
 - HTTP/1.1 のクライアント。std.net・std.tls の上に .jw だけで書いている（`std/http.jw`）。http:// と https://（[1.9](#19-stdtlsjwc-だけ) の規則で証明書を確かめる）。ほかの scheme は Err。
   Host ヘッダーは、port がその scheme の決まりの番号（http は 80、https は 443）なら port を書かない。
 - 1 回ごとにつなぎ、`Connection: close` を送って、相手が閉じるまで読む。本文は chunked なら読み解き、`Content-Length` があればその長さにする（足りなければ Err）。
-  リダイレクトはたどらない。状態の番号が 404 などでも Ok（`status` を見る）。
-- `Response`: `status`（`i64`）・`headers`（`str[str]`。名前は小文字。同じ名前が二つ以上なら `", "` でつなぐ）・`body`（`u8[]`）・`text()`（本文を `str` に。UTF-8 でなければ Err）。
+  状態の番号が 404 などでも Ok（`status` を見る）。
+- `Accept-Encoding: gzip` を送る。`Content-Encoding: gzip` の本文は std.gzip で展開し（展開して 256 MiB を超えれば Err）、
+  `headers` から `content-encoding` と `content-length` を除く。
+- リダイレクト（301・302・303・307・308 で `Location` があるもの）は 10 回までたどる（超えたら Err）。303 と、POST への 301・302 は、本文なしの GET でたどる。
+  Location は、`scheme://` で始まればそのまま、`//` で始まれば同じ scheme、`/` で始まれば同じ host と port、ほかは今の path の最後の `/` のあとにつなぐ。
+  https から http へのリダイレクトもたどる。
+- `Response`: `status`（`i64`）・`url`（たどったあとの URL。たどらなければ頼んだ URL）・`headers`（`str[str]`。名前は小文字。同じ名前が二つ以上なら `", "` でつなぐ）・`body`（`u8[]`）・`text()`（本文を `str` に。UTF-8 でなければ Err）。
 - URL は std.url の `parse` で分ける（同じ規則で Err）。URL に空白・改行、content_type に改行があれば Err（ヘッダーを足されないように）。
 
 ### 1.6 std.env・std.time・std.json（jwc だけ）

@@ -2,15 +2,24 @@
 //   let r = http.get("http://example.com/")?;
 //   print(r.status, r.headers["content-type"], r.text()?);
 // http:// と https://（std.tls。証明書と名前を確かめる）。std.net・std.tls の上に .jw だけで書いている。
-// 1 回ごとにつなぎ、`Connection: close` で相手が閉じるまで読む。chunked の本文は読み解く。リダイレクトはたどらない。
+// 1 回ごとにつなぎ、`Connection: close` で相手が閉じるまで読む。chunked の本文は読み解き、gzip の本文は展開する。
+// リダイレクト（301・302・303・307・308）は 10 回までたどる。
 
 use std.net;
 use std.tls;
 use std.url;
 use std.text;
+use std.gzip;
+
+/// たどるリダイレクトの数の上限
+const MAX_REDIRECTS = 10;
+/// gzip を展開した本文の大きさの上限（バイト）
+const MAX_BODY = 268435456;
 
 pub struct Response {
     i64 status;
+    // リダイレクトをたどったあとの URL（たどらなければ頼んだ URL）
+    str url;
     // 名前は小文字にする（同じ名前が二つ以上あれば ", " でつなぐ）
     str[str] headers;
     u8[] body;
@@ -36,13 +45,56 @@ fn Result<url.Url, str> parse_url(str s) {
     Ok(u)
 }
 
+/// リダイレクトをたどる。303 と、POST への 301・302 は、本文なしの GET にする（ブラウザと同じ）
 fn Result<Response, str> request(str method, str target, str content_type, str body) {
-    let u = parse_url(target)?;
     if content_type.contains("\r") || content_type.contains("\n") { return Err("content_type に改行があります"); }
+    let mut m = method;
+    let mut t = target;
+    let mut ct = content_type;
+    let mut b = body;
+    for hop in range(MAX_REDIRECTS + 1) {
+        let r = once(m, t, ct, b)?;
+        let s = r.status;
+        let moved = s == 301 || s == 302 || s == 303 || s == 307 || s == 308;
+        if !moved { return Ok(r); }
+        let loc = match r.headers.get("location") {
+            case Some(l) -> l;
+            case None -> return Ok(r);
+        };
+        t = join_url(t, loc)?;
+        if s == 303 || ((s == 301 || s == 302) && m == "POST") {
+            m = "GET";
+            ct = "";
+            b = "";
+        }
+    }
+    Err("リダイレクトが多すぎます（{MAX_REDIRECTS} 回を超えました）: " + target)
+}
+
+/// リダイレクトの行き先（Location）を、今の URL をもとに URL にする
+fn Result<str, str> join_url(str base, str loc) {
+    if loc.contains("://") { return Ok(loc); }
+    let u = parse_url(base)?;
+    if loc.starts_with("//") { return Ok(u.scheme + ":" + loc); }
+    let name = if u.host.contains(":") { "[" + u.host + "]" } else { u.host };
+    let plain_port = if u.scheme == "https" { 443 } else { 80 };
+    let origin = if u.port == plain_port { u.scheme + "://" + name } else { u.scheme + "://" + name + ":{u.port}" };
+    if loc.starts_with("/") { return Ok(origin + loc); }
+    // 相対の行き先は、今の path の最後の `/` までにつなぐ
+    let cs = u.path.chars();
+    let mut cut = 0;
+    for (i, c) in cs { if c == "/" { cut = i + 1; } }
+    let dir = if cut == 0 { "/" } else { u.path.slice(0, cut) };
+    Ok(origin + dir + loc)
+}
+
+/// 1 回だけ頼む
+fn Result<Response, str> once(str method, str target, str content_type, str body) {
+    let u = parse_url(target)?;
     let name = if u.host.contains(":") { "[" + u.host + "]" } else { u.host };
     let plain_port = if u.scheme == "https" { 443 } else { 80 };
     let host = if u.port == plain_port { name } else { name + ":{u.port}" };
-    let mut req = "{method} {u.target()} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\nUser-Agent: jabberwock\r\n";
+    let mut req = "{method} {u.target()} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\nUser-Agent: jabberwock\r\nAccept-Encoding: gzip\r\n";
     if method == "POST" { req += "Content-Type: {content_type}\r\nContent-Length: {body.byte_len()}\r\n"; }
     req += "\r\n" + body;
     let u8[] mut all = [];
@@ -65,7 +117,7 @@ fn Result<Response, str> request(str method, str target, str content_type, str b
         }
         net.close(c)?;
     }
-    parse_response(ref all)
+    parse_response(ref all, target)
 }
 
 /// `\r\n\r\n` の位置（なければ -1）
@@ -127,7 +179,7 @@ fn Result<u8[], str> unchunk(ref u8[] b) {
     }
 }
 
-fn Result<Response, str> parse_response(ref u8[] all) {
+fn Result<Response, str> parse_response(ref u8[] all, str target) {
     let end = header_end(all);
     if end < 0 { return Err("HTTP の応答が読めません（ヘッダーの終わりがない）"); }
     let raw = part(ref all, 0, end);
@@ -178,5 +230,14 @@ fn Result<Response, str> parse_response(ref u8[] all) {
             case None -> {}
         }
     }
-    Ok(Response { status: status, headers: headers, body: body })
+    let gzipped = match headers.get("content-encoding") {
+        case Some(v) -> v.to_lower().trim() == "gzip";
+        case None -> false;
+    };
+    if gzipped && body.len() > 0 {
+        body = gzip.decompress(ref body, MAX_BODY)?;
+        headers.remove("content-encoding");
+        headers.remove("content-length");
+    }
+    Ok(Response { status: status, url: target, headers: headers, body: body })
 }

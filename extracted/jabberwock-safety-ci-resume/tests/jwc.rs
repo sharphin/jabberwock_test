@@ -631,14 +631,15 @@ fn jwc_std_http() {
     let out = Command::new(jwc()).args(["build", "--clang", &native::clang(), "-o"]).arg(&exe).arg(&path).output().unwrap();
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     let got = Command::new(&exe).output().unwrap();
-    assert_eq!(String::from_utf8_lossy(&got.stdout), "200 text/plain 1, 2 こんに\n404 abcde\n\
-        Ok(GET /a?b=1 HTTP/1.1|POST /p HTTP/1.1|)\nNone None None\nhttp:// か https:// で始まる URL ではありません: ftp://x\nok\n");
+    assert_eq!(String::from_utf8_lossy(&got.stdout), "200 text/plain 1, 2 こんに\n404 abcde true\n200 gzipped None\n\
+        Ok(GET /a?b=1 HTTP/1.1|POST /p HTTP/1.1|GET /g HTTP/1.1|GET /z HTTP/1.1|)\nNone None None\nhttp:// か https:// で始まる URL ではありません: ftp://x\nok\n");
     let _ = std::fs::remove_dir_all(dir);
 }
 
 const HTTP_SRC: &str = r#"use std.net;
 use std.http;
 use std.text;
+use std.gzip;
 
 fn Result<str, str> serve(i64 port, i64 n) {
     let mut l = net.listen("127.0.0.1", port)?;
@@ -652,8 +653,15 @@ fn Result<str, str> serve(i64 port, i64 n) {
         }
         if i == 0 {
             c.write_text("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 9\r\nX-A: 1\r\nx-a: 2\r\n\r\nこんにちはxx")?;
-        } else {
+        } else if i == 1 {
+            c.write_text("HTTP/1.1 303 See Other\r\nLocation: /g\r\nContent-Length: 0\r\n\r\n")?;
+        } else if i == 2 {
             c.write_text("HTTP/1.1 404 Not Found\r\nTransfer-Encoding: chunked\r\n\r\n3\r\nabc\r\n2;x=y\r\nde\r\n0\r\n\r\n")?;
+        } else {
+            let u8[] plain = [103, 122, 105, 112, 112, 101, 100];
+            let packed = gzip.compress(ref plain);
+            c.write_text("HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\nContent-Length: {packed.len()}\r\n\r\n")?;
+            c.write(packed)?;
         }
         net.close(c)?;
     }
@@ -664,7 +672,7 @@ fn Result<(), str> run() {
     let mut probe = net.listen("127.0.0.1", 0)?;
     let port = probe.port();
     net.stop(probe)?;
-    let t = spawn(() -> serve(port, 2));
+    let t = spawn(() -> serve(port, 4));
     let mut tries = 0;
     loop {
         match http.get("http://127.0.0.1:{port}/a?b=1") {
@@ -679,7 +687,9 @@ fn Result<(), str> run() {
         }
     }
     let b = http.post("http://127.0.0.1:{port}/p", "text/plain", "日本")?;
-    print(b.status, b.text()?);
+    print(b.status, b.text()?, b.url == "http://127.0.0.1:{port}/g");
+    let z = http.get("http://127.0.0.1:{port}/z")?;
+    print(z.status, z.text()?, z.headers.get("content-encoding"));
     print(t.join());
     let u8[] x1 = [237, 160, 128];
     let u8[] x2 = [192, 128];

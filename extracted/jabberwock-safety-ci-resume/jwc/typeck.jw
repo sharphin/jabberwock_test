@@ -626,7 +626,10 @@ pub struct Checker {
     fn Result<ty.Ty, diag.Diag> resolve_pointee(ref ast.TypeExpr t) {
         match ref t.kind {
             case Name(n) -> {
-                if is_iface(n) && !tp_has(n) { return Ok(ty.Ty.Iface(n)); }
+                if is_iface(n) && !tp_has(n) {
+                    not_main_type(n, t.span)?;
+                    return Ok(ty.Ty.Iface(n));
+                }
             }
             default -> {}
         }
@@ -652,6 +655,7 @@ pub struct Checker {
                     require_sendable(x, xs[0].span, "チャンネルで送る値")?;
                     return Ok(ty.Ty.Chan(own x));
                 }
+                if is_struct(n) || is_enum(n) { not_main_type(n, t.span)?; }
                 let want = if is_struct(n) { sdefs[s_at[n]].tparams.len() }
                     else if is_enum(n) { edefs[e_at[n]].tparams.len() }
                     else { return Err(diag.make("未定義の型 `{n}`").at(t.span, "この型は定義されていません")); };
@@ -703,6 +707,7 @@ pub struct Checker {
                 }
                 if tp_has(n) { return Ok(ty.Ty.Param(n)); }
                 if has(resources, n) { return Ok(ty.Ty.Res(n)); }
+                if is_iface(n) || is_struct(n) || is_enum(n) { not_main_type(n, t.span)?; }
                 if is_iface(n) {
                     return Err(diag.make("interface `{n}` は own か ref を通して使います")
                         .at(t.span, "`own {n}` か `ref {n}` と書いてください")
@@ -1246,11 +1251,7 @@ pub struct Checker {
 
     fn mut Result<(), diag.Diag> check_fn(ref ast.FnDef f) {
         let si = f_at[f.name];
-        // `geom.area` / `geom.Point.len` は geom の中の関数
-        cur_mod = "";
-        for m in mods {
-            if cur_mod == "" && f.name.len() > m.len() && f.name.starts_with(m + ".") { cur_mod = m; }
-        }
+        enter_mod(f.name);
         cur_ret = ty.cl(sigs[si].ret);
         if info.ret_at.contains(f.name) {
             info.ret_tys[info.ret_at[f.name]] = ty.cl(sigs[si].ret);
@@ -1349,9 +1350,32 @@ pub struct Checker {
         true
     }
 
+    /// どのプログラムにも最初からある定義（main.jw の PRELUDE）。モジュールの中からも使える
+    fn bool in_prelude(str name) {
+        name == "Option" || name == "Result" || name == "ok_or" || name.starts_with("Option.") || name.starts_with("Result.")
+    }
+
+    /// `geom.area` / `geom.Point.len` は geom の中の定義。今のモジュール（cur_mod）をその定義のモジュールにする
+    fn mut enter_mod(str name) {
+        cur_mod = "";
+        for m in mods {
+            if cur_mod == "" && name.len() > m.len() && name.starts_with(m + ".") { cur_mod = m; }
+        }
+    }
+
+    /// モジュールの中から main の型は使えない（名前はモジュールごとに閉じる）
+    fn Result<(), diag.Diag> not_main_type(str name, i64 span) {
+        if cur_mod != "" && in_main(name) && !in_prelude(name) {
+            return Err(diag.make("`{name}` は最初のファイル（main）の型です")
+                .at(span, "モジュールの中からは、最初のファイルの型を使えない")
+                .with_note("使う型はモジュールの中に置くか、別のモジュールに分けて use してください"));
+        }
+        Ok(())
+    }
+
     /// モジュールの中から main の関数は使えない（名前はモジュールごとに閉じる）
     fn Result<(), diag.Diag> not_main_fn(str name, i64 span) {
-        if cur_mod != "" && in_main(name) {
+        if cur_mod != "" && in_main(name) && !in_prelude(name) {
             return Err(diag.make("`{name}` は最初のファイル（main）の関数です")
                 .at(span, "モジュールの中からは、最初のファイルの関数を使えない")
                 .with_note("使う関数はモジュールの中に置くか、関数の値として引数で渡してください"));
@@ -1379,7 +1403,7 @@ pub struct Checker {
         }
         // モジュールの中では、モジュール名をつける前の関数の名前で比べる
         let own_fn = if cur_mod != "" { is_fn(cur_mod + "." + name) } else { is_fn(name) };
-        if own_fn || is_builtin(name) {
+        if own_fn || is_builtin(name) || name == "ok_or" {
             return Err(diag.make("`{name}` は関数の名前です")
                 .at(span, "変数や引数に、関数と同じ名前はつけられない")
                 .with_note("別の名前をつけてください"));
@@ -2026,6 +2050,7 @@ pub struct Checker {
                 if !is_struct(name) {
                     return Err(diag.make("未定義の構造体 `{name}`").at(e.span, "この構造体は定義されていません"));
                 }
+                not_main_type(name, e.span)?;
                 let d = s_at[name];
                 let bool[] mut seen = [];
                 for f in sdefs[d].fields { seen.push(false); }
@@ -3413,6 +3438,7 @@ pub fn Result<Checker, diag.Diag> check(ref ast.Program prog) {
         c.idefs.push(IInfo { name: i.name, ms: [] });
     }
     for i in prog.interfaces {
+        c.enter_mod(i.name);
         c.cur_tps = [];
         let IMethod[] mut ms = [];
         for (j, m) in i.methods {
@@ -3424,11 +3450,13 @@ pub fn Result<Checker, diag.Diag> check(ref ast.Program prog) {
         c.idefs[c.i_at[i.name]].ms = ms;
     }
     for s in prog.structs {
+        c.enter_mod(s.name);
         c.cur_tps = s.tparams.map((x) -> x);
         let tys = c.resolve_all(s.field_types)?;
         c.sdefs[c.s_at[s.name]].tys = tys;
     }
     for en in prog.enums {
+        c.enter_mod(en.name);
         c.cur_tps = en.tparams.map((x) -> x);
         let d = c.e_at[en.name];
         for (j, v) in en.variants {
@@ -3451,14 +3479,17 @@ pub fn Result<Checker, diag.Diag> check(ref ast.Program prog) {
                 .at(f.span, "ここ")
                 .with_note("`fn main() {{ ... }}` と書いてください"));
         }
+        c.enter_mod(f.name);
         for b0 in f.bounds {
             for b in bound_list(b0) {
+                if b != ORDERED { c.not_main_type(b, f.span)?; }
                 if b != ORDERED && !c.is_iface(b) {
                     return Err(diag.make("条件 `{b}` は定義されていません")
                         .at(f.span, "型の引数の条件には interface の名前か `ordered` を書きます"));
                 }
             }
         }
+        c.enter_mod(f.name);
         c.cur_tps = f.tparams.map((x) -> x);
         let ty.Ty[] mut params = [];
         for p in f.params { params.push(c.resolve(p.ty)?); }
@@ -3469,6 +3500,7 @@ pub fn Result<Checker, diag.Diag> check(ref ast.Program prog) {
             name: f.name, method: method, tparams: f.tparams.map((x) -> x), bounds: f.bounds.map((x) -> x), params: params, ret: ret,
         });
     }
+    c.cur_mod = "";
     for f in prog.fns { c.check_fn(f)?; }
     Ok(c)
 }
