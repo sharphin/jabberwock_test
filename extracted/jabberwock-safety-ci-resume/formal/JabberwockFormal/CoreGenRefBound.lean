@@ -149,13 +149,14 @@ theorem release_bounded {limit : Nat} {env : Env} {H : Heap} {Γ : Ctx} {s : Ty}
   · rw [nth_setNth_ne heq] at h1
     exact hb l1 c1 h1
 
-theorem bbind {limit : Nat} {s : Ty} {env1 : Env} {Γ1 : Ctx} {H0 : Heap} {r : Res}
-    {f : Val → Heap → Res} (hs : Safe s env1 Γ1 r) (hr : BSafe limit H0 r)
-    (hf : ∀ (v : Val) (H1 : Heap), ValOk H1 s v → Agree env1 H1 Γ1 → RefLt limit v →
-      Bounded limit H1 → HeapLe H0 H1 → BSafe limit H0 (f v H1)) :
+/-- 結合: 部分式は H1 から評価し、H0 から H1 へは進んでいる -/
+theorem bbind {limit : Nat} {s : Ty} {env1 : Env} {Γ1 : Ctx} {H0 H1 : Heap} {r : Res}
+    {f : Val → Heap → Res} (h01 : HeapLe H0 H1) (hs : Safe s env1 Γ1 r) (hr : BSafe limit H1 r)
+    (hf : ∀ (v : Val) (H2 : Heap), ValOk H2 s v → Agree env1 H2 Γ1 → RefLt limit v →
+      Bounded limit H2 → HeapLe H0 H2 → BSafe limit H0 (f v H2)) :
     BSafe limit H0 (r.bind f) := by
   cases r with
-  | ok v H1 => exact hf v H1 hs.1 hs.2 hr.1 hr.2.1 hr.2.2
+  | ok v H2 => exact hf v H2 hs.1 hs.2 hr.1 hr.2.1 (heapLe_trans h01 hr.2.2)
   | err => exact True.intro
   | fuel => exact True.intro
   | stuck => exact True.intro
@@ -214,12 +215,9 @@ theorem derefOp_bounded {limit : Nat} {H H1 : Heap} (v : Val) (hb : Bounded limi
       by_cases heq : c.gen = g
       · rw [if_pos heq]
         cases hv : c.val with
-        | none =>
-          simp only [hv]
-          exact True.intro
+        | none => exact True.intro
         | some p =>
           obtain ⟨o, w⟩ := p
-          simp only [hv]
           exact And.intro ((hb l c hc).2 o w hv).2 (And.intro hb hle)
       · rw [if_neg heq]
         exact True.intro
@@ -246,30 +244,31 @@ theorem eval_bounded {limit : Nat} (pick : Heap → Option Nat) (hp : PickOk lim
       simp only [eval]
       exact readVar_bounded i hb0
     | addr _ i _ hi =>
-      obtain ⟨l, c, v, he, hc, hcv, _⟩ := hag.slot i t hi
+      obtain ⟨l, c, v, he, hc, hcv, _⟩ := hag.slot i _ hi
       simp only [eval, addrOf, he, hc]
       exact And.intro ((hb0 l c hc).2 i v hcv).1 (And.intro hb0 (heapLe_refl H))
     | deref _ e _ he =>
       simp only [eval]
-      apply bbind (eval_safe pick hp k env H Γ e (.ref t) hag he) (ih env H Γ e (.ref t) hag he hb0)
+      apply bbind (heapLe_refl H) (eval_safe pick hp k env H Γ e (.ref t) hag he) (ih env H Γ e (.ref t) hag he hb0)
       intro v H1 _ _ _ hb1 hle1
       exact derefOp_bounded v hb1 hle1
     | add _ a b ha hb =>
       simp only [eval]
-      apply bbind (eval_safe pick hp k env H Γ a .int hag ha) (ih env H Γ a .int hag ha hb0)
+      apply bbind (heapLe_refl H) (eval_safe pick hp k env H Γ a .int hag ha) (ih env H Γ a .int hag ha hb0)
       intro x H1 _ ha1 _ hb1 hle1
-      apply bbind (eval_safe pick hp k env H1 Γ b .int ha1 hb) (ih env H1 Γ b .int ha1 hb hb1)
+      apply bbind hle1 (eval_safe pick hp k env H1 Γ b .int ha1 hb) (ih env H1 Γ b .int ha1 hb hb1)
       intro y H2 _ _ _ hb2 hle2
-      exact addOp_bounded x y hb2 (heapLe_trans hle1 hle2)
+      exact addOp_bounded x y hb2 hle2
     | letE _ x body s _ hx hbody =>
       simp only [eval]
-      apply bbind (eval_safe pick hp k env H Γ x s hag hx) (ih env H Γ x s hag hx hb0)
+      apply bbind (heapLe_refl H) (eval_safe pick hp k env H Γ x s hag hx) (ih env H Γ x s hag hx hb0)
       intro v H1 hv1 ha1 hr1 hb1 hle1
-      apply bbind (eval_safe pick hp k _ _ (Γ ++ [s]) body t (alloc_ok hp ha1 hv1) hbody)
+      apply bbind (heapLe_trans hle1 (alloc_heapLe hp))
+        (eval_safe pick hp k _ _ (Γ ++ [s]) body t (alloc_ok hp ha1 hv1) hbody)
         (ih _ _ (Γ ++ [s]) body t (alloc_ok hp ha1 hv1) hbody (alloc_bounded hp hpos hb1 hr1))
       intro w H3 _ ha3 hr3 hb3 hle3
       exact And.intro hr3 (And.intro (release_bounded ha3 hb3)
-        (heapLe_trans hle1 (heapLe_trans (alloc_heapLe hp) (heapLe_trans hle3 (release_heapLe _ _)))))
+        (heapLe_trans hle3 (release_heapLe _ _)))
 
 /-- 評価の結果の ref は、上限の世代（退役の印）を持たない -/
 theorem result_ref_lt {limit : Nat} (pick : Heap → Option Nat) (hp : PickOk limit pick)
