@@ -29,3 +29,4 @@ import JabberwockFormal.CoreOwnership
 import JabberwockFormal.CoreBorrow
 import JabberwockFormal.CoreMutBorrow
 import JabberwockFormal.CoreGenRef
+import JabberwockFormal.CoreGenRefBound
