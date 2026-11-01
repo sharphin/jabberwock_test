@@ -32,3 +32,4 @@ import JabberwockFormal.CoreGenRef
 import JabberwockFormal.CoreGenRefBound
 import JabberwockFormal.CoreGenRefWord
 import JabberwockFormal.CoreGenBox
+import JabberwockFormal.CoreGenBoxMut
