@@ -58,7 +58,7 @@ theorem tyEq_sound (a : Ty) : ∀ b : Ty, tyEq a b = true → a = b := by
       · cases h
       · have h' : tyEq a b = true := h
         rw [ih b h']
-    all_goals cases h
+    all_goals (cases m <;> cases h)
 
 /-- 箱を含まない型か -/
 def isPlain : Ty → Bool
