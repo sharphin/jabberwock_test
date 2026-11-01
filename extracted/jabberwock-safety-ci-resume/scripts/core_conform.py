@@ -20,7 +20,8 @@
 これは例の上の突き合わせで、証明ではない。整数は小さい数だけ使う（模型の足し算はあふれると誤り、
 jabberwock は一周する。この違いは docs/core-type-safety.md）。
 
-使い方: python3 scripts/core_conform.py --jwc <jwc の実行ファイル> [--count 300] [--seed 20261101] [--build]
+使い方: python3 scripts/core_conform.py --jwc <jwc の実行ファイル> [--clang clang] [--count 300] [--seed 20261101] [--build]
+型の付く例を jwc が 1 本も作れなければ TOOL_ERROR（道具が動いていない）。
 結果: target/core-conform/summary.json。MISMATCH が無ければ終了コード 0、MISMATCH があれば 1、道具が動かなければ 2。
 """
 import argparse
@@ -227,12 +228,12 @@ def program(e):
     return FNS_SRC + "\nfn main() {\n    print(" + Translate().ex(e, 0) + ");\n}\n"
 
 
-def run_jwc(jwc, d, i, src):
+def run_jwc(jwc, clang, d, i, src):
     p = d / f"case{i:04}.jw"
     exe = d / (f"case{i:04}" + (".exe" if os.name == "nt" else ""))
     p.write_text(src, encoding="utf-8")
-    b = subprocess.run([str(jwc), "build", "-o", str(exe), str(p)], capture_output=True, text=True,
-                       timeout=300)
+    b = subprocess.run([str(jwc), "build", "--clang", clang, "-o", str(exe), str(p)],
+                       capture_output=True, text=True, timeout=300)
     if b.returncode != 0:
         return {"built": False, "build_err": (b.stderr or b.stdout).strip().splitlines()[:3]}
     r = subprocess.run([str(exe)], capture_output=True, text=True, timeout=60)
@@ -271,6 +272,8 @@ def main() -> int:
     ap.add_argument("--model", default=str(ROOT / "formal" / ".lake" / "build" / "bin" / exe))
     ap.add_argument("--build", action="store_true")
     ap.add_argument("--jobs", type=int, default=4)
+    ap.add_argument("--clang", default=os.environ.get("JW_CLANG", "clang"),
+                    help="jwc build に渡す clang（既定は JW_CLANG か clang。Lean の clang を拾わないように）")
     a = ap.parse_args()
     out = pathlib.Path(a.out)
     (out / "programs").mkdir(parents=True, exist_ok=True)
@@ -305,7 +308,7 @@ def main() -> int:
     jwc = pathlib.Path(a.jwc).resolve()
     srcs = [program(e) for e in cases]
     with concurrent.futures.ThreadPoolExecutor(max_workers=a.jobs) as pool:
-        futs = [pool.submit(run_jwc, jwc, out / "programs", i, s) for i, s in enumerate(srcs)]
+        futs = [pool.submit(run_jwc, jwc, a.clang, out / "programs", i, s) for i, s in enumerate(srcs)]
         try:
             jres = [f.result() for f in futs]
         except (OSError, subprocess.TimeoutExpired) as e:
@@ -318,6 +321,14 @@ def main() -> int:
         summary["results"].append({"i": i, "verdict": v, "model": m, "jwc": j,
                                    "program": f"programs/case{i:04}.jw"})
     summary["counts"] = counts
+    typed_built = sum(1 for m, j in zip(model, jres) if m["typed"] and j["built"])
+    if typed_built == 0:
+        # 型が付く例を jwc が 1 本も作れないのは、jwc か clang が動いていないとみなす（MATCH にしない）
+        first = next((j["build_err"] for j in jres if not j["built"]), None)
+        summary["error"] = f"jwc が型の付く例を 1 本も作れません: {first}"
+        print(f"core-conform: TOOL_ERROR {summary['error']}")
+        summary["status"] = "TOOL_ERROR"
+        return save(2)
     if counts.get("TOOL_ERROR"):
         summary["status"] = "TOOL_ERROR"
         code = 2

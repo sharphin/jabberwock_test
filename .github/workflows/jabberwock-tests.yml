@@ -301,7 +301,7 @@ jobs:
       - name: Compare the CoreGenFun model with jwc on generated examples (MATCH / MISMATCH / TOOL_ERROR, not a proof)
         timeout-minutes: 20
         run: |
-          python3 scripts/core_conform.py --jwc target/jwc-bin
+          python3 scripts/core_conform.py --jwc target/jwc-bin --clang /usr/bin/clang
           python3 - <<'PY'
           import json, os
           d = json.load(open('target/core-conform/summary.json'))
