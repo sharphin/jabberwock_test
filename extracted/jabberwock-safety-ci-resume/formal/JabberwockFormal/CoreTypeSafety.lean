@@ -199,14 +199,20 @@ theorem divInt_safe (x y : Int) : Safe .int (divInt x y) := by
 
 theorem eqV_safe {s : Ty} {x y : Val} (hx : x.ty = s) (hy : y.ty = s) : Safe .bool (eqV x y) := by
   cases x with
-  | int a =>
+  | int _ =>
     cases y with
-    | int c => rfl
-    | bool c => exact absurd (hx.trans hy.symm) (by decide)
-  | bool a =>
+    | int _ => rfl
+    | bool _ =>
+      simp only [Val.ty] at hx hy
+      subst hx
+      cases hy
+  | bool _ =>
     cases y with
-    | int c => exact absurd (hx.trans hy.symm) (by decide)
-    | bool c => rfl
+    | int _ =>
+      simp only [Val.ty] at hx hy
+      subst hx
+      cases hy
+    | bool _ => rfl
 
 /-- 型安全性（行き詰まらない・型を保つ）: 型が付く式を、型どおりの環境で評価した結果は Safe -/
 theorem eval_safe (fs : List Fn) (hp : ProgOk fs) :
@@ -261,7 +267,7 @@ theorem eval_safe (fs : List Fn) (hp : ProgOk fs) :
       intro x hx
       apply bind_safe (ih env Γ b .int henv hb)
       intro y hy
-      exact intOp_safe (t := .bool) (fun _ _ => rfl) hx hy
+      exact intOp_safe (t := .bool) (g := fun p q => .ok (.bool (decide (p < q)))) (fun _ _ => rfl) hx hy
     | eq _ a b s ha hb =>
       simp only [eval]
       apply bind_safe (ih env Γ a s henv ha)
