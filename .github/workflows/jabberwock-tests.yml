@@ -287,6 +287,7 @@ jobs:
         run: |
           lake build
           lake build elision-check
+          lake build core-conform
       - name: Re-check every elided generation check (VERIFIED / NOT_VERIFIED / TOOL_ERROR)
         timeout-minutes: 20
         run: |
@@ -296,6 +297,16 @@ jobs:
           d = json.load(open('target/elision-check/summary.json'))
           with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as out:
               out.write(f"Elided checks: **{d['status']}** ({d['checked']} programs checked, {d['skipped']} did not reach IR)\n")
+          PY
+      - name: Compare the CoreGenFun model with jwc on generated examples (MATCH / MISMATCH / TOOL_ERROR, not a proof)
+        timeout-minutes: 20
+        run: |
+          python3 scripts/core_conform.py --jwc target/jwc-bin
+          python3 - <<'PY'
+          import json, os
+          d = json.load(open('target/core-conform/summary.json'))
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as out:
+              out.write(f"Model vs jwc: **{d['status']}** {json.dumps(d['counts'])}\n")
           PY
       - name: Bridge the checker into the refinement verifier (subset only, stays NOT_PROVEN)
         timeout-minutes: 30

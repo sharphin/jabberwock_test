@@ -34,3 +34,4 @@ import JabberwockFormal.CoreGenRefWord
 import JabberwockFormal.CoreGenBox
 import JabberwockFormal.CoreGenBoxMut
 import JabberwockFormal.CoreGenFun
+import JabberwockFormal.CoreGenConform
