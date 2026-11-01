@@ -25,3 +25,4 @@ import JabberwockFormal.ElisionCheck
 import JabberwockFormal.ElisionCheckFast
 import JabberwockFormal.TypedPipeline
 import JabberwockFormal.CoreTypeSafety
+import JabberwockFormal.CoreOwnership
