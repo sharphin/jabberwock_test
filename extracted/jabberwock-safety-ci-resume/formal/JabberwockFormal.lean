@@ -31,3 +31,4 @@ import JabberwockFormal.CoreMutBorrow
 import JabberwockFormal.CoreGenRef
 import JabberwockFormal.CoreGenRefBound
 import JabberwockFormal.CoreGenRefWord
+import JabberwockFormal.CoreGenBox
