@@ -336,37 +336,37 @@ theorem eval_safe (fs : List Fn) (hp : ProgOk fs) :
     | peek _ _ hi =>
       simp only [eval]
       exact peekBox_safe hag hi
-    | mkBox _ Γ1 e he =>
+    | mkBox _ _ e he =>
       simp only [eval]
-      apply bind_safe (ih env Γ e .int Γ1 hag he)
+      apply bind_safe (ih env Γ e .int Γ' hag he)
       intro v env1 hv ha1
       cases v with
       | int _ => exact And.intro rfl ha1
       | bool _ => cases hv
       | box _ => cases hv
-    | unbox _ Γ1 e he =>
+    | unbox _ _ e he =>
       simp only [eval]
-      apply bind_safe (ih env Γ e .box Γ1 hag he)
+      apply bind_safe (ih env Γ e .box Γ' hag he)
       intro v env1 hv ha1
       cases v with
       | int _ => cases hv
       | bool _ => cases hv
       | box _ => exact And.intro rfl ha1
-    | add _ Γ1 Γ2 a b ha hb =>
+    | add _ Γ1 _ a b ha hb =>
       simp only [eval]
       apply bind_safe (ih env Γ a .int Γ1 hag ha)
       intro x env1 hx ha1
-      apply bind_safe (ih env1 Γ1 b .int Γ2 ha1 hb)
+      apply bind_safe (ih env1 Γ1 b .int Γ' ha1 hb)
       intro y env2 hy ha2
       exact addOp_safe hx hy ha2
-    | lt _ Γ1 Γ2 a b ha hb =>
+    | lt _ Γ1 _ a b ha hb =>
       simp only [eval]
       apply bind_safe (ih env Γ a .int Γ1 hag ha)
       intro x env1 hx ha1
-      apply bind_safe (ih env1 Γ1 b .int Γ2 ha1 hb)
+      apply bind_safe (ih env1 Γ1 b .int Γ' ha1 hb)
       intro y env2 hy ha2
       exact ltOp_safe hx hy ha2
-    | ite _ Γ1 Γ2 c a b _ hc ha hb =>
+    | ite _ Γ1 _ c a b _ hc ha hb =>
       simp only [eval]
       apply bind_safe (ih env Γ c .bool Γ1 hag hc)
       intro v env1 hv ha1
@@ -375,20 +375,20 @@ theorem eval_safe (fs : List Fn) (hp : ProgOk fs) :
       | box _ => cases hv
       | bool bv =>
         cases bv
-        · exact ih env1 Γ1 b _ Γ2 ha1 hb
-        · exact ih env1 Γ1 a _ Γ2 ha1 ha
-    | letE _ Γ1 Γ2 x body s _ p hx hbody =>
+        · exact ih env1 Γ1 b _ Γ' ha1 hb
+        · exact ih env1 Γ1 a _ Γ' ha1 ha
+    | letE _ Γ1 _ x body s _ p hx hbody =>
       simp only [eval]
       apply bind_safe (ih env Γ x s Γ1 hag hx)
       intro v env1 hv ha1
-      apply bind_safe (ih (some v :: env1) ((s, true) :: Γ1) body _ (p :: Γ2)
+      apply bind_safe (ih (some v :: env1) ((s, true) :: Γ1) body _ (p :: Γ')
         (Agree.cons (some v) s true env1 Γ1 (fun _ => ⟨v, rfl, hv⟩) ha1) hbody)
       intro w env2 hw ha2
       cases ha2 with
       | cons _ _ _ _ _ _ rest => exact And.intro hw rest
-    | call _ Γ1 f a fn hf ha =>
+    | call _ _ f a fn hf ha =>
       simp only [eval]
-      apply bind_safe (ih env Γ a fn.param Γ1 hag ha)
+      apply bind_safe (ih env Γ a fn.param Γ' hag ha)
       intro v env1 hv ha1
       simp only [hf]
       obtain ⟨out, hbody⟩ := hp f fn hf
