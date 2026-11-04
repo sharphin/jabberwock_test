@@ -129,11 +129,14 @@ def Res.bind : Res → (Val → Env → Heap → Res) → Res
   | .fuel, _ => .fuel
   | .stuck, _ => .stuck
 
-def checked (z : Int) (env : Env) (H : Heap) : Res :=
-  if -(2 : Int) ^ 63 ≤ z ∧ z < (2 : Int) ^ 63 then .ok (.int z) env H else .err
+/-- i64 の幅で一周させる（spec.md「整数のあふれは、その型の幅で一周する」） -/
+def wrap64 (z : Int) : Int := (z + 2 ^ 63) % 2 ^ 64 - 2 ^ 63
+
+/-- `i64::MAX + 1` は `i64::MIN` -/
+theorem wrap64_max_succ : wrap64 (9223372036854775807 + 1) = -9223372036854775808 := by decide
 
 def addOp : Val → Val → Env → Heap → Res
-  | .int p, .int q, env, H => checked (p + q) env H
+  | .int p, .int q, env, H => .ok (.int (wrap64 (p + q))) env H
   | _, _, _, _ => .stuck
 
 def readVar (env : Env) (H : Heap) (i : Nat) : Res :=
@@ -1103,13 +1106,10 @@ theorem bind_safe {s t : Ty} {Γ1 Γ2 : Ctx} {d1 d2 : Nat} {H0 : Heap} {r : Res}
   | fuel => exact True.intro
   | stuck => exact False.elim hr
 
-theorem checked_safe {env : Env} {H : Heap} {Γ : Ctx} {d : Nat} (z : Int) (ha : Agree env H Γ d) :
-    Safe .int Γ d H (checked z env H) := by
-  unfold checked
-  split
-  · exact And.intro True.intro (And.intro ha (And.intro True.intro
-      (And.intro (heapLe_refl H) (lower_refl H d))))
-  · exact True.intro
+theorem wrapped_safe {env : Env} {H : Heap} {Γ : Ctx} {d : Nat} (z : Int) (ha : Agree env H Γ d) :
+    Safe .int Γ d H (.ok (.int z) env H) :=
+  And.intro True.intro (And.intro ha (And.intro True.intro
+    (And.intro (heapLe_refl H) (lower_refl H d))))
 
 theorem addOp_safe {env : Env} {H Ha Hb : Heap} {Γ : Ctx} {d : Nat} {x y : Val}
     (hx : ValOk Ha .int x) (hy : ValOk Hb .int y) (ha : Agree env H Γ d) :
@@ -1123,7 +1123,7 @@ theorem addOp_safe {env : Env} {H Ha Hb : Heap} {Γ : Ctx} {d : Nat} {x y : Val}
     | bool _ => exact False.elim hy
     | box _ => exact False.elim hy
     | ref _ _ => exact False.elim hy
-    | int q => exact checked_safe (p + q) ha
+    | int q => exact wrapped_safe (wrap64 (p + q)) ha
 
 theorem readVar_safe {env : Env} {H : Heap} {Γ : Ctx} {d i : Nat} {t : Ty} (ha : Agree env H Γ d)
     (hi : nth Γ i = some (t, true)) (hp : Plain t) : Safe t Γ d H (readVar env H i) := by

@@ -17,8 +17,8 @@
      （数えるだけ。jabberwock はムーブした変数を使うと実行時に止める）。
    - 燃料切れ → FUEL（数えるだけ）。模型で型が付くのに stuck → TOOL_ERROR（`conform_no_stuck` に反する）。
 
-これは例の上の突き合わせで、証明ではない。整数は小さい数だけ使う（模型の足し算はあふれると誤り、
-jabberwock は一周する。この違いは docs/core-type-safety.md）。
+これは例の上の突き合わせで、証明ではない。整数の定数は 0 以上（ときどき足すとあふれる大きい数。
+模型も仕様も i64 の幅で一周する）。
 
 使い方: python3 scripts/core_conform.py --jwc <jwc の実行ファイル> [--clang clang] [--count 300] [--seed 20261101] [--build]
 型の付く例を jwc が 1 本も作れなければ TOOL_ERROR（道具が動いていない）。
@@ -73,6 +73,12 @@ class Gen:
         self.rng = rng
         self.sloppy = sloppy
 
+    def lit(self):
+        """整数の定数: たいていは小さい数。ときどき足すとあふれる大きい数（i64 の幅で一周する）"""
+        if self.rng.random() < 0.2:
+            return self.rng.choice([9223372036854775807, 4611686018427387904])
+        return self.rng.randrange(10)
+
     def live(self, ctx, t):
         return [i for i, (u, alive) in enumerate(ctx) if (alive or self.sloppy) and u == t]
 
@@ -81,7 +87,7 @@ class Gen:
         r = self.rng
         opts = []
         if t == INT:
-            opts.append(lambda: ({"k": "int", "n": r.randrange(10)}, ctx))
+            opts.append(lambda: ({"k": "int", "n": self.lit()}, ctx))
         if t == BOOL:
             opts.append(lambda: ({"k": "bool", "b": r.random() < 0.5}, ctx))
         if plain(t):
