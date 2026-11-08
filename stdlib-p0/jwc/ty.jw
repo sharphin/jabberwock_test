@@ -1,0 +1,618 @@
+// 型（Rust 版の src/types.rs の `Ty` と、src/ast.rs の `IntTy` にあたる）
+//
+// 整数の型は名前（"i64" など）で持つ。定数の式の値は「符号と大きさ」で持つ（Rust 版は i128。
+// 大きさが u64 を超えたら big として、それ以上は計算しない。そうなる式は必ず型に入らないので、結果は同じ）。
+
+pub enum Ty {
+    Int(str t);
+    // 小数（f64）
+    Float;
+    Bool;
+    Str;
+    // 値なし（戻り値のない関数の呼び出しなど）
+    Unit;
+    // 決して終わらない（return / break / continue で必ず抜ける）。どの型にも合う
+    Never;
+    // 構造体・enum。2 つ目は型の引数
+    Struct(str n, own Ty[] argv);
+    Enum(str n, own Ty[] argv);
+    // 型の引数（`fn T max<T>` の中の `T`）
+    Param(str n);
+    // interface（own か ref を通してだけ使う）
+    Iface(str n);
+    Own(own Ty t);
+    Ref(own Ty t, bool m);
+    Array(own Ty t, u64 n);
+    List(own Ty t);
+    // 戻り値がなければ Unit
+    Fn(own Ty[] ps, own Ty r);
+    // 辞書（キーの型, 値の型）
+    Map(own Ty k, own Ty v);
+    Task(own Ty t);
+    Chan(own Ty t);
+}
+
+// ---------------------------------------------------------------- 整数の型
+
+pub fn bool is_int_name(str n) {
+    n == "i8" || n == "i16" || n == "i32" || n == "i64" || n == "u8" || n == "u16" || n == "u32" || n == "u64" || n == "usize"
+}
+
+pub fn i64 bits(str t) {
+    if t == "i8" || t == "u8" { 8 }
+    else if t == "i16" || t == "u16" { 16 }
+    else if t == "i32" || t == "u32" { 32 }
+    else { 64 }
+}
+
+pub fn bool signed(str t) { t == "i8" || t == "i16" || t == "i32" || t == "i64" }
+
+/// 正の側の最大値
+fn u64 max_mag(str t) {
+    let b = bits(t);
+    if signed(t) { ((1 as u64) << (b - 1)) - 1 }
+    else if b == 64 { 18446744073709551615 }
+    else { ((1 as u64) << b) - 1 }
+}
+
+/// 負の側の最大の大きさ（符号なしは 0）
+fn u64 min_mag(str t) {
+    if signed(t) { (1 as u64) << (bits(t) - 1) } else { 0 }
+}
+
+pub fn str min_text(str t) {
+    if signed(t) { "-{min_mag(t)}" } else { "0" }
+}
+
+pub fn str max_text(str t) { "{max_mag(t)}" }
+
+/// 値が欠けずに `to` へ変換できるか（usize は u8 / u16 / u32 からだけ受け取る）
+pub fn bool widens_to(str from, str to) {
+    if from == to { return true; }
+    if from == "usize" || to == "usize" {
+        return to == "usize" && (from == "u8" || from == "u16" || from == "u32");
+    }
+    let a = signed(from);
+    let b = signed(to);
+    if a == b { bits(from) <= bits(to) }
+    else if !a && b { bits(from) < bits(to) }
+    else { false }
+}
+
+/// 二つの整数の演算をどの型でするか（なければ ""）
+pub fn str common(str a, str b) {
+    if widens_to(a, b) { b }
+    else if widens_to(b, a) { a }
+    else { "" }
+}
+
+// ---------------------------------------------------------------- 定数の値
+
+pub struct CV {
+    bool neg;
+    u64 mag;
+    // 大きさが u64 を超えた
+    bool big;
+}
+
+pub fn CV cv(bool neg, u64 mag) { CV { neg: neg && mag != 0, mag: mag, big: false } }
+
+fn CV big_cv() { CV { neg: false, mag: 0, big: true } }
+
+pub fn bool contains(str t, ref CV v) {
+    if v.big { return false; }
+    if v.neg { v.mag <= min_mag(t) } else { v.mag <= max_mag(t) }
+}
+
+pub fn str cv_text(ref CV v) {
+    if v.neg { "-{v.mag}" } else { "{v.mag}" }
+}
+
+pub fn CV cv_neg(ref CV a) {
+    if a.big { big_cv() } else { cv(!a.neg, a.mag) }
+}
+
+pub fn CV cv_add(ref CV a, ref CV b) {
+    if a.big || b.big { return big_cv(); }
+    if a.neg == b.neg {
+        if a.mag > 18446744073709551615 - b.mag { return big_cv(); }
+        return cv(a.neg, a.mag + b.mag);
+    }
+    if a.mag >= b.mag { cv(a.neg, a.mag - b.mag) } else { cv(b.neg, b.mag - a.mag) }
+}
+
+pub fn CV cv_mul(ref CV a, ref CV b) {
+    if a.big || b.big { return big_cv(); }
+    if a.mag != 0 && b.mag > 18446744073709551615 / a.mag { return big_cv(); }
+    cv(a.neg != b.neg, a.mag * b.mag)
+}
+
+/// 0 に向かって切り捨てる割り算と、割られる数の符号の余り（Rust の i128 と同じ）
+pub fn CV cv_div(ref CV a, ref CV b, bool rem) {
+    if a.big || b.big { return big_cv(); }
+    if rem { cv(a.neg, a.mag % b.mag) } else { cv(a.neg != b.neg, a.mag / b.mag) }
+}
+
+// ---------------------------------------------------------------- 型を作る・写す・比べる
+
+pub fn Ty i64t() { Ty.Int("i64") }
+
+pub fn Ty opt(Ty t) { Ty.Enum("Option", own [t]) }
+
+pub fn Ty list_of(Ty t) { Ty.List(own t) }
+
+pub fn Ty cl(ref Ty t) {
+    match ref t {
+        case Int(x) -> Ty.Int(x);
+        case Float -> Ty.Float;
+        case Bool -> Ty.Bool;
+        case Str -> Ty.Str;
+        case Unit -> Ty.Unit;
+        case Never -> Ty.Never;
+        case Struct(n, xs) -> Ty.Struct(n, own cls(xs));
+        case Enum(n, xs) -> Ty.Enum(n, own cls(xs));
+        case Param(n) -> Ty.Param(n);
+        case Iface(n) -> Ty.Iface(n);
+        case Own(x) -> Ty.Own(own cl(x));
+        case Ref(x, m) -> Ty.Ref(own cl(x), m);
+        case Array(x, n) -> Ty.Array(own cl(x), n);
+        case List(x) -> Ty.List(own cl(x));
+        case Fn(ps, r) -> Ty.Fn(own cls(ps), own cl(r));
+        case Map(k, v) -> Ty.Map(own cl(k), own cl(v));
+        case Task(x) -> Ty.Task(own cl(x));
+        case Chan(x) -> Ty.Chan(own cl(x));
+    }
+}
+
+pub fn Ty[] cls(ref Ty[] ts) {
+    let Ty[] mut out = [];
+    for t in ts { out.push(cl(t)); }
+    out
+}
+
+/// 種類の名前（"Int" "Struct" など）
+pub fn str tag(ref Ty t) {
+    match ref t {
+        case Int(x) -> "Int";
+        case Float -> "Float";
+        case Bool -> "Bool";
+        case Str -> "Str";
+        case Unit -> "Unit";
+        case Never -> "Never";
+        case Struct(n, xs) -> "Struct";
+        case Enum(n, xs) -> "Enum";
+        case Param(n) -> "Param";
+        case Iface(n) -> "Iface";
+        case Own(x) -> "Own";
+        case Ref(x, m) -> "Ref";
+        case Array(x, n) -> "Array";
+        case List(x) -> "List";
+        case Fn(ps, r) -> "Fn";
+        case Map(k, v) -> "Map";
+        case Task(x) -> "Task";
+        case Chan(x) -> "Chan";
+    }
+}
+
+pub fn bool is(ref Ty t, str k) { tag(t) == k }
+
+/// 整数の型の名前（整数でなければ ""）
+pub fn str int_of(ref Ty t) {
+    match ref t {
+        case Int(x) -> x;
+        default -> "";
+    }
+}
+
+/// 構造体・enum・型の引数・interface の名前
+pub fn str name_of(ref Ty t) {
+    match ref t {
+        case Struct(n, xs) -> n;
+        case Enum(n, xs) -> n;
+        case Param(n) -> n;
+        case Iface(n) -> n;
+        default -> "";
+    }
+}
+
+/// 構造体・enum の型の引数
+pub fn Ty[] args_of(ref Ty t) {
+    match ref t {
+        case Struct(n, xs) -> cls(xs);
+        case Enum(n, xs) -> cls(xs);
+        default -> [];
+    }
+}
+
+/// own・ref・配列・リスト・task・chan の中の型（辞書なら値の型、関数なら戻り値）
+pub fn Ty inner(ref Ty t) {
+    match ref t {
+        case Own(x) -> cl(x);
+        case Ref(x, m) -> cl(x);
+        case Array(x, n) -> cl(x);
+        case List(x) -> cl(x);
+        case Task(x) -> cl(x);
+        case Chan(x) -> cl(x);
+        case Map(k, v) -> cl(v);
+        case Fn(ps, r) -> cl(r);
+        default -> Ty.Unit;
+    }
+}
+
+pub fn bool ref_mut(ref Ty t) {
+    match ref t {
+        case Ref(x, m) -> m;
+        default -> false;
+    }
+}
+
+pub fn Ty map_key(ref Ty t) {
+    match ref t {
+        case Map(k, v) -> cl(k);
+        default -> Ty.Unit;
+    }
+}
+
+pub fn Ty[] fn_params(ref Ty t) {
+    match ref t {
+        case Fn(ps, r) -> cls(ps);
+        default -> [];
+    }
+}
+
+pub fn u64 arr_len(ref Ty t) {
+    match ref t {
+        case Array(x, n) -> n;
+        default -> 0;
+    }
+}
+
+/// own / ref の先の型があるか
+pub fn bool has_pointee(ref Ty t) { is(t, "Own") || is(t, "Ref") }
+
+pub fn bool eqs(ref Ty[] a, ref Ty[] b) {
+    if a.len() != b.len() { return false; }
+    for i in range(a.len()) {
+        if !eq(a[i], b[i]) { return false; }
+    }
+    true
+}
+
+pub fn bool eq(ref Ty a, ref Ty b) {
+    match ref a {
+        case Int(x) -> int_of(b) == x;
+        case Struct(n, xs) -> {
+            match ref b {
+                case Struct(m, ys) -> n == m && eqs(xs, ys);
+                default -> false;
+            }
+        }
+        case Enum(n, xs) -> {
+            match ref b {
+                case Enum(m, ys) -> n == m && eqs(xs, ys);
+                default -> false;
+            }
+        }
+        case Param(n) -> is(b, "Param") && name_of(b) == n;
+        case Iface(n) -> is(b, "Iface") && name_of(b) == n;
+        case Own(x) -> {
+            match ref b {
+                case Own(y) -> eq(x, y);
+                default -> false;
+            }
+        }
+        case Ref(x, m) -> {
+            match ref b {
+                case Ref(y, n) -> m == n && eq(x, y);
+                default -> false;
+            }
+        }
+        case Array(x, n) -> {
+            match ref b {
+                case Array(y, k) -> n == k && eq(x, y);
+                default -> false;
+            }
+        }
+        case List(x) -> {
+            match ref b {
+                case List(y) -> eq(x, y);
+                default -> false;
+            }
+        }
+        case Task(x) -> {
+            match ref b {
+                case Task(y) -> eq(x, y);
+                default -> false;
+            }
+        }
+        case Chan(x) -> {
+            match ref b {
+                case Chan(y) -> eq(x, y);
+                default -> false;
+            }
+        }
+        case Fn(ps, r) -> {
+            match ref b {
+                case Fn(qs, s) -> eqs(ps, qs) && eq(r, s);
+                default -> false;
+            }
+        }
+        case Map(k, v) -> {
+            match ref b {
+                case Map(j, w) -> eq(k, j) && eq(v, w);
+                default -> false;
+            }
+        }
+        default -> tag(a) == tag(b);
+    }
+}
+
+fn str shows(ref Ty[] ts) {
+    let str[] mut out = [];
+    for t in ts { out.push(show(t)); }
+    out.join(", ")
+}
+
+pub fn str show(ref Ty t) {
+    match ref t {
+        case Int(x) -> x;
+        case Float -> "f64";
+        case Bool -> "bool";
+        case Str -> "str";
+        case Unit -> "値なし";
+        case Never -> "（終わらない）";
+        case Struct(n, xs) -> if xs.len() == 0 { n } else { n + "<" + shows(xs) + ">" };
+        case Enum(n, xs) -> if xs.len() == 0 { n } else { n + "<" + shows(xs) + ">" };
+        case Param(n) -> n;
+        case Iface(n) -> n;
+        case Own(x) -> "own " + show(x);
+        case Ref(x, m) -> (if m { "ref mut " } else { "ref " }) + show(x);
+        case Array(x, n) -> show(x) + "[{n}]";
+        case List(x) -> show(x) + "[]";
+        case Map(k, v) -> show(v) + "[" + show(k) + "]";
+        case Task(x) -> "task<" + show(x) + ">";
+        case Chan(x) -> "chan<" + show(x) + ">";
+        case Fn(ps, r) -> if is(r, "Unit") { "fn(" + shows(ps) + ")" } else { "fn " + show(r) + "(" + shows(ps) + ")" };
+    }
+}
+
+// ---------------------------------------------------------------- 型の引数の表（Rust 版の HashMap<String, Ty>）
+
+pub struct TMap {
+    str[] ks;
+    Ty[] vs;
+
+    fn i64 find(str k) {
+        for (i, x) in ks {
+            if x == k { return i; }
+        }
+        -1
+    }
+
+    fn bool has(str k) { find(k) >= 0 }
+
+    fn Ty get(str k) { cl(vs[find(k)]) }
+
+    fn mut put(str k, Ty t) {
+        let i = find(k);
+        if i >= 0 {
+            vs[i] = t;
+        } else {
+            ks.push(k);
+            vs.push(t);
+        }
+    }
+}
+
+pub fn TMap tmap() { TMap { ks: [], vs: [] } }
+
+pub fn TMap clone_map(ref TMap m) {
+    let mut out = tmap();
+    for (i, k) in m.ks { out.put(k, cl(m.vs[i])); }
+    out
+}
+
+/// 定義の型の引数と、実際の型の引数の対応
+pub fn TMap targs(ref str[] tparams, ref Ty[] argv) {
+    let mut m = tmap();
+    for (i, p) in tparams {
+        if i < argv.len() { m.put(p, cl(argv[i])); }
+    }
+    m
+}
+
+fn bool has_name(ref str[] xs, str x) {
+    for y in xs {
+        if y == x { return true; }
+    }
+    false
+}
+
+/// 型の引数を具体的な型に置き換える（決まっていないものはそのまま）
+pub fn Ty subst(ref Ty t, ref TMap m) {
+    match ref t {
+        case Param(p) -> if m.has(p) { m.get(p) } else { Ty.Param(p) };
+        case Struct(n, xs) -> Ty.Struct(n, own substs(xs, m));
+        case Enum(n, xs) -> Ty.Enum(n, own substs(xs, m));
+        case Own(x) -> Ty.Own(own subst(x, m));
+        case Ref(x, b) -> Ty.Ref(own subst(x, m), b);
+        case Array(x, n) -> Ty.Array(own subst(x, m), n);
+        case List(x) -> Ty.List(own subst(x, m));
+        case Map(k, v) -> Ty.Map(own subst(k, m), own subst(v, m));
+        case Task(x) -> Ty.Task(own subst(x, m));
+        case Chan(x) -> Ty.Chan(own subst(x, m));
+        case Fn(ps, r) -> Ty.Fn(own substs(ps, m), own subst(r, m));
+        default -> cl(t);
+    }
+}
+
+pub fn Ty[] substs(ref Ty[] ts, ref TMap m) {
+    let Ty[] mut out = [];
+    for t in ts { out.push(subst(t, m)); }
+    out
+}
+
+/// 型の中に（`k` の種類の）型があるか: "Iface" なら interface、"Param" なら型の引数
+pub fn bool contains_kind(ref Ty t, str k) {
+    if is(t, k) { return true; }
+    match ref t {
+        case Struct(n, xs) -> any_kind(xs, k);
+        case Enum(n, xs) -> any_kind(xs, k);
+        case Own(x) -> contains_kind(x, k);
+        case Ref(x, m) -> contains_kind(x, k);
+        case Array(x, n) -> contains_kind(x, k);
+        case List(x) -> contains_kind(x, k);
+        case Task(x) -> contains_kind(x, k);
+        case Chan(x) -> contains_kind(x, k);
+        case Fn(ps, r) -> any_kind(ps, k) || contains_kind(r, k);
+        case Map(a, b) -> contains_kind(a, k) || contains_kind(b, k);
+        default -> false;
+    }
+}
+
+fn bool any_kind(ref Ty[] ts, str k) {
+    for t in ts {
+        if contains_kind(t, k) { return true; }
+    }
+    false
+}
+
+/// `pattern` の中の型の引数（`tparams`）が、まだ決まっていないものを含むか
+pub fn bool has_unbound(ref Ty p, ref str[] tparams, ref TMap m) {
+    match ref p {
+        case Param(n) -> has_name(tparams, n) && !m.has(n);
+        case Struct(n, xs) -> any_unbound(xs, tparams, m);
+        case Enum(n, xs) -> any_unbound(xs, tparams, m);
+        case Own(x) -> has_unbound(x, tparams, m);
+        case Ref(x, b) -> has_unbound(x, tparams, m);
+        case Array(x, n) -> has_unbound(x, tparams, m);
+        case List(x) -> has_unbound(x, tparams, m);
+        case Task(x) -> has_unbound(x, tparams, m);
+        case Chan(x) -> has_unbound(x, tparams, m);
+        case Fn(ps, r) -> any_unbound(ps, tparams, m) || has_unbound(r, tparams, m);
+        case Map(a, b) -> has_unbound(a, tparams, m) || has_unbound(b, tparams, m);
+        default -> false;
+    }
+}
+
+pub fn bool any_unbound(ref Ty[] ts, ref str[] tparams, ref TMap m) {
+    for t in ts {
+        if has_unbound(t, tparams, m) { return true; }
+    }
+    false
+}
+
+/// 型の形を見比べて、型の引数が何かを決める（整数どうしは広い方にする）
+pub fn unify(ref Ty p, ref Ty a, ref str[] tparams, ref mut TMap m) {
+    if is(a, "Never") { return; }
+    match ref p {
+        case Param(n) -> {
+            if !has_name(tparams, n) { return; }
+            if !m.has(n) {
+                m.put(n, cl(a));
+                return;
+            }
+            let prev = int_of(m.vs[m.find(n)]);
+            let now = int_of(a);
+            if prev != "" && now != "" {
+                let c = common(prev, now);
+                if c != "" { m.put(n, Ty.Int(c)); }
+            }
+        }
+        case Struct(n, xs) -> {
+            match ref a {
+                case Struct(k, ys) -> { if n == k { unify_all(xs, ys, tparams, m); } }
+                default -> {}
+            }
+        }
+        case Enum(n, xs) -> {
+            match ref a {
+                case Enum(k, ys) -> { if n == k { unify_all(xs, ys, tparams, m); } }
+                default -> {}
+            }
+        }
+        case Own(x) -> {
+            match ref a {
+                case Own(y) -> unify(x, y, tparams, m);
+                default -> {}
+            }
+        }
+        case Ref(x, b) -> {
+            match ref a {
+                case Ref(y, c) -> unify(x, y, tparams, m);
+                default -> {}
+            }
+        }
+        case Array(x, n) -> {
+            match ref a {
+                case Array(y, k) -> { if n == k { unify(x, y, tparams, m); } }
+                default -> {}
+            }
+        }
+        case List(x) -> {
+            match ref a {
+                case List(y) -> unify(x, y, tparams, m);
+                default -> {}
+            }
+        }
+        case Task(x) -> {
+            match ref a {
+                case Task(y) -> unify(x, y, tparams, m);
+                default -> {}
+            }
+        }
+        case Chan(x) -> {
+            match ref a {
+                case Chan(y) -> unify(x, y, tparams, m);
+                default -> {}
+            }
+        }
+        case Map(k, x) -> {
+            match ref a {
+                case Map(j, y) -> {
+                    unify(k, j, tparams, m);
+                    unify(x, y, tparams, m);
+                }
+                default -> {}
+            }
+        }
+        case Fn(xs, r) -> {
+            match ref a {
+                case Fn(ys, s) -> {
+                    if xs.len() == ys.len() {
+                        unify_all(xs, ys, tparams, m);
+                        unify(r, s, tparams, m);
+                    }
+                }
+                default -> {}
+            }
+        }
+        default -> {}
+    }
+}
+
+fn unify_all(ref Ty[] xs, ref Ty[] ys, ref str[] tparams, ref mut TMap m) {
+    for i in range(xs.len()) {
+        if i < ys.len() { unify(xs[i], ys[i], tparams, m); }
+    }
+}
+
+/// `from` の値を `to` の場所に入れられるか（`ref mut T` は `ref T` としても使える。整数は欠けない変換なら）
+pub fn bool assignable(ref Ty from, ref Ty to) {
+    if is(from, "Never") { return true; }
+    let a = int_of(from);
+    let b = int_of(to);
+    if a != "" && b != "" { return widens_to(a, b); }
+    match ref from {
+        case Ref(x, m) -> {
+            if m {
+                match ref to {
+                    case Ref(y, n) -> { if !n { return eq(x, y); } }
+                    default -> {}
+                }
+            }
+        }
+        default -> {}
+    }
+    eq(from, to)
+}

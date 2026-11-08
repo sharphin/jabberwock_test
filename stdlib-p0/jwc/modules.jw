@@ -1,0 +1,448 @@
+// モジュールの読み込み（Rust 版の src/modules.rs にあたる）
+//
+// `use geom;` で同じフォルダの geom.jw を読む（使われる側が先。輪はエラー）。使う側の `geom . area` は
+// 1 つの名前 `geom.area` にまとめ（merge_paths）、モジュールの中の名前は `geom.area` に書き換える（Qualify）。
+// 全部を 1 つのプログラムにまとめる。
+use ast;
+use diag;
+use lexer;
+use parser;
+
+fn bool has(ref str[] xs, str x) {
+    for y in xs {
+        if y == x { return true; }
+    }
+    false
+}
+
+fn str[] strs(ref str[] xs) {
+    let str[] mut out = [];
+    for x in xs { out.push(x); }
+    out
+}
+
+fn bool[] bools(ref bool[] xs) {
+    let bool[] mut out = [];
+    for x in xs { out.push(x); }
+    out
+}
+
+fn i64[] ints(ref i64[] xs) {
+    let i64[] mut out = [];
+    for x in xs { out.push(x); }
+    out
+}
+
+/// 使う側から見たモジュール: トップレベルの名前ごとに、種類（fn / struct / enum / interface）と pub か
+struct Info {
+    str[] names;
+    str[] kinds;
+    bool[] pubs;
+    // enum ごとの種類の名前（" A B " の形）
+    str[str] variants;
+
+    /// 名前の位置（同じ名前が二つあれば後ろのもの。Rust 版は表に入れた順に上書きする）。なければ -1
+    fn i64 find(str n) {
+        let mut at = -1;
+        for (i, x) in names {
+            if x == n { at = i; }
+        }
+        at
+    }
+}
+
+/// モジュールのトップレベルの名前（書き換える前）。fn → struct → enum → interface の順
+fn Info info_of(ref ast.Program p) {
+    let mut info = Info { names: [], kinds: [], pubs: [], variants: [] };
+    for f in p.fns {
+        // メソッド（`Point.len`）はトップレベルの名前ではない
+        if !f.name.contains(".") {
+            info.names.push(f.name);
+            info.kinds.push("fn");
+            info.pubs.push(has(p.public, f.name));
+        }
+    }
+    for s in p.structs {
+        info.names.push(s.name);
+        info.kinds.push("struct");
+        info.pubs.push(has(p.public, s.name));
+    }
+    for e in p.enums {
+        info.names.push(e.name);
+        info.kinds.push("enum");
+        info.pubs.push(has(p.public, e.name));
+        let mut vs = " ";
+        for v in e.variants { vs += v.name + " "; }
+        info.variants[e.name] = vs;
+    }
+    for i in p.interfaces {
+        info.names.push(i.name);
+        info.kinds.push("interface");
+        info.pubs.push(has(p.public, i.name));
+    }
+    info
+}
+
+/// `モジュール名 . 名前` の 3 つのトークンを、1 つの名前 `モジュール名.名前` にする（文字列の埋め込みの中も）
+fn Result<lexer.Token[], diag.Diag> merge_paths(ref lexer.Token[] toks, ref str[] mods, ref i64[] which, ref Info[] infos) {
+    let lexer.Token[] mut out = [];
+    let mut i = 0;
+    while i < toks.len() {
+        let mut m = -1;
+        // `x.geom.f` のようにフィールド名として書いたものはモジュールではない
+        let after_dot = out.len() > 0 && out[out.len() - 1].kind == ".";
+        if toks[i].kind == "ident" && i + 1 < toks.len() && toks[i + 1].kind == "." && !after_dot {
+            for (j, x) in mods {
+                if x == toks[i].text { m = j; }
+            }
+        }
+        if m < 0 {
+            out.push(lexer.Token { kind: toks[i].kind, text: toks[i].text, num: toks[i].num, span: toks[i].span });
+            i += 1;
+            continue;
+        }
+        let module = toks[i].text;
+        let dot = toks[i + 1].span;
+        if i + 2 >= toks.len() || toks[i + 2].kind != "ident" {
+            return Err(diag.error("`{module}.` のあとに名前がありません", dot, "`{module}.名前` と書いてください"));
+        }
+        let name = toks[i + 2].text;
+        let full = diag.join(toks[i].span, toks[i + 2].span);
+        let at = infos[which[m]].find(name);
+        if at < 0 {
+            return Err(diag.error("モジュール `{module}` に `{name}` はありません", full, "この名前は定義されていない"));
+        }
+        if !infos[which[m]].pubs[at] {
+            return Err(diag.error_note("`{module}.{name}` は pub ではありません", full, "ほかのファイルからは使えない",
+                "使えるようにするなら、{module}.jw の定義の前に `pub` をつけてください"));
+        }
+        out.push(lexer.Token { kind: "ident", text: module + "." + name, num: 0, span: full });
+        i += 3;
+    }
+    Ok(out)
+}
+
+/// ファイルを読みながら、モジュールを順に解析する
+pub struct Loader {
+    // モジュールを探すフォルダ（最後に `/` つき。今のフォルダなら空）
+    str dir;
+    // 読んだファイルのモジュール名とソース。番号が位置のファイルの番号。0 番が最初のファイル（名前は空）
+    str[] names;
+    str[] srcs;
+    // 読み終わったモジュール
+    str[] done;
+    Info[] infos;
+    // 今読んでいる途中のモジュール（輪を見つけるため）
+    str[] loading;
+    ast.Program[] parts;
+
+    /// 最初のファイルと、そこから `use` でたどれるモジュールをすべて読み、1 つのプログラムにする
+    fn mut Result<ast.Program, diag.Diag> load(str src) {
+        names.push("");
+        srcs.push(src);
+        module("", 0)?;
+        let str[] mut mods = [];
+        for (i, n) in names {
+            if i > 0 { mods.push(n); }
+        }
+        let mut all = ast.Program {
+            structs: [], enums: [], interfaces: [], fns: [], uses: [], use_spans: [], public: [], modules: mods,
+            consts: [], borrow_lambdas: [], nodes: 0,
+        };
+        for p in parts.drain() {
+            let mut q = p;
+            for x in q.structs.drain() { all.structs.push(x); }
+            for x in q.enums.drain() { all.enums.push(x); }
+            for x in q.interfaces.drain() { all.interfaces.push(x); }
+            for x in q.fns.drain() { all.fns.push(x); }
+            for x in q.consts.drain() { all.consts.push(x); }
+            for x in q.borrow_lambdas.drain() { all.borrow_lambdas.push(x); }
+        }
+        Ok(all)
+    }
+
+    /// `file` 番目のファイルを、モジュール `name` として読む（使うモジュールを先に読む）
+    fn mut Result<Info, diag.Diag> module(str name, i64 file) {
+        let toks = lexer.lex_file(srcs[file], file)?;
+        let str[] mut uses = [];
+        let i64[] mut use_spans = [];
+        let mut k = 0;
+        while k + 1 < toks.len() {
+            if toks[k].kind == "use" && toks[k + 1].kind == "ident" {
+                uses.push(toks[k + 1].text);
+                use_spans.push(toks[k + 1].span);
+            }
+            k += 1;
+        }
+        loading.push(name);
+        for (i, u) in uses {
+            if has(done, u) { continue; }
+            if has(loading, u) {
+                return Err(diag.error_note("モジュール `{u}` の use が輪になっています", use_spans[i],
+                    "ここで使うと、読む順が決まらない", "共通の部分を別のモジュールに分けてください"));
+            }
+            let text = match read_file(dir + u + ".jw") {
+                case Ok(t) -> t;
+                case Err(e) -> return Err(diag.error("モジュール `{u}` が見つかりません", use_spans[i], "同じフォルダに {u}.jw がない"));
+            };
+            names.push(u);
+            srcs.push(text);
+            let info = module(u, names.len() - 1)?;
+            done.push(u);
+            infos.push(info);
+        }
+        loading.pop();
+        // 使うモジュール（同じ名前を二回 use してもまとめる）
+        let str[] mut mods = [];
+        let i64[] mut which = [];
+        let str[] mut structs = [];
+        let str[] mut enums = [];
+        let str[str] mut variants = [];
+        for u in uses {
+            if has(mods, u) { continue; }
+            for (j, d) in done {
+                if d == u {
+                    for x in range(infos[j].names.len()) {
+                        let n = infos[j].names[x];
+                        if infos[j].pubs[x] && infos[j].find(n) == x {
+                            if infos[j].kinds[x] == "struct" { structs.push(u + "." + n); }
+                            if infos[j].kinds[x] == "enum" {
+                                enums.push(u + "." + n);
+                                match infos[j].variants.get(n) {
+                                    case Some(vs) -> variants[u + "." + n] = vs;
+                                    case None -> {}
+                                }
+                            }
+                        }
+                    }
+                    mods.push(u);
+                    which.push(j);
+                }
+            }
+        }
+        let merged = merge_paths(toks, mods, which, infos)?;
+        let mut prog = parser.parse_with(merged, structs, enums, variants)?;
+        let info = info_of(prog);
+        if name != "" {
+            prog = qualify(prog, name, info);
+        }
+        prog.uses = [];
+        prog.use_spans = [];
+        parts.push(prog);
+        Ok(info)
+    }
+}
+
+pub fn Loader new_loader(str dir) {
+    Loader { dir: dir, names: [], srcs: [], done: [], infos: [], loading: [], parts: [] }
+}
+
+// ---------------------------------------------------------------- モジュールの中の名前の書き換え
+
+/// モジュールの中の名前を、モジュール名をつけた名前に書き換えたプログラムを作る
+fn ast.Program qualify(ast.Program p, str module, ref Info info) {
+    let mut q = Qualify { module: module, fns: [], structs: [], types: [], enums: [] };
+    for (i, n) in info.names {
+        if info.find(n) != i { continue; }
+        let k = info.kinds[i];
+        if k == "fn" { q.fns.push(n); } else { q.types.push(n); }
+        if k == "struct" { q.structs.push(n); }
+        if k == "enum" { q.enums.push(n); }
+    }
+    let ast.StructDef[] mut structs = [];
+    for s in p.structs {
+        structs.push(ast.StructDef {
+            name: q.name(s.name), tparams: strs(s.tparams), fields: strs(s.fields), field_types: q.tys(s.field_types, s.tparams), span: s.span,
+        });
+    }
+    let ast.EnumDef[] mut enums = [];
+    for e in p.enums {
+        let ast.VariantDef[] mut vs = [];
+        for v in e.variants {
+            vs.push(ast.VariantDef { name: v.name, types: q.tys(v.types, e.tparams), names: strs(v.names), span: v.span });
+        }
+        enums.push(ast.EnumDef { name: q.name(e.name), tparams: strs(e.tparams), variants: vs, span: e.span });
+    }
+    let ast.InterfaceDef[] mut ifaces = [];
+    for i in p.interfaces {
+        let ast.FnDef[] mut ms = [];
+        for m in i.methods { ms.push(q.func(m, false)); }
+        ifaces.push(ast.InterfaceDef { name: q.name(i.name), methods: ms, muts: bools(i.muts), span: i.span });
+    }
+    let ast.FnDef[] mut fns = [];
+    for f in p.fns { fns.push(q.func(f, true)); }
+    let str[] mut consts = [];
+    for c in p.consts { consts.push(module + "." + c); }
+    let i64[] mut bl = [];
+    for x in p.borrow_lambdas { bl.push(x); }
+    ast.Program {
+        structs: structs, enums: enums, interfaces: ifaces, fns: fns, uses: [], use_spans: [], public: strs(p.public),
+        modules: [], consts: consts, borrow_lambdas: bl, nodes: 0,
+    }
+}
+
+struct Qualify {
+    str module;
+    str[] fns;
+    str[] structs;
+    // 型として書ける名前（構造体・enum・interface）
+    str[] types;
+    str[] enums;
+
+    fn str name(str n) { module + "." + n }
+
+    /// 関数（`body` なら本体も）。メソッド・静的メソッド（`Point.len`）は構造体の名前を書き換える
+    fn ast.FnDef func(ref ast.FnDef f, bool body) {
+        let n = if !body {
+            f.name
+        } else {
+            match f.name.find(".") {
+                case Some(i) -> name(f.name.slice(0, i)) + f.name.slice(i, f.name.len());
+                case None -> name(f.name);
+            }
+        };
+        let ast.Param[] mut ps = [];
+        for p in f.params { ps.push(ast.Param { ty: ty(p.ty, f.tparams), name: p.name, m: p.m, span: p.span }); }
+        let ret = if f.has_ret { ty(f.ret, f.tparams) } else { ast.clone_type(f.ret) };
+        let str[] mut bounds = [];
+        for b in f.bounds {
+            if b == "" {
+                bounds.push(b);
+                continue;
+            }
+            let str[] mut bs = [];
+            for x in b.split(" + ") {
+                if has(types, x) { bs.push(name(x)); } else { bs.push(x); }
+            }
+            bounds.push(bs.join(" + "));
+        }
+        let b = if body { block(f.body, f.tparams) } else { ast.clone_block(f.body) };
+        ast.FnDef { name: n, tparams: strs(f.tparams), bounds: bounds, has_ret: f.has_ret, ret: ret, params: ps, body: b, span: f.span }
+    }
+
+    fn ast.TypeExpr[] tys(ref ast.TypeExpr[] ts, ref str[] tps) {
+        let ast.TypeExpr[] mut out = [];
+        for t in ts { out.push(ty(t, tps)); }
+        out
+    }
+
+    /// 型の中の名前。型の引数（`tps`）は書き換えない
+    fn ast.TypeExpr ty(ref ast.TypeExpr t, ref str[] tps) {
+        let k = match ref t.kind {
+            case Name(n) -> ast.TypeKind.Name(type_name(n, tps));
+            case App(n, ts) -> ast.TypeKind.App(type_name(n, tps), own tys(ts, tps));
+            case Own(x) -> ast.TypeKind.Own(own ty(x, tps));
+            case Ref(x, m) -> ast.TypeKind.Ref(own ty(x, tps), m);
+            case Array(x, n) -> ast.TypeKind.Array(own ty(x, tps), n);
+            case List(x) -> ast.TypeKind.List(own ty(x, tps));
+            case Map(v, k2) -> ast.TypeKind.Map(own ty(v, tps), own ty(k2, tps));
+            case Fn(ps, has_ret, r) -> ast.TypeKind.Fn(own tys(ps, tps), has_ret, own (if has_ret { ty(r, tps) } else { ast.clone_type(r) }));
+        };
+        ast.TypeExpr { kind: k, span: t.span }
+    }
+
+    fn str type_name(str n, ref str[] tps) {
+        if has(types, n) && !has(tps, n) { name(n) } else { n }
+    }
+
+    fn ast.Block block(ref ast.Block b, ref str[] tps) {
+        let ast.Stmt[] mut ss = [];
+        for s in b.stmts { ss.push(stmt(s, tps)); }
+        ast.Block { stmts: ss, tail: b.tail, end: b.end }
+    }
+
+    fn ast.Block opt_block(bool h, ref ast.Block b, ref str[] tps) {
+        if h { block(b, tps) } else { ast.clone_block(b) }
+    }
+
+    fn ast.Stmt stmt(ref ast.Stmt s, ref str[] tps) {
+        match ref s {
+            case Let(n, has_ty, t, m, sp, init) ->
+                ast.Stmt.Let(n, has_ty, own (if has_ty { ty(t, tps) } else { ast.clone_type(t) }), m, sp, own expr(init, tps));
+            case Assign(t, v, sp) -> ast.Stmt.Assign(own expr(t, tps), own expr(v, tps), sp);
+            case Ex(e) -> ast.Stmt.Ex(own expr(e, tps));
+            case While(c, b) -> ast.Stmt.While(own expr(c, tps), own block(b, tps));
+            case Loop(b) -> ast.Stmt.Loop(own block(b, tps));
+            case For(var, rng, rs, b, has_els, els) ->
+                ast.Stmt.For(var, own exprs(rng, tps), rs, own block(b, tps), has_els, own opt_block(has_els, els, tps));
+            case ForEach(has_key, key, ks, var, vs, iter, b, has_els, els) ->
+                ast.Stmt.ForEach(has_key, key, ks, var, vs, own expr(iter, tps), own block(b, tps), has_els, own opt_block(has_els, els, tps));
+            case Break(sp) -> ast.Stmt.Break(sp);
+            case Continue(sp) -> ast.Stmt.Continue(sp);
+            case Return(has_value, v, sp) -> ast.Stmt.Return(has_value, own (if has_value { expr(v, tps) } else { ast.clone_expr(v) }), sp);
+        }
+    }
+
+    fn ast.Expr[] exprs(ref ast.Expr[] xs, ref str[] tps) {
+        let ast.Expr[] mut out = [];
+        for x in xs { out.push(expr(x, tps)); }
+        out
+    }
+
+    fn ast.Expr expr(ref ast.Expr e, ref str[] tps) {
+        let k = match ref e.kind {
+            // 名前のある関数を値として使う（変数に関数と同じ名前はつけられないので、関数の名前なら関数）
+            case Var(n) -> ast.ExprKind.Var(if has(fns, n) { name(n) } else { n });
+            case Call(n, xs) -> {
+                let mut static_call = false;
+                match n.find(".") {
+                    case Some(i) -> {
+                        let s = n.slice(0, i);
+                        static_call = has(structs, s) || has(enums, s);
+                    }
+                    case None -> {}
+                }
+                ast.ExprKind.Call(if has(fns, n) || static_call { name(n) } else { n }, own exprs(xs, tps))
+            }
+            case StructLit(n, inits) -> {
+                let ast.FieldInit[] mut out = [];
+                for i in inits { out.push(ast.FieldInit { name: i.name, span: i.span, value: expr(i.value, tps) }); }
+                ast.ExprKind.StructLit(if has(structs, n) { name(n) } else { n }, own out)
+            }
+            case Variant(en, vn, xs) -> ast.ExprKind.Variant(if has(enums, en) { name(en) } else { en }, vn, own exprs(xs, tps));
+            case Cast(x, t) -> ast.ExprKind.Cast(own expr(x, tps), own ty(t, tps));
+            case Try(x) -> ast.ExprKind.Try(own expr(x, tps));
+            case Own(x) -> ast.ExprKind.Own(own expr(x, tps));
+            case Ref(x, m) -> ast.ExprKind.Ref(own expr(x, tps), m);
+            case Deref(x) -> ast.ExprKind.Deref(own expr(x, tps));
+            case Field(x, n) -> ast.ExprKind.Field(own expr(x, tps), n);
+            case Unary(op, x) -> ast.ExprKind.Unary(op, own expr(x, tps));
+            case ArrayRepeat(x, n) -> ast.ExprKind.ArrayRepeat(own expr(x, tps), n);
+            case If(c, t, has_els, els) -> ast.ExprKind.If(own expr(c, tps), own block(t, tps), has_els, own opt_block(has_els, els, tps));
+            case Match(sc, arms, has_default, d) -> {
+                let ast.MatchArm[] mut out = [];
+                for a in arms {
+                    let ast.Pat[] mut ps = [];
+                    for p in a.pats { ps.push(ast.clone_pat(p)); }
+                    out.push(ast.MatchArm { pats: ps, spans: ints(a.spans), body: block(a.body, tps) });
+                }
+                ast.ExprKind.Match(own expr(sc, tps), own out, has_default, own opt_block(has_default, d, tps))
+            }
+            case Binary(op, l, r) -> ast.ExprKind.Binary(op, own expr(l, tps), own expr(r, tps));
+            case Index(b, i) -> ast.ExprKind.Index(own expr(b, tps), own expr(i, tps));
+            case ArrayLit(xs) -> ast.ExprKind.ArrayLit(own exprs(xs, tps));
+            case MapLit(kvs) -> ast.ExprKind.MapLit(own exprs(kvs, tps));
+            case Interp(parts) -> {
+                let ast.InterpPart[] mut out = [];
+                for p in parts {
+                    match ref p {
+                        case Lit(s) -> out.push(ast.InterpPart.Lit(s));
+                        case Code(x) -> out.push(ast.InterpPart.Code(own expr(x, tps)));
+                    }
+                }
+                ast.ExprKind.Interp(own out)
+            }
+            case Lambda(l) -> {
+                let ast.LambdaParam[] mut ps = [];
+                for p in l.params {
+                    let t = if p.has_ty { ty(p.ty, tps) } else { ast.clone_type(p.ty) };
+                    ps.push(ast.LambdaParam { has_ty: p.has_ty, ty: t, name: p.name, span: p.span });
+                }
+                ast.ExprKind.Lambda(own ast.Lambda { params: ps, body: block(l.body, tps) })
+            }
+            case MethodCall(r, n, xs) -> ast.ExprKind.MethodCall(own expr(r, tps), n, own exprs(xs, tps));
+            default -> return ast.clone_expr(e);
+        };
+        ast.mk(k, e.span)
+    }
+}

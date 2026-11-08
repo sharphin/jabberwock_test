@@ -1,0 +1,22 @@
+// Result と ?: 例外はなく、失敗は値として返す
+
+fn Result<i64, str> div(i64 a, i64 b) {
+    if b == 0 { Err("0 では割れません") } else { Ok(a / b) }
+}
+
+fn Result<i64, str> calc(i64 a, i64 b, i64 c) {
+    let x = div(a, b)?;    // Err ならそのまま calc から返す
+    let y = div(x, c)?;
+    Ok(x + y)
+}
+
+fn main() {
+    match calc(100, 5, 2) {
+        case Ok(v) -> print("答え", v);
+        case Err(e) -> print("失敗:", e);
+    }
+    match calc(100, 0, 2) {
+        case Ok(v) -> print("答え", v);
+        case Err(e) -> print("失敗:", e);
+    }
+}

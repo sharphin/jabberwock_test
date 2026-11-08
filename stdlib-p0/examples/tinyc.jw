@@ -1,0 +1,277 @@
+// 小さなコンパイラ: 「let x = 式; print 式;」だけの言語を LLVM IR に書き出し、clang で実行ファイルにして動かす。
+// 自己ホストに使う機能の見本（ファイルの読み書き・run_command・exit・文字の番号・s += x・const）。
+// 使い方: jabberwock examples/tinyc.jw [ソースのファイル]   （ファイルを省くと中の例を使う）
+const EXAMPLE = """
+let x = 6;
+let y = x * (x + 1) / 2;
+print y - 1;
+print 0x10 + y % 4;
+""";
+const OUT = "tinyc_out";
+
+enum Tok {
+    Num(i64 n);
+    Name(str s);
+    Sym(str s);
+}
+
+enum Expr {
+    Num(i64 n);
+    Var(str name);
+    Bin(str op, own Expr l, own Expr r);
+}
+
+enum Stmt {
+    Let(str name, own Expr value);
+    Print(own Expr value);
+}
+
+fn bool is_digit(i64 c) { c >= 48 && c <= 57 }
+fn bool is_alpha(i64 c) { (c >= 97 && c <= 122) || (c >= 65 && c <= 90) || c == 95 }
+
+fn Result<Tok[], str> lex(str src) {
+    let Tok[] mut out = [];
+    let cs = src.chars();
+    let mut i = 0;
+    while i < cs.len() {
+        let c = cs[i].code();
+        if c == 32 || c == 10 || c == 9 || c == 13 {
+            i += 1;
+        } else if is_digit(c) {
+            // 10 進と 0x の 16 進
+            let mut n = 0;
+            if c == 48 && i + 1 < cs.len() && cs[i + 1] == "x" {
+                i += 2;
+                while i < cs.len() && "0123456789abcdef".contains(cs[i]) {
+                    n = (n << 4) | "0123456789abcdef".find(cs[i]).unwrap_or(0);
+                    i += 1;
+                }
+            } else {
+                while i < cs.len() && is_digit(cs[i].code()) {
+                    n = n * 10 + (cs[i].code() - 48);
+                    i += 1;
+                }
+            }
+            out.push(Tok.Num(n));
+        } else if is_alpha(c) {
+            let mut s = "";
+            while i < cs.len() && (is_alpha(cs[i].code()) || is_digit(cs[i].code())) {
+                s += cs[i];
+                i += 1;
+            }
+            out.push(Tok.Name(s));
+        } else if "+-*/%()=;".contains(cs[i]) {
+            out.push(Tok.Sym(cs[i]));
+            i += 1;
+        } else {
+            return Err("知らない文字 '{cs[i]}'（{i} 文字目）");
+        }
+    }
+    Ok(out)
+}
+
+struct Parser {
+    Tok[] toks;
+    i64 pos;
+
+    fn Option<Tok> peek() {
+        if pos < toks.len() { Some(toks[pos]) } else { None }
+    }
+
+    fn bool at(str s) {
+        match peek() {
+            case Some(Sym(x)) -> x == s;
+            default -> false;
+        }
+    }
+
+    fn mut Result<(), str> expect(str s) {
+        if !at(s) {
+            return Err("`{s}` が必要です（{pos} 番目のトークン）");
+        }
+        pos += 1;
+        Ok(())
+    }
+
+    fn mut Result<(own Stmt)[], str> program() {
+        let (own Stmt)[] mut out = [];
+        while pos < toks.len() {
+            match peek() {
+                case Some(Name(kw)) -> {
+                    pos += 1;
+                    if kw == "let" {
+                        let name = match peek() {
+                            case Some(Name(n)) -> n;
+                            default -> return Err("let のあとに名前が必要です");
+                        };
+                        pos += 1;
+                        expect("=")?;
+                        let v = expr()?;
+                        out.push(own Stmt.Let(name, v));
+                    } else if kw == "print" {
+                        let v = expr()?;
+                        out.push(own Stmt.Print(v));
+                    } else {
+                        return Err("知らない文 `{kw}`");
+                    }
+                    expect(";")?;
+                }
+                default -> return Err("文は let か print で始めます");
+            }
+        }
+        Ok(out)
+    }
+
+    fn mut Result<own Expr, str> expr() {
+        let mut l = term()?;
+        while at("+") || at("-") {
+            let op = if at("+") { "+" } else { "-" };
+            pos += 1;
+            let r = term()?;
+            l = own Expr.Bin(op, l, r);
+        }
+        Ok(l)
+    }
+
+    fn mut Result<own Expr, str> term() {
+        let mut l = atom()?;
+        while at("*") || at("/") || at("%") {
+            let op = if at("*") { "*" } else if at("/") { "/" } else { "%" };
+            pos += 1;
+            let r = atom()?;
+            l = own Expr.Bin(op, l, r);
+        }
+        Ok(l)
+    }
+
+    fn mut Result<own Expr, str> atom() {
+        match peek() {
+            case Some(Num(n)) -> {
+                pos += 1;
+                Ok(own Expr.Num(n))
+            }
+            case Some(Name(n)) -> {
+                pos += 1;
+                Ok(own Expr.Var(n))
+            }
+            case Some(Sym(s)) -> {
+                if s != "(" {
+                    return Err("式が必要なところに `{s}` があります");
+                }
+                pos += 1;
+                let e = expr()?;
+                expect(")")?;
+                Ok(e)
+            }
+            case None -> Err("式の途中でファイルが終わりました");
+        }
+    }
+}
+
+// LLVM IR を書き出す。変数は名前ごとの alloca
+struct Gen {
+    str out;
+    i64 next;
+    str[] vars;
+
+    fn mut str tmp() {
+        next += 1;
+        "%t{next}"
+    }
+
+    fn mut Result<str, str> expr(ref Expr e) {
+        match ref e {
+            case Num(n) -> Ok("{n}");
+            case Var(name) -> {
+                let mut found = false;
+                for v in vars {
+                    if v == name { found = true; }
+                }
+                if !found {
+                    return Err("定義していない変数 `{name}`");
+                }
+                let t = tmp();
+                out += "  {t} = load i64, ptr %v_{name}\n";
+                Ok(t)
+            }
+            case Bin(op, l, r) -> {
+                let a = expr(l)?;
+                let b = expr(r)?;
+                let inst = match op {
+                    case "+" -> "add";
+                    case "-" -> "sub";
+                    case "*" -> "mul";
+                    case "/" -> "sdiv";
+                    default -> "srem";
+                };
+                let t = tmp();
+                out += "  {t} = {inst} i64 {a}, {b}\n";
+                Ok(t)
+            }
+        }
+    }
+
+    fn mut Result<(), str> stmt(ref Stmt s) {
+        match ref s {
+            case Let(name, value) -> {
+                let v = expr(value)?;
+                out += "  %v_{name} = alloca i64\n  store i64 {v}, ptr %v_{name}\n";
+                vars.push(name);
+            }
+            case Print(value) -> {
+                let v = expr(value)?;
+                let t = tmp();
+                out += "  {t} = call i32 (ptr, ...) @printf(ptr @fmt, i64 {v})\n";
+            }
+        }
+        Ok(())
+    }
+}
+
+fn Result<str, str> compile(str src) {
+    let toks = lex(src)?;
+    let mut p = Parser { toks: toks, pos: 0 };
+    let prog = p.program()?;
+    let mut g = Gen { out: "", next: 0, vars: [] };
+    g.out += "@fmt = private constant [6 x i8] c\"%lld\\0A\\00\"\n";
+    g.out += "declare i32 @printf(ptr, ...)\n\ndefine i32 @main() {{\n";
+    for s in prog {
+        g.stmt(s)?;
+    }
+    g.out += "  ret i32 0\n}}\n";
+    Ok(g.out)
+}
+
+fn Result<(), str> run(str src) {
+    let ll = compile(src)?;
+    write_file(OUT + ".ll", ll)?;
+    let code = run_command("clang", ["-Wno-override-module", "-o", OUT, OUT + ".ll"])?;
+    if code != 0 {
+        return Err("clang が失敗しました（終了コード {code}）");
+    }
+    let status = run_command("./" + OUT, [])?;
+    print("終了コード", status);
+    Ok(())
+}
+
+fn main() {
+    let a = args();
+    let src = if a.len() > 0 {
+        match read_file(a[0]) {
+            case Ok(s) -> s;
+            case Err(e) -> {
+                eprint(e);
+                exit(1);
+            }
+        }
+    } else {
+        EXAMPLE
+    };
+    match run(src) {
+        case Ok(u) -> {}
+        case Err(e) -> {
+            eprint("エラー:", e);
+            exit(1);
+        }
+    }
+}

@@ -1,0 +1,14 @@
+// 文字列を後ろに足して 1 つの大きな文字列を作る（コンパイラが .ll を書き出すときの形）
+fn main() {
+    let mut s = "";
+    for i in range(3000000) {
+        s += "v{i % 1000},";
+    }
+    let mut lines = 0;
+    for i in range(1000) {
+        let mut line = "%t{i} = add i64 %a, %b";
+        line += "\n";
+        lines += line.byte_len();
+    }
+    print(s.byte_len(), lines);
+}

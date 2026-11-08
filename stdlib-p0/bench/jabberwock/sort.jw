@@ -1,0 +1,12 @@
+fn main() {
+    let i64[] mut v = [];
+    let mut x = 7;
+    for i in range(3000000) {
+        x = (x * 1103515245 + 12345) % 2147483648;
+        v.push(x);
+    }
+    v.sort();
+    let mut sum = 0;
+    for i in range(0, v.len(), 1000) { sum += v[i]; }
+    print(v[0], v[v.len() - 1], sum);
+}

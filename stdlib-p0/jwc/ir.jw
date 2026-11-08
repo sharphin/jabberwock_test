@@ -1,0 +1,314 @@
+// IR（中間表現。Rust 版の src/ir/mod.rs にあたる）。設計は docs/ir-design.md
+//
+// 関数ごとに「基本ブロック＋命令」で書く。enum の中身は、借りた match で受け取れるよう own で持つ。
+use astdump;
+use ty;
+
+/// 変数から始めて、たどっていく場所。`span` は変数を書いた位置
+pub struct Place {
+    i64 local;
+    Proj[] proj;
+    i64 span;
+}
+
+pub enum Proj {
+    // own / ref の先。`req` なら世代チェックをする（解析で消せたら false）
+    Deref(bool req, i64 span);
+    // 構造体のフィールド（定義の順の番号）
+    Field(i64 i, i64 span);
+    // enum の中身（種類の名前は表示用）
+    Variant(str v, i64 i);
+    // 添字・キー（先に計算した値, 添字の位置, 配列の位置）
+    Index(own Operand k, i64 span, i64 arr);
+}
+
+pub enum Const {
+    Unit;
+    // 値は ±mag（Rust 版の i128）
+    Int(bool neg, u64 mag, str t);
+    Float(f64 x);
+    Bool(bool b);
+    Str(str s);
+}
+
+pub enum Operand {
+    Copy(own Place p);
+    Move(i64 l, i64 span);
+    Read(i64 l, i64 span);
+    Const(Const c);
+}
+
+pub enum Rvalue {
+    Use(own Operand o);
+    // op は Rust 版の BinOp / UnOp の名前（"Add" など）
+    Bin(str op, own Operand a, own Operand b, i64 span);
+    Un(str op, own Operand a, i64 span);
+    Cast(own Operand a, own ty.Ty t);
+    Ref(own Place place, bool m, bool follows, str what, i64 span);
+    Own(own Operand a);
+    Struct(str name, own Operand[] fs);
+    Enum(str v, own Operand[] fs, bool copy);
+    Take(own Place p);
+    Array(own Operand[] items, bool list);
+    Repeat(own Operand x, u64 n, bool list);
+    Map(own Operand[] ks, own Operand[] vs, i64 span);
+    SeqOp(str name, own Place place, own Operand[] argv, i64 span, i64 arg_span);
+    Items(own Place place, str what, i64 span);
+    Keys(own Place p);
+    Call(i64 f, own Operand[] argv, i64 span);
+    // 表は (構造体の名前, 関数の番号) を並べたもの
+    CallDyn(own str[] snames, own i64[] fns, own Place this, bool m, str what, own Operand[] argv, i64 span);
+    Closure(i64 f, own Operand[] caps);
+    CallValue(own Operand f, own Operand[] argv, i64 span);
+    CopyOut(own Place p, str what, i64 span);
+    Show(own Operand o, bool temp, i64 span);
+    Builtin(str name, own Operand[] argv, i64 span);
+}
+
+pub enum Inst {
+    Assign(own Place place, own Rvalue value, i64 span, str what);
+    Drop(i64 local, i64 span, str why);
+    Discard(own Operand value, i64 span, str why);
+}
+
+pub enum Term {
+    Goto(i64 b);
+    Branch(own Operand c, i64 t, i64 e);
+    Return(own Operand o);
+    // 種類の名前と飛ぶ先を並べたもの、どれでもなければ d
+    Switch(own Place p, own str[] vs, own i64[] bbs, i64 d);
+    Step(i64 counter, own Operand step, i64 next, i64 done);
+    Fail(str title, i64 span, str label);
+    Unreachable;
+}
+
+pub struct Block {
+    Inst[] insts;
+    Term term;
+}
+
+pub struct LocalDecl {
+    str name;
+    ty.Ty t;
+    bool m;
+    i64 span;
+}
+
+pub struct Func {
+    str name;
+    i64 params;
+    i64 captures;
+    ty.Ty[] cap_tys;
+    ty.Ty ret;
+    LocalDecl[] locals;
+    Block[] blocks;
+    i64 span;
+}
+
+pub struct Program {
+    Func[] fns;
+    i64[str] by_name;
+}
+
+// ---------------------------------------------------------------- 作る・写す
+
+pub fn Place local(i64 l, i64 span) { Place { local: l, proj: [], span: span } }
+
+pub fn Operand copy_of(Place p) { Operand.Copy(own p) }
+
+pub fn Operand int_const(i64 n, str t) {
+    if n < 0 { Operand.Const(Const.Int(true, (0 - n) as u64, t)) } else { Operand.Const(Const.Int(false, n as u64, t)) }
+}
+
+pub fn Place clone_place(ref Place p) {
+    let Proj[] mut ps = [];
+    for x in p.proj { ps.push(clone_proj(x)); }
+    Place { local: p.local, proj: ps, span: p.span }
+}
+
+pub fn Proj clone_proj(ref Proj p) {
+    match ref p {
+        case Deref(r, s) -> Proj.Deref(r, s);
+        case Field(i, s) -> Proj.Field(i, s);
+        case Variant(v, i) -> Proj.Variant(v, i);
+        case Index(k, s, a) -> Proj.Index(own clone_op(k), s, a);
+    }
+}
+
+pub fn Operand clone_op(ref Operand o) {
+    match ref o {
+        case Copy(p) -> Operand.Copy(own clone_place(p));
+        case Move(l, s) -> Operand.Move(l, s);
+        case Read(l, s) -> Operand.Read(l, s);
+        case Const(c) -> Operand.Const(c);
+    }
+}
+
+pub fn Operand[] clone_ops(ref Operand[] os) {
+    let Operand[] mut out = [];
+    for o in os { out.push(clone_op(o)); }
+    out
+}
+
+pub fn bool is_const(ref Operand o) {
+    match ref o {
+        case Const(c) -> true;
+        default -> false;
+    }
+}
+
+/// `Move(t)` なら t、ほかは -1
+pub fn i64 moved_local(ref Operand o) {
+    match ref o {
+        case Move(l, s) -> l;
+        default -> -1;
+    }
+}
+
+/// 上書きで古い値を解放したときの説明（interp と同じ）
+pub fn str overwritten(str what) {
+    if what == "" { "上書きされて、古い値が解放された" } else { "`{what}` が上書きされて、古い値が解放された" }
+}
+
+/// Rust 版の `IntTy::wrap`: 値 ±mag を型 t の範囲に一周させる
+pub fn Const wrap(bool neg, u64 mag, str t) {
+    let b = ty.bits(t);
+    let u64 mut u = mag;
+    if b < 64 {
+        let u64 m = (1 as u64) << b;
+        u = mag % m;
+        if neg && u != 0 { u = m - u; }
+        if ty.signed(t) && u >= m / 2 { return Const.Int(true, m - u, t); }
+        return Const.Int(false, u, t);
+    }
+    if neg { u = (0 as u64) - mag; }
+    if ty.signed(t) && u >= (1 as u64) << 63 { return Const.Int(true, (0 as u64) - u, t); }
+    Const.Int(false, u, t)
+}
+
+// ---------------------------------------------------------------- 表示（`jwc --ir`。Rust 版の Display と同じ形）
+
+fn str debug_str(str s) { "\"" + astdump.escape(s) + "\"" }
+
+pub fn str show_program(ref Program p) {
+    let mut out = "";
+    for (i, f) in p.fns {
+        if i > 0 { out += "\n"; }
+        out += show_func(f, p);
+    }
+    out
+}
+
+fn str show_func(ref Func f, ref Program prog) {
+    let str[] mut ps = [];
+    for i in range(f.params) { ps.push("_{i}: " + ty.show(f.locals[i].t)); }
+    let mut out = "fn " + f.name + "(" + ps.join(", ") + ") -> " + ty.show(f.ret) + " {{\n";
+    for (i, l) in f.locals {
+        if i < f.params { continue; }
+        let name = if l.name == "" { "" } else { "  // " + l.name };
+        out += "    let _{i}: " + ty.show(l.t) + ";" + name + "\n";
+    }
+    for (i, b) in f.blocks {
+        out += "  bb{i}:\n";
+        for inst in b.insts { out += "    " + show_inst(inst, prog) + "\n"; }
+        out += "    " + show_term(b.term) + "\n";
+    }
+    out + "}}\n"
+}
+
+fn str show_inst(ref Inst i, ref Program prog) {
+    match ref i {
+        case Assign(p, v, s, w) -> show_place(p) + " = " + show_rvalue(v, prog);
+        case Drop(l, s, w) -> "drop _{l}";
+        case Discard(v, s, w) -> "discard " + show_operand(v);
+    }
+}
+
+fn str show_term(ref Term t) {
+    match ref t {
+        case Goto(b) -> "goto bb{b}";
+        case Branch(c, a, b) -> "branch " + show_operand(c) + " bb{a} bb{b}";
+        case Return(o) -> "return " + show_operand(o);
+        case Switch(p, vs, bbs, d) -> {
+            let str[] mut arms = [];
+            for (i, v) in vs { arms.push(v + " => bb{bbs[i]}"); }
+            "switch " + show_place(p) + " [" + arms.join(", ") + "] それ以外 bb{d}"
+        }
+        case Step(c, s, n, d) -> "step _{c} += " + show_operand(s) + " bb{n} (あふれたら bb{d})";
+        case Fail(title, s, l) -> "fail " + debug_str(title);
+        case Unreachable -> "unreachable";
+    }
+}
+
+pub fn str show_place(ref Place p) {
+    let mut s = "_{p.local}";
+    for pr in p.proj {
+        s = match ref pr {
+            case Deref(req, sp) -> if req { "(*!" + s + ")" } else { "(*" + s + ")" };
+            case Field(i, sp) -> s + ".{i}";
+            case Variant(v, i) -> "(" + s + " as " + v + ").{i}";
+            case Index(k, a, b) -> s + "[" + show_operand(k) + "]";
+        };
+    }
+    s
+}
+
+pub fn str show_const(Const c) {
+    match c {
+        case Unit -> "()";
+        case Int(neg, mag, t) -> (if neg { "-" } else { "" }) + "{mag}" + t;
+        case Float(x) -> "{x}";
+        case Bool(b) -> "{b}";
+        case Str(s) -> debug_str(s);
+    }
+}
+
+fn str show_operand(ref Operand o) {
+    match ref o {
+        case Copy(p) -> show_place(p);
+        case Move(l, s) -> "move _{l}";
+        case Read(l, s) -> "read _{l}";
+        case Const(c) -> show_const(c);
+    }
+}
+
+fn str ops(ref Operand[] os) {
+    let str[] mut out = [];
+    for o in os { out.push(show_operand(o)); }
+    out.join(", ")
+}
+
+fn str show_rvalue(ref Rvalue r, ref Program prog) {
+    match ref r {
+        case Use(o) -> show_operand(o);
+        case Bin(op, a, b, s) -> op + "(" + show_operand(a) + ", " + show_operand(b) + ")";
+        case Un(op, a, s) -> op + "(" + show_operand(a) + ")";
+        case Cast(a, t) -> show_operand(a) + " as " + ty.show(t);
+        case Ref(p, m, f, w, s) -> (if m { "ref mut " } else { "ref " }) + show_place(p);
+        case Own(a) -> "own " + show_operand(a);
+        case Struct(n, fs) -> n + " {{ " + ops(fs) + " }}";
+        case Enum(v, fs, c) -> if fs.len() == 0 { v } else { v + "(" + ops(fs) + ")" };
+        case Take(p) -> "take " + show_place(p);
+        case Array(items, list) -> (if list { "list[" } else { "[" }) + ops(items) + "]";
+        case Repeat(x, n, list) -> (if list { "list" } else { "" }) + "[" + show_operand(x) + "; {n}]";
+        case Map(ks, vs, s) -> {
+            let str[] mut ps = [];
+            for (i, k) in ks { ps.push(show_operand(k) + ": " + show_operand(vs[i])); }
+            "map[" + ps.join(", ") + "]"
+        }
+        case SeqOp(n, p, a, s, x) -> show_place(p) + "." + n + "(" + ops(a) + ")";
+        case Items(p, w, s) -> "items " + show_place(p);
+        case Keys(p) -> "keys " + show_place(p);
+        case Call(f, a, s) -> prog.fns[f].name + "(" + ops(a) + ")";
+        case CallDyn(sn, fs, this, m, w, a, s) -> {
+            let str[] mut names = [];
+            for f in fs { names.push(prog.fns[f].name); }
+            "dyn [" + names.join(" | ") + "](ref " + show_place(this) + ", " + ops(a) + ")"
+        }
+        case Closure(f, caps) -> "closure " + prog.fns[f].name + " [" + ops(caps) + "]";
+        case CallValue(f, a, s) -> "call " + show_operand(f) + "(" + ops(a) + ")";
+        case CopyOut(p, w, s) -> "copy_out " + show_place(p);
+        case Show(o, temp, s) -> if temp { "show!(" + show_operand(o) + ", 捨てる)" } else { "show!(" + show_operand(o) + ")" };
+        case Builtin(n, a, s) -> n + "!(" + ops(a) + ")";
+    }
+}

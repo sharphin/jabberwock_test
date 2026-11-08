@@ -1,0 +1,392 @@
+// 構文木を文字にする（Rust 版の src/astdump.rs と同じ形。`jwc --ast`）
+use ast;
+use diag;
+use ty;
+use typeck;
+
+pub fn str escape(str s) {
+    let mut out = "";
+    for c in s.chars() {
+        if c == "\\" { out += "\\\\"; }
+        else if c == "\"" { out += "\\\""; }
+        else if c == "\n" { out += "\\n"; }
+        else if c == "\t" { out += "\\t"; }
+        else if c == "\r" { out += "\\r"; }
+        else if c == "\0" { out += "\\0"; }
+        else { out += c; }
+    }
+    out
+}
+
+fn str sp(i64 s) { diag.show(s) }
+
+fn str tys(ref ast.TypeExpr[] ts) {
+    let str[] mut out = [];
+    for t in ts { out.push(ty(t)); }
+    out.join(", ")
+}
+
+fn str ty(ref ast.TypeExpr t) {
+    let inner = match ref t.kind {
+        case Name(n) -> n;
+        case App(n, ts) -> n + "<" + tys(ts) + ">";
+        case Own(x) -> "own(" + ty(x) + ")";
+        case Ref(x, m) -> (if m { "refmut(" } else { "ref(" }) + ty(x) + ")";
+        case Array(x, n) -> "arr(" + ty(x) + ", {n})";
+        case List(x) -> "list(" + ty(x) + ")";
+        case Map(v, k) -> "map(" + ty(v) + ", " + ty(k) + ")";
+        case Fn(ps, has_ret, r) -> "fn(" + (if has_ret { ty(r) } else { "-" }) + "; " + tys(ps) + ")";
+    };
+    inner + sp(t.span)
+}
+
+struct Out {
+    str[] lines;
+    i64[] borrows;
+    // `--typed` のとき、型検査が決めたこと
+    bool typed;
+    ref typeck.Info info;
+
+    /// 型検査が決めたこと（`--typed` のときだけ）
+    fn str marks(ref ast.Expr e) {
+        if !typed { return ""; }
+        let mut out = "";
+        let id = e.id;
+        if info.has_ty[id] { out += " : " + ty.show(info.tys[id]); }
+        if info.ints[id] != "" { out += " int=" + info.ints[id]; }
+        if info.floats[id] { out += " float"; }
+        if info.borrows[id] { out += " borrow"; }
+        match ref e.kind {
+            case Variant(en, vn, xs) -> {
+                let c = info.copies[id];
+                if c >= 0 { out += " copy={c == 1}"; }
+            }
+            case ArrayLit(xs) -> {
+                if info.seqs[id] != "" { out += " seq=" + info.seqs[id]; }
+            }
+            case ArrayRepeat(x, n) -> {
+                if info.lists[id] { out += " list"; }
+            }
+            case MethodCall(r, n, xs) -> {
+                if info.menums[id] != "" { out += " enum=" + info.menums[id]; }
+                if info.mtakes[id] { out += " take"; }
+            }
+            case Lambda(l) -> {
+                let at = info.lam_at[id];
+                if at >= 0 {
+                    let str[] mut bs = [];
+                    for b in info.lams[at].borrowed { bs.push("{b}"); }
+                    let caps = info.lams[at].caps.join(", ");
+                    let bj = bs.join(", ");
+                    out += " caps=[{caps}] borrowed=[{bj}] returns={info.lams[at].returns}";
+                } else {
+                    out += " caps=[] borrowed=[] returns=false";
+                }
+            }
+            default -> {}
+        }
+        let ta = info.targ_at[id];
+        if ta >= 0 {
+            let mut ks = info.targ_maps[ta].ks.map((k) -> k);
+            ks.sort();
+            let str[] mut ps = [];
+            for k in ks { ps.push(k + "=" + ty.show(info.targ_maps[ta].get(k))); }
+            out += " targs={{" + ps.join(", ") + "}}";
+        }
+        out
+    }
+
+    fn mut line(i64 depth, str s) {
+        let mut pad = "";
+        for i in range(depth) { pad += "  "; }
+        lines.push(pad + s);
+    }
+
+    fn mut block(i64 d, ref ast.Block b) {
+        line(d, "block tail={b.tail} end" + sp(b.end));
+        for s in b.stmts { stmt(d + 1, s); }
+    }
+
+    fn mut stmt(i64 d, ref ast.Stmt s) {
+        match ref s {
+            case Let(name, has_ty, t, m, span, init) -> {
+                let ts = if has_ty { " " + ty(t) } else { "" };
+                line(d, "let" + (if m { " mut" } else { "" }) + " " + name + ts + sp(span));
+                expr(d + 1, init);
+            }
+            case Assign(target, value, span) -> {
+                line(d, "assign" + sp(span));
+                expr(d + 1, target);
+                expr(d + 1, value);
+            }
+            case Ex(e) -> {
+                line(d, "expr");
+                expr(d + 1, e);
+            }
+            case While(cond, body) -> {
+                line(d, "while");
+                expr(d + 1, cond);
+                block(d + 1, body);
+            }
+            case Loop(body) -> {
+                line(d, "loop");
+                block(d + 1, body);
+            }
+            case For(var, rng, rs, body, has_els, els) -> {
+                line(d, "for " + var + " range" + sp(rs));
+                for a in rng { expr(d + 1, a); }
+                block(d + 1, body);
+                if has_els {
+                    line(d, "else");
+                    block(d + 1, els);
+                }
+            }
+            case ForEach(has_key, key, ks, var, vs, iter, body, has_els, els) -> {
+                let k = if has_key { " key " + key + sp(ks) } else { "" };
+                let c = if typed && info.consumes[iter.id] { " consume" } else { "" };
+                line(d, "foreach" + k + " " + var + sp(vs) + c);
+                expr(d + 1, iter);
+                block(d + 1, body);
+                if has_els {
+                    line(d, "else");
+                    block(d + 1, els);
+                }
+            }
+            case Break(span) -> line(d, "break" + sp(span));
+            case Continue(span) -> line(d, "continue" + sp(span));
+            case Return(has_value, v, span) -> {
+                line(d, "return" + sp(span));
+                if has_value { expr(d + 1, v); }
+            }
+        }
+    }
+
+    fn mut pat(i64 d, ref ast.Pat p, i64 s) {
+        match ref p {
+            case Int(neg, n) -> line(d, "pat int " + (if neg { "-" } else { "" }) + "{n}" + sp(s));
+            case Bool(b) -> line(d, "pat bool {b}" + sp(s));
+            case Str(x) -> line(d, "pat str \"" + escape(x) + "\"" + sp(s));
+            case Variant(name, binds, spans, has_sub, subs) -> {
+                line(d, "pat variant " + name + sp(s));
+                for (i, b) in binds {
+                    if has_sub[i] {
+                        pat(d + 1, subs[i], spans[i]);
+                    } else {
+                        line(d + 1, "bind " + b + sp(spans[i]));
+                    }
+                }
+            }
+        }
+    }
+
+    fn mut exprs(i64 d, ref ast.Expr[] xs) {
+        for x in xs { expr(d, x); }
+    }
+
+    fn mut expr(i64 d, ref ast.Expr e) {
+        let s = sp(e.span) + marks(e);
+        match ref e.kind {
+            case Int(n) -> line(d, "int {n}" + s);
+            case Float(v) -> line(d, "float {v}" + s);
+            case Bool(b) -> line(d, "bool {b}" + s);
+            case Str(x) -> line(d, "str \"" + escape(x) + "\"" + s);
+            case Unit -> line(d, "unit" + s);
+            case Var(n) -> line(d, "var " + n + s);
+            case Cast(x, t) -> {
+                line(d, "cast " + ty(t) + s);
+                expr(d + 1, x);
+            }
+            case Try(x) -> {
+                line(d, "try" + s);
+                expr(d + 1, x);
+            }
+            case Variant(en, vn, xs) -> {
+                line(d, "variant " + en + "." + vn + s);
+                exprs(d + 1, xs);
+            }
+            case Own(x) -> {
+                line(d, "own" + s);
+                expr(d + 1, x);
+            }
+            case Ref(x, m) -> {
+                line(d, (if m { "ref mut" } else { "ref" }) + s);
+                expr(d + 1, x);
+            }
+            case Deref(x) -> {
+                line(d, "deref" + s);
+                expr(d + 1, x);
+            }
+            case Field(x, f) -> {
+                line(d, "field " + f + s);
+                expr(d + 1, x);
+            }
+            case StructLit(n, inits) -> {
+                line(d, "struct " + n + s);
+                for i in inits {
+                    line(d + 1, "init " + i.name + sp(i.span));
+                    expr(d + 2, i.value);
+                }
+            }
+            case If(c, t, has_els, els) -> {
+                line(d, "if" + s);
+                expr(d + 1, c);
+                block(d + 1, t);
+                if has_els {
+                    line(d, "else");
+                    block(d + 1, els);
+                }
+            }
+            case Match(sc, arms, has_default, dflt) -> {
+                line(d, "match" + s);
+                expr(d + 1, sc);
+                for a in arms {
+                    line(d + 1, "case");
+                    for (i, p) in a.pats { pat(d + 2, p, a.spans[i]); }
+                    block(d + 2, a.body);
+                }
+                if has_default {
+                    line(d + 1, "default");
+                    block(d + 2, dflt);
+                }
+            }
+            case Unary(op, x) -> {
+                line(d, "unary " + op + s);
+                expr(d + 1, x);
+            }
+            case Binary(op, l, r) -> {
+                line(d, "binary " + op + s);
+                expr(d + 1, l);
+                expr(d + 1, r);
+            }
+            case Call(n, xs) -> {
+                line(d, "call " + n + s);
+                exprs(d + 1, xs);
+            }
+            case Index(b, i) -> {
+                line(d, "index" + s);
+                expr(d + 1, b);
+                expr(d + 1, i);
+            }
+            case ArrayLit(xs) -> {
+                line(d, "array" + s);
+                exprs(d + 1, xs);
+            }
+            case MapLit(kvs) -> {
+                line(d, "map" + s);
+                exprs(d + 1, kvs);
+            }
+            case ArrayRepeat(x, n) -> {
+                line(d, "repeat {n}" + s);
+                expr(d + 1, x);
+            }
+            case Interp(parts) -> {
+                line(d, "interp" + s);
+                for p in parts {
+                    match ref p {
+                        case Lit(x) -> line(d + 1, "lit \"" + escape(x) + "\"");
+                        case Code(x) -> expr(d + 1, x);
+                    }
+                }
+            }
+            case Lambda(l) -> {
+                let mut b = false;
+                for x in borrows {
+                    if x == e.span { b = true; }
+                }
+                line(d, "lambda borrows={b}" + s);
+                for p in l.params {
+                    let ts = if p.has_ty { " " + ty(p.ty) } else { "" };
+                    line(d + 1, "param " + p.name + ts + sp(p.span));
+                }
+                block(d + 1, l.body);
+            }
+            case MethodCall(r, n, xs) -> {
+                line(d, "mcall " + n + s);
+                expr(d + 1, r);
+                exprs(d + 1, xs);
+            }
+        }
+    }
+
+    fn mut func(i64 d, ref ast.FnDef f) {
+        let str[] mut tps = [];
+        for (i, t) in f.tparams {
+            if f.bounds[i] == "" { tps.push(t); } else { tps.push(t + ": " + f.bounds[i]); }
+        }
+        line(d, "fn " + f.name + "<" + tps.join(", ") + ">" + sp(f.span));
+        if f.has_ret { line(d + 1, "ret " + ty(f.ret)); }
+        for p in f.params {
+            line(d + 1, "param" + (if p.m { " mut" } else { "" }) + " " + ty(p.ty) + " " + p.name + sp(p.span));
+        }
+        block(d + 1, f.body);
+    }
+}
+
+pub fn str dump(ref ast.Program p) {
+    let empty = typeck.new_info(0);
+    dump_with(p, false, empty)
+}
+
+fn str ty_list(ref ty.Ty[] ts) {
+    let str[] mut out = [];
+    for t in ts { out.push(ty.show(t)); }
+    out.join(", ")
+}
+
+/// 型検査の結果つき（`--typed`）
+pub fn str dump_typed(ref ast.Program p, ref typeck.Checker c) {
+    let mut out = dump_with(p, true, c.info);
+    let mut vs = c.info.var_spans.map((x) -> x);
+    vs.sort();
+    for s in vs { out += "\nvar" + sp(s) + " " + ty.show(c.info.var_tys[c.info.var_at[s]]); }
+    let mut rs = c.info.ret_names.map((x) -> x);
+    rs.sort();
+    for n in rs { out += "\nret " + n + " " + ty.show(c.info.ret_tys[c.info.ret_at[n]]); }
+    let mut ss = c.sdefs.map((d) -> d.name);
+    ss.sort();
+    for n in ss {
+        let d = ref c.sdefs[c.s_at[n]];
+        out += "\nstructty " + n + "<" + d.tparams.join(", ") + "> " + ty_list(d.tys);
+    }
+    let mut es = c.edefs.map((d) -> d.name);
+    es.sort();
+    for n in es {
+        let d = ref c.edefs[c.e_at[n]];
+        let str[] mut vv = [];
+        for v in d.vs { vv.push(v.name + "(" + ty_list(v.tys) + ")"); }
+        out += "\nenumty " + n + "<" + d.tparams.join(", ") + "> " + vv.join(" ");
+    }
+    out
+}
+
+fn str dump_with(ref ast.Program p, bool typed, ref typeck.Info info) {
+    let i64[] mut bs = [];
+    for x in p.borrow_lambdas { bs.push(x); }
+    let mut o = Out { lines: [], borrows: bs, typed: typed, info: info };
+    for s in p.structs {
+        o.line(0, "struct " + s.name + "<" + s.tparams.join(", ") + ">" + sp(s.span));
+        for (i, f) in s.fields { o.line(1, "field " + ty(s.field_types[i]) + " " + f); }
+    }
+    for e in p.enums {
+        o.line(0, "enum " + e.name + "<" + e.tparams.join(", ") + ">" + sp(e.span));
+        for v in e.variants {
+            o.line(1, "variant " + v.name + sp(v.span));
+            for (i, t) in v.types { o.line(2, ty(t) + " " + v.names[i]); }
+        }
+    }
+    for i in p.interfaces {
+        o.line(0, "interface " + i.name + sp(i.span));
+        for (j, m) in i.methods {
+            o.line(1, "method mut={i.muts[j]}");
+            o.func(2, m);
+        }
+    }
+    for f in p.fns { o.func(0, f); }
+    let str[] mut uses = [];
+    for (i, n) in p.uses { uses.push(n + sp(p.use_spans[i])); }
+    o.line(0, "uses [" + uses.join(", ") + "]");
+    o.line(0, "public [" + p.public.join(", ") + "]");
+    o.line(0, "modules [" + p.modules.join(", ") + "]");
+    o.line(0, "consts [" + p.consts.join(", ") + "]");
+    o.lines.join("\n")
+}

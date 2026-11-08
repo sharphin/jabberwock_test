@@ -1,0 +1,51 @@
+// 並列の単語数え上げ: 行を worker に配り、結果の辞書を chan で集める
+fn i64[str] count(str[] lines) {
+    let i64[str] mut out = [];
+    for line in lines {
+        for raw in line.split(" ") {
+            let w = raw.trim().to_lower();
+            if w == "" { continue; }
+            if out.contains(w) { out[w] += 1; } else { out[w] = 1; }
+        }
+    }
+    out
+}
+
+fn main() {
+    let text = """
+the quick brown fox
+jumps over the lazy dog
+the dog sleeps
+a fox is quick""";
+    let lines = text.lines();
+    let workers = 3;
+    let (str[])[] mut parts = [];
+    for i in range(workers) { parts.push([]); }
+    for (i, l) in lines {
+        parts[i % workers].push(l);
+    }
+    let chan<i64[str]> results = chan();
+    let task<()>[] mut ts = [];
+    for p in parts.drain() {
+        // drain で取り出した要素は値なので、スレッドへ渡せる
+        ts.push(spawn(() -> { results.send(count(p)); }));
+    }
+    let i64[str] mut total = [];
+    for i in range(workers) {
+        match results.recv() {
+            case Some(m) -> {
+                for (k, v) in m {
+                    if total.contains(k) { total[k] += v; } else { total[k] = v; }
+                }
+            }
+            case None -> {}
+        }
+    }
+    for t in ts { t.join(); }
+    let mut keys = total.keys();
+    // 引数に書いたクロージャは total を借りるだけ（ムーブしない）
+    keys.sort_by((a, b) -> total[a] > total[b] || (total[a] == total[b] && a < b));
+    for k in keys {
+        print("{k}: {total[k]}");
+    }
+}

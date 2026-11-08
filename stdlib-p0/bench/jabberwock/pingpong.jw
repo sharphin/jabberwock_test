@@ -1,0 +1,22 @@
+// 2 つのスレッドで 1 つの値を 5 万往復させる（相手を毎回待つので、チャンネルのバッファの有無で条件が変わらない）
+fn main() {
+    let chan<i64> ping = chan();
+    let chan<i64> pong = chan();
+    let n = 50000;
+    let t = spawn(() -> {
+        loop {
+            match ping.recv() {
+                case Some(v) -> pong.send(v + 1);
+                case None -> break;
+            }
+        }
+    });
+    let mut v = 0;
+    for i in range(n) {
+        ping.send(v);
+        v = pong.recv().unwrap_or(0);
+    }
+    ping.close();
+    t.join();
+    print(v);
+}

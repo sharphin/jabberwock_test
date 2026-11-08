@@ -1,0 +1,1881 @@
+// 構文解析（Rust 版の src/parser.rs と同じ構文木を作る）
+//
+// Rust 版は読んだあとで構文木を書き換える（メソッドの中のフィールド名を this.名前 に・定数の名前を値に）。
+// jwc は構文木を書き換えずに済むよう、読みながら決める:
+// - メソッドの本体: 構造体・enum の中身を 2 回読む。1 回目でメソッドの名前を集め、2 回目に this をつけながら読む
+// - 定数: プログラムを 2 回読む。1 回目で定数の値を決め、2 回目に使う場所を値にしながら読む
+use ast;
+use diag;
+use lexer;
+
+fn bool has(ref str[] xs, str x) {
+    for y in xs {
+        if y == x { return true; }
+    }
+    false
+}
+
+fn str describe(ref lexer.Token t) {
+    let k = t.kind;
+    if k == "int" { "整数 `{t.num}`" }
+    else if k == "float" { "小数 `{t.text}`" }
+    else if k == "str" || k == "interp" { "文字列" }
+    else if k == "ident" { "名前 `{t.text}`" }
+    else if k == "eof" { "ファイルの終わり" }
+    else { "`{k}`" }
+}
+
+fn i64 binop_prec(str k) {
+    if k == "||" { 1 }
+    else if k == "&&" { 2 }
+    else if k == "==" || k == "!=" { 3 }
+    else if k == "<" || k == "<=" || k == ">" || k == ">=" { 4 }
+    else if k == "|" { 5 }
+    else if k == "^" { 6 }
+    else if k == "&" { 7 }
+    else if k == "<<" { 8 }
+    else if k == "+" || k == "-" { 9 }
+    else if k == "*" || k == "/" || k == "%" { 10 }
+    else { 0 }
+}
+
+/// `{ }` で終わる文か（後ろに `;` が要らない）
+fn bool is_block_like(ref ast.Stmt s) {
+    match ref s {
+        case While(c, b) -> true;
+        case Loop(b) -> true;
+        case For(v, r, rs, b, he, e) -> true;
+        case ForEach(hk, k, ks, v, vs, i, b, he, e) -> true;
+        case Ex(e) -> {
+            match ref e.kind {
+                case If(c, t, he, els) -> true;
+                case Match(s2, a, hd, d) -> true;
+                default -> false;
+            }
+        }
+        default -> false;
+    }
+}
+
+fn bool is_expr_stmt(ref ast.Stmt s) {
+    match ref s {
+        case Ex(e) -> true;
+        default -> false;
+    }
+}
+
+fn bool is_return(ref ast.Stmt s) {
+    match ref s {
+        case Return(h, v, sp) -> true;
+        default -> false;
+    }
+}
+
+fn bool is_variant_pat(ref ast.Pat p) {
+    match ref p {
+        case Variant(n, b, s, h, subs) -> true;
+        default -> false;
+    }
+}
+
+/// 先に書いた case `a` があると、`b` が決して選ばれないか（受け取る名前は問わない）
+fn bool same_case(ref ast.Pat a, ref ast.Pat b) {
+    match ref a {
+        case Int(an, ax) -> {
+            match ref b {
+                case Int(bn, bx) -> an == bn && ax == bx;
+                default -> false;
+            }
+        }
+        case Bool(ab) -> {
+            match ref b {
+                case Bool(bb) -> ab == bb;
+                default -> false;
+            }
+        }
+        case Str(as2) -> {
+            match ref b {
+                case Str(bs) -> as2 == bs;
+                default -> false;
+            }
+        }
+        case Variant(an, ab, asp, ah, asubs) -> {
+            match ref b {
+                case Variant(bn, bb, bsp, bh, bsubs) -> {
+                    let mut flat = true;
+                    for h in ah {
+                        if h { flat = false; }
+                    }
+                    an == bn && flat
+                }
+                default -> false;
+            }
+        }
+    }
+}
+
+/// 定数の値として書けない式の位置（-1 なら書ける）
+fn i64 not_constant(ref ast.Expr e) {
+    match ref e.kind {
+        case Int(n) -> -1;
+        case Float(v) -> -1;
+        case Str(s) -> -1;
+        case Bool(b) -> -1;
+        case Unary(op, x) -> not_constant(x);
+        case Cast(x, t) -> not_constant(x);
+        case Binary(op, l, r) -> {
+            let a = not_constant(l);
+            if a >= 0 { a } else { not_constant(r) }
+        }
+        default -> e.span;
+    }
+}
+
+/// 定数の値の中の、前に書いた定数の名前を値にする（数・演算・as のほかはそのまま写す。どのみちエラーになる）
+fn ast.Expr subst_const(ref ast.Expr e, ref str[] names, ref ast.Expr[] vals) {
+    let k = match ref e.kind {
+        case Var(n) -> {
+            for (i, c) in names {
+                if c == n {
+                    let mut v = ast.clone_expr(vals[i]);
+                    v.span = e.span;
+                    return v;
+                }
+            }
+            ast.ExprKind.Var(n)
+        }
+        case Unary(op, x) -> ast.ExprKind.Unary(op, own subst_const(x, names, vals));
+        case Cast(x, t) -> ast.ExprKind.Cast(own subst_const(x, names, vals), own ast.clone_type(t));
+        case Binary(op, l, r) -> ast.ExprKind.Binary(op, own subst_const(l, names, vals), own subst_const(r, names, vals));
+        default -> return ast.clone_expr(e);
+    };
+    ast.mk(k, e.span)
+}
+
+/// 構造体・enum の中身（フィールド・種類・メソッド）
+struct Items {
+    str[] fields;
+    ast.TypeExpr[] field_types;
+    ast.VariantDef[] variants;
+    ast.FnDef[] methods;
+    i64[] mspans;
+    ast.FnDef[] statics;
+    i64[] sspans;
+}
+
+fn Items no_items() {
+    Items { fields: [], field_types: [], variants: [], methods: [], mspans: [], statics: [], sspans: [] }
+}
+
+/// 入れ子の深さの上限（Rust 版の parser::MAX_NEST と同じ）
+const MAX_NEST = 256;
+
+struct Parser {
+    lexer.Token[] toks;
+    i64 pos;
+    // `if` / `while` の条件の中では `Name {` を構造体リテラルと読まない
+    bool no_struct_lit;
+    i64 loop_depth;
+    bool in_value_if;
+    str[] enum_names;
+    str[] struct_names;
+    // enum ごとの種類の名前（" A B " の形）
+    str[str] enum_variants;
+    // メソッドの本体の中: フィールド名に this をつけ、同じ型のメソッドの呼び出しを this.名前(...) にする
+    bool bind_ready;
+    bool in_method;
+    str[] this_fields;
+    str[] this_methods;
+    str[] this_statics;
+    str owner;
+    // 見えているローカルの名前と、スコープの始まり
+    str[] locals;
+    i64[] marks;
+    // 2 回目の解析: 定数の名前を値にする（定数の値そのものの中では置き換えない）
+    bool use_consts;
+    bool in_const;
+    str[] const_names;
+    ast.Expr[] const_vals;
+    // 次に読む呼び出しには this をつけない（`for i in range(...)`）
+    bool raw_call;
+    i64[] borrow_lambdas;
+    // 今の入れ子の深さ（式・ブロック・型・形）。MAX_NEST を超えたらエラー
+    i64 nest;
+
+    fn str peek() { toks[pos].kind }
+
+    fn str peek2() {
+        if pos + 1 < toks.len() { toks[pos + 1].kind } else { toks[toks.len() - 1].kind }
+    }
+
+    fn str text() { toks[pos].text }
+
+    fn i64 span() { toks[pos].span }
+
+    fn i64 prev_span() {
+        if pos > 0 { toks[pos - 1].span } else { toks[0].span }
+    }
+
+    fn mut i64 bump() {
+        let s = toks[pos].span;
+        if pos + 1 < toks.len() {
+            pos += 1;
+        }
+        s
+    }
+
+    fn mut skip_semis() {
+        while peek() == ";" {
+            bump();
+        }
+    }
+
+    fn diag.Diag too_deep() {
+        diag.error_note("入れ子が深すぎます", span(), "ここで {MAX_NEST} 段を超えた",
+            "式・ブロック・型・形の入れ子を合わせて数えます（演算子や `.` の鎖も 1 つごとに数えます）。途中を関数や変数に分けてください")
+    }
+
+    /// 入れ子を 1 段深くする（演算子・`as`・`.f` / `[i]` / `?` の鎖も 1 つごとに。呼んだ側が深さを戻す）
+    fn mut Result<(), diag.Diag> deeper() {
+        if nest >= MAX_NEST { return Err(too_deep()); }
+        nest += 1;
+        Ok(())
+    }
+
+    fn diag.Diag unexpected(str expected) {
+        diag.error("構文エラー: {expected}が必要です", span(), "ここに {describe(toks[pos])} があります")
+    }
+
+    fn mut Result<i64, diag.Diag> expect(str k, str expected) {
+        if peek() == k { Ok(bump()) } else { Err(unexpected(expected)) }
+    }
+
+    fn mut bool eat(str k) {
+        if peek() == k {
+            bump();
+            true
+        } else {
+            false
+        }
+    }
+
+    fn mut Result<str, diag.Diag> expect_ident(str what) {
+        if peek() == "ident" {
+            let n = text();
+            bump();
+            Ok(n)
+        } else {
+            Err(unexpected(what))
+        }
+    }
+
+    // ---------------------------------------------------------------- スコープ（this をつけるときだけ使う）
+
+    fn mut push_scope() { marks.push(locals.len()); }
+
+    fn mut pop_scope() {
+        match marks.pop() {
+            case Some(m) -> {
+                while locals.len() > m { locals.pop(); }
+            }
+            case None -> {}
+        }
+    }
+
+    fn mut declare(str n) { locals.push(n); }
+
+    fn bool is_local(str n) { has(locals, n) }
+
+    // ---------------------------------------------------------------- トップレベル
+
+    fn mut Result<ast.Program, diag.Diag> parse_program() {
+        let ast.FnDef[] mut fns = [];
+        let ast.StructDef[] mut structs = [];
+        let ast.EnumDef[] mut enums = [];
+        let ast.InterfaceDef[] mut interfaces = [];
+        let str[] mut uses = [];
+        let i64[] mut use_spans = [];
+        let str[] mut public = [];
+        let str[] mut cnames = [];
+        let ast.Expr[] mut cvals = [];
+        loop {
+            skip_semis();
+            if peek() == "use" {
+                // `use geom;`: 同じフォルダの geom.jw を使う
+                bump();
+                let s = span();
+                let n = expect_ident("モジュールの名前")?;
+                expect(";", "`;`")?;
+                if has(uses, n) {
+                    return Err(diag.error("`use {n}` が二回あります", s, "ここが二回目"));
+                }
+                uses.push(n);
+                use_spans.push(s);
+                continue;
+            }
+            // `pub` は、ほかのファイルから使えるようにする印
+            let is_pub = eat("pub");
+            let k = peek();
+            if k == "const" && is_pub {
+                return Err(diag.error("const に pub はつけられません", span(), "定数はそのファイルの中だけで使えます"));
+            } else if k == "const" {
+                // `const N = 5000;`: 使う場所に値をそのまま書いたのと同じ（数の型は使う場所で決まる）
+                bump();
+                let s = span();
+                let n = expect_ident("定数の名前")?;
+                expect("=", "`=`")?;
+                in_const = true;
+                let r = parse_expr();
+                in_const = false;
+                let v = r?;
+                expect(";", "`;`")?;
+                if has(cnames, n) {
+                    return Err(diag.error("定数 `{n}` が二重に定義されています", s, "ここが二回目"));
+                }
+                cnames.push(n);
+                cvals.push(v);
+            } else if k == "eof" && is_pub {
+                return Err(unexpected("`fn`・`struct`・`enum`・`interface`"));
+            } else if k == "eof" {
+                break;
+            } else if k == "interface" {
+                let i = parse_interface()?;
+                if is_pub { public.push(i.name); }
+                interfaces.push(i);
+            } else if k == "struct" {
+                let ast.FnDef[] mut ms = [];
+                let st = parse_struct(ref mut ms)?;
+                if is_pub { public.push(st.name); }
+                structs.push(st);
+                for m in ms.drain() { fns.push(m); }
+            } else if k == "enum" {
+                let ast.FnDef[] mut ms = [];
+                let e = parse_enum(ref mut ms)?;
+                if is_pub { public.push(e.name); }
+                enums.push(e);
+                for m in ms.drain() { fns.push(m); }
+            } else {
+                let f = parse_fn()?;
+                if is_pub { public.push(f.name); }
+                fns.push(f);
+            }
+        }
+        if !use_consts && cnames.len() > 0 {
+            // 1 回目: 定数の値を決める（Rust 版の resolve_consts と同じ順に調べる）
+            for f in fns {
+                for (i, c) in cnames {
+                    if c == f.name {
+                        let mut d = diag.error("`{c}` は定数の名前です", f.span, "関数に定数と同じ名前はつけられない");
+                        d.labels.insert(0, diag.Label { span: cvals[i].span, text: "ここで定数にした", primary: false });
+                        return Err(d);
+                    }
+                }
+            }
+            let str[] mut before = [];
+            let ast.Expr[] mut resolved = [];
+            for (i, c) in cnames {
+                let str[] mut vn = [];
+                let i64[] mut vs = [];
+                ast.vars_in(cvals[i], ref mut vn, ref mut vs);
+                for (j, n) in vn {
+                    if !has(before, n) {
+                        return Err(diag.error("定数 `{c}` の値に使えない名前 `{n}` があります", vs[j],
+                            "定数の値には、数・文字列・真偽値と、それより前に書いた定数だけが使えます"));
+                    }
+                }
+                let v = subst_const(cvals[i], before, resolved);
+                let bad = not_constant(v);
+                if bad >= 0 {
+                    return Err(diag.error("定数 `{c}` の値が定数ではありません", bad,
+                        "定数の値には、数・文字列・真偽値と、その計算だけが書けます"));
+                }
+                before.push(c);
+                resolved.push(v);
+            }
+            // 2 回目: 使う場所を値にしながら読み直す
+            pos = 0;
+            use_consts = true;
+            const_names = before;
+            const_vals = resolved;
+            borrow_lambdas = [];
+            return parse_program();
+        }
+        Ok(ast.Program {
+            structs: structs, enums: enums, interfaces: interfaces, fns: fns, uses: uses, use_spans: use_spans,
+            public: public, modules: [], consts: cnames, borrow_lambdas: borrow_lambdas.drain(), nodes: 0,
+        })
+    }
+
+    /// `interface Shape { fn i64 area(); fn mut grow(i64 n); }`
+    fn mut Result<ast.InterfaceDef, diag.Diag> parse_interface() {
+        let start = expect("interface", "`interface`")?;
+        let n = expect_ident("interface の名前")?;
+        let s = diag.join(start, prev_span());
+        if peek() == "<" {
+            return Err(diag.error("interface には型の引数をつけられません", span(), "ここ"));
+        }
+        expect("{{", "`{{`")?;
+        let ast.FnDef[] mut methods = [];
+        let bool[] mut muts = [];
+        loop {
+            skip_semis();
+            if eat("}}") { break; }
+            let mspan = span();
+            let fstart = expect("fn", "`fn`（interface にはメソッドの形だけ書けます）")?;
+            let m = eat("mut");
+            let f = parse_fn_rest(fstart, false)?;
+            if f.tparams.len() > 0 {
+                return Err(diag.error("interface のメソッドには型の引数をつけられません", f.span, "ここ"));
+            }
+            for x in methods {
+                if x.name == f.name {
+                    return Err(diag.error("メソッド `{f.name}` が二重に書かれています", mspan, "同じ名前のメソッドがすでにある"));
+                }
+            }
+            methods.push(f);
+            muts.push(m);
+        }
+        Ok(ast.InterfaceDef { name: n, methods: methods, muts: muts, span: s })
+    }
+
+    /// 構造体・enum の中身を 2 回読む（1 回目でメソッドの名前を集め、2 回目に this をつけながら読む）
+    fn mut Result<Items, diag.Diag> items_twice(bool is_enum, str n, ref str[] tparams) {
+        let start = pos;
+        let first = items(is_enum, n, tparams)?;
+        let str[] mut fields = [];
+        for f in first.fields { fields.push(f); }
+        let str[] mut methods = [];
+        for m in first.methods { methods.push(m.name); }
+        let str[] mut statics = [];
+        for m in first.statics { statics.push(m.name); }
+        pos = start;
+        bind_ready = true;
+        this_fields = fields;
+        this_methods = methods;
+        this_statics = statics;
+        owner = n;
+        let r = items(is_enum, n, tparams);
+        bind_ready = false;
+        r
+    }
+
+    fn mut Result<Items, diag.Diag> items(bool is_enum, str n, ref str[] tparams) {
+        let mut it = no_items();
+        loop {
+            skip_semis();
+            if eat("}}") { break; }
+            if peek() == "fn" || peek() == "static" {
+                parse_method(n, tparams, ref mut it)?;
+                continue;
+            }
+            if is_enum {
+                if it.methods.len() > 0 || it.statics.len() > 0 {
+                    return Err(diag.error("種類はメソッドより前に書いてください", span(), "メソッドのあとに種類がある"));
+                }
+                let vspan = span();
+                let vname = expect_ident("種類の名前")?;
+                for v in it.variants {
+                    if v.name == vname {
+                        return Err(diag.error("種類 `{vname}` が二重に定義されています", vspan, "同じ名前の種類がすでにある"));
+                    }
+                }
+                let ast.TypeExpr[] mut types = [];
+                let str[] mut names = [];
+                if eat("(") {
+                    while peek() != ")" {
+                        if peek() == "ident" && (peek2() == "," || peek2() == ")") {
+                            return Err(diag.error_note("中身には型と名前が必要です", span(), "型か名前がない",
+                                "`Circle(i64 r)` のように「型 名前」で書いてください"));
+                        }
+                        let t = parse_type()?;
+                        let fspan = span();
+                        let f = expect_ident("中身の名前")?;
+                        if has(names, f) {
+                            return Err(diag.error("中身の名前 `{f}` が二回あります", fspan, "同じ名前がすでにある"));
+                        }
+                        types.push(t);
+                        names.push(f);
+                        if !eat(",") { break; }
+                    }
+                    expect(")", "`)`")?;
+                }
+                it.variants.push(ast.VariantDef { name: vname, types: types, names: names, span: vspan });
+                if peek() == "," {
+                    return Err(diag.error("構文エラー: 種類の区切りは `;` です", span(), "ここを `;` にしてください"));
+                }
+                if peek() != "}}" {
+                    expect(";", "`;`（種類の終わり）")?;
+                }
+                continue;
+            }
+            if peek() == "ident" && (peek2() == ";" || peek2() == "," || peek2() == "}}") {
+                return Err(diag.error_note("フィールドには型が必要です", span(), "型がない",
+                    "`struct Point {{ i64 x; i64 y; }}` のように「型 名前;」で書いてください"));
+            }
+            let t = parse_type()?;
+            let fspan = span();
+            let f = expect_ident("フィールド名")?;
+            if has(it.fields, f) {
+                return Err(diag.error("フィールド `{f}` が二重に定義されています", fspan, "同じ名前のフィールドがすでにある"));
+            }
+            if it.methods.len() > 0 || it.statics.len() > 0 {
+                return Err(diag.error("フィールドはメソッドより前に書いてください", fspan, "メソッドのあとにフィールドがある"));
+            }
+            it.fields.push(f);
+            it.field_types.push(t);
+            if peek() == "," {
+                return Err(diag.error("構文エラー: フィールドの区切りは `;` です", span(), "ここを `;` にしてください"));
+            }
+            if peek() != "}}" {
+                expect(";", "`;`（フィールドの終わり）")?;
+            }
+        }
+        Ok(it)
+    }
+
+    /// メソッドを `型名.メソッド名` という名前の関数にする（methods → statics の順）
+    fn Result<(), diag.Diag> finish_methods(str n, ref str[] fields, ref str[] taken, ref mut Items it, ref mut ast.FnDef[] out) {
+        for (i, m) in it.methods {
+            if has(fields, m.name) {
+                return Err(diag.error("メソッド `{m.name}` がフィールドと同じ名前です", it.mspans[i], "別の名前にしてください"));
+            }
+            if has(taken, m.name) {
+                return Err(diag.error("メソッド `{m.name}` が種類と同じ名前です", it.mspans[i], "別の名前にしてください"));
+            }
+        }
+        for (i, m) in it.statics {
+            if has(fields, m.name) {
+                return Err(diag.error("メソッド `{m.name}` がフィールドと同じ名前です", it.sspans[i], "別の名前にしてください"));
+            }
+            if has(taken, m.name) {
+                return Err(diag.error("メソッド `{m.name}` が種類と同じ名前です", it.sspans[i], "別の名前にしてください"));
+            }
+        }
+        for m in it.methods.drain() {
+            out.push(m);
+        }
+        for m in it.statics.drain() {
+            out.push(m);
+        }
+        for i in range(out.len()) {
+            out[i].name = n + "." + out[i].name;
+        }
+        Ok(())
+    }
+
+    /// `enum Shape { Circle(i64 r); Rect(i64 w, i64 h); Empty; }`
+    fn mut Result<ast.EnumDef, diag.Diag> parse_enum(ref mut ast.FnDef[] out) {
+        let start = expect("enum", "`enum`")?;
+        let n = expect_ident("enum の名前")?;
+        let s = diag.join(start, prev_span());
+        let tparams = parse_tparams()?;
+        expect("{{", "`{{`")?;
+        let mut it = items_twice(true, n, tparams)?;
+        let str[] mut vnames = [];
+        for v in it.variants { vnames.push(v.name); }
+        let str[] none = [];
+        finish_methods(n, none, vnames, ref mut it, out)?;
+        Ok(ast.EnumDef { name: n, tparams: tparams, variants: it.variants.drain(), span: s })
+    }
+
+    fn mut Result<ast.StructDef, diag.Diag> parse_struct(ref mut ast.FnDef[] out) {
+        let start = expect("struct", "`struct`")?;
+        let n = expect_ident("構造体名")?;
+        let s = diag.join(start, prev_span());
+        let tparams = parse_tparams()?;
+        expect("{{", "`{{`")?;
+        let mut it = items_twice(false, n, tparams)?;
+        let str[] none = [];
+        let str[] mut fields = [];
+        for f in it.fields { fields.push(f); }
+        finish_methods(n, fields, none, ref mut it, out)?;
+        Ok(ast.StructDef { name: n, tparams: tparams, fields: it.fields.drain(), field_types: it.field_types.drain(), span: s })
+    }
+
+    /// 構造体・enum の中の `fn` / `fn mut` / `static fn` 1 つ。`this`（`ref 型名<T..>`）を最初の引数に足す
+    fn mut Result<(), diag.Diag> parse_method(str n, ref str[] tparams, ref mut Items it) {
+        let mspan = span();
+        let is_static = eat("static");
+        let start = expect("fn", "`fn`")?;
+        let m = !is_static && eat("mut");
+        // `fn take`: this を値で受け取る。`fn take(...)` は take という名前のメソッド
+        let take = !is_static && !m && peek() == "ident" && text() == "take" && peek2() != "(";
+        if take { bump(); }
+        // 静的メソッドの中にはフィールドも this もない（静的メソッドは型名なしで呼べる）
+        let saved_fields = this_fields.drain();
+        let saved_methods = this_methods.drain();
+        if !is_static {
+            for x in saved_fields { this_fields.push(x); }
+            for x in saved_methods { this_methods.push(x); }
+        }
+        in_method = bind_ready;
+        let r = parse_fn_rest(start, true);
+        this_fields = saved_fields;
+        this_methods = saved_methods;
+        in_method = false;
+        let mut f = r?;
+        for x in it.methods {
+            if x.name == f.name {
+                return Err(diag.error("メソッド `{f.name}` が二重に定義されています", mspan, "同じ名前のメソッドがすでにある"));
+            }
+        }
+        for x in it.statics {
+            if x.name == f.name {
+                return Err(diag.error("メソッド `{f.name}` が二重に定義されています", mspan, "同じ名前のメソッドがすでにある"));
+            }
+        }
+        for t in f.tparams {
+            if has(tparams, t) {
+                return Err(diag.error("型の引数 `{t}` は型のものと同じ名前です", f.span, "別の名前にしてください"));
+            }
+        }
+        let str[] mut tps = [];
+        let str[] mut bounds = [];
+        for t in tparams {
+            tps.push(t);
+            bounds.push("");
+        }
+        for t in f.tparams { tps.push(t); }
+        for b in f.bounds { bounds.push(b); }
+        f.tparams = tps;
+        f.bounds = bounds;
+        if is_static {
+            it.statics.push(f);
+            it.sspans.push(mspan);
+            return Ok(());
+        }
+        // `this` は `ref 型`（`fn mut` なら `ref mut 型`）の引数
+        let sty = if tparams.len() == 0 {
+            ast.ty_name(n, f.span)
+        } else {
+            let ast.TypeExpr[] mut targs = [];
+            for t in tparams { targs.push(ast.ty_name(t, f.span)); }
+            ast.TypeExpr { kind: ast.TypeKind.App(n, own targs), span: f.span }
+        };
+        let this_ty = if take { sty } else { ast.TypeExpr { kind: ast.TypeKind.Ref(own sty, m), span: f.span } };
+        f.params.insert(0, ast.Param { ty: this_ty, name: "this", m: false, span: f.span });
+        it.methods.push(f);
+        it.mspans.push(mspan);
+        Ok(())
+    }
+
+    fn mut Result<ast.FnDef, diag.Diag> parse_fn() {
+        let start = expect("fn", "`fn` か `struct`（トップレベルには関数と構造体の定義だけ書けます）")?;
+        parse_fn_rest(start, true)
+    }
+
+    /// `fn` のあと（関数とメソッドで共通）。`with_body` が false なら本体の代わりに `;`（interface のメソッド）
+    fn mut Result<ast.FnDef, diag.Diag> parse_fn_rest(i64 start, bool with_body) {
+        // `fn 名前(` / `fn 名前<T>(` なら戻り値なし、`fn 型 名前(` なら戻り値あり
+        let has_ret = !at_fn_name();
+        let ret = if has_ret { parse_type()? } else { ast.no_type() };
+        let n = expect_ident("関数名")?;
+        let mut tb = parse_tparams_bounded()?;
+        expect("(", "`(`")?;
+        let ast.Param[] mut params = [];
+        while peek() != ")" {
+            if peek() == "mut" || (peek() == "ident" && (peek2() == "," || peek2() == ")")) {
+                return Err(diag.error_note("引数には型が必要です", span(), "型がない",
+                    "`fn f(i64 a, ref mut Point p)` のように「型 名前」で書いてください"));
+            }
+            let t = parse_type()?;
+            let m = eat("mut");
+            let s = span();
+            let pn = expect_ident("引数名")?;
+            params.push(ast.Param { ty: t, name: pn, m: m, span: s });
+            if peek() == "," {
+                bump();
+            } else {
+                break;
+            }
+        }
+        expect(")", "`)`")?;
+        let header = diag.join(start, prev_span());
+        let body = if with_body {
+            if in_method {
+                let str[] mut ls = [];
+                for p in params { ls.push(p.name); }
+                locals = ls;
+                marks = [];
+            }
+            parse_block()?
+        } else {
+            let end = expect(";", "`;`（interface のメソッドには本体を書きません）")?;
+            ast.Block { stmts: [], tail: false, end: end }
+        };
+        Ok(ast.FnDef {
+            name: n, tparams: tb.names.drain(), bounds: tb.bounds.drain(), has_ret: has_ret, ret: ret, params: params, body: body, span: header,
+        })
+    }
+
+    /// 今の位置の `(` が、その場で作る関数 `(a, b) -> ...` の始まりか（対応する `)` の次が `->`）
+    fn bool at_lambda() {
+        let mut depth = 0;
+        let mut i = pos;
+        while i < toks.len() {
+            let k = toks[i].kind;
+            if k == "(" {
+                depth += 1;
+            } else if k == ")" {
+                depth -= 1;
+                if depth == 0 {
+                    return i + 1 < toks.len() && toks[i + 1].kind == "->";
+                }
+            } else if k == "eof" || k == "{{" || k == ";" {
+                return false;
+            }
+            i += 1;
+        }
+        false
+    }
+
+    /// `(a, b) -> 式` / `(i64 a) -> { ... }`
+    fn mut Result<ast.Expr, diag.Diag> parse_lambda() {
+        let start = expect("(", "`(`")?;
+        let ast.LambdaParam[] mut params = [];
+        while peek() != ")" {
+            // 名前だけ（`a`）か、型つき（`i64 a`）
+            let has_ty = !(peek() == "ident" && (peek2() == "," || peek2() == ")"));
+            let t = if has_ty { parse_type()? } else { ast.no_type() };
+            let s = span();
+            let pn = expect_ident("引数名")?;
+            params.push(ast.LambdaParam { has_ty: has_ty, ty: t, name: pn, span: s });
+            if !eat(",") { break; }
+        }
+        expect(")", "`)`")?;
+        expect("->", "`->`")?;
+        let saved_depth = loop_depth;
+        let saved_value = in_value_if;
+        loop_depth = 0;
+        in_value_if = false;
+        push_scope();
+        for p in params { declare(p.name); }
+        let r = if peek() == "{{" {
+            parse_block()
+        } else {
+            match expr_lit() {
+                case Ok(e) -> {
+                    let end = e.span;
+                    Ok(ast.Block { stmts: [ast.Stmt.Ex(own e)], tail: true, end: end })
+                }
+                case Err(d) -> Err(d);
+            }
+        };
+        pop_scope();
+        loop_depth = saved_depth;
+        in_value_if = saved_value;
+        let body = r?;
+        let s = diag.join(start, body.end);
+        Ok(ast.mk(ast.ExprKind.Lambda(own ast.Lambda { params: params, body: body }), s))
+    }
+
+    /// 今の位置が関数名か（`名前(` か `名前<...>(`）。そうでなければ戻り値の型
+    fn bool at_fn_name() {
+        if peek() != "ident" { return false; }
+        let k2 = peek2();
+        if k2 == "(" { return true; }
+        if k2 != "<" { return false; }
+        // 対応する `>` の次が `(` なら `名前<T>(`、そうでなければ `Option<i64> 名前(`
+        let mut depth = 0;
+        let mut i = pos + 1;
+        while i < toks.len() {
+            let k = toks[i].kind;
+            if k == "<" {
+                depth += 1;
+            } else if k == ">" {
+                depth -= 1;
+            } else if depth == 0 {
+                return k == "(";
+            }
+            i += 1;
+        }
+        false
+    }
+
+    /// 構造体・enum の型の引数（条件はつけられない）
+    fn mut Result<str[], diag.Diag> parse_tparams() {
+        let s = span();
+        let mut tb = parse_tparams_bounded()?;
+        for b in tb.bounds {
+            if b != "" {
+                return Err(diag.error("構造体と enum の型の引数には条件をつけられません", s, "`<T: ...>` の条件は関数とメソッドにだけ書けます"));
+            }
+        }
+        Ok(tb.names.drain())
+    }
+
+    /// `<T, U: Shape + ordered>`。型の引数の名前と、それぞれの条件
+    fn mut Result<TParams, diag.Diag> parse_tparams_bounded() {
+        let str[] mut ps = [];
+        let str[] mut bounds = [];
+        if !eat("<") {
+            return Ok(TParams { names: ps, bounds: bounds });
+        }
+        loop {
+            let s = span();
+            let p = expect_ident("型の引数の名前")?;
+            if has(ps, p) {
+                return Err(diag.error("型の引数 `{p}` が二回あります", s, "ここ"));
+            }
+            ps.push(p);
+            let str[] mut bs = [];
+            if eat(":") {
+                loop {
+                    bs.push(expect_ident("条件（interface の名前か ordered）")?);
+                    if !eat("+") { break; }
+                }
+            }
+            bounds.push(bs.join(" + "));
+            if !eat(",") { break; }
+        }
+        expect(">", "`>`")?;
+        Ok(TParams { names: ps, bounds: bounds })
+    }
+
+    // ---------------------------------------------------------------- 文
+
+    /// `{ 文; 文; 式 }`
+    fn mut Result<ast.Block, diag.Diag> parse_block() {
+        if nest >= MAX_NEST { return Err(too_deep()); }
+        nest += 1;
+        let r = parse_block_in();
+        nest -= 1;
+        r
+    }
+
+    fn mut Result<ast.Block, diag.Diag> parse_block_in() {
+        expect("{{", "`{{`")?;
+        push_scope();
+        let r = block_rest();
+        pop_scope();
+        r
+    }
+
+    fn mut Result<ast.Block, diag.Diag> block_rest() {
+        let ast.Stmt[] mut stmts = [];
+        let mut tail = false;
+        loop {
+            skip_semis();
+            let k = peek();
+            if k == "}}" {
+                let end = bump();
+                return Ok(ast.Block { stmts: stmts, tail: tail, end: end });
+            }
+            if k == "eof" {
+                return Err(diag.error("構文エラー: `}}` が閉じていません", span(), "ファイルがここで終わっています"));
+            }
+            let st = parse_stmt()?;
+            let block_like = is_block_like(st);
+            let is_expr = is_expr_stmt(st);
+            let end_of_stmt = prev_span();
+            stmts.push(st);
+            tail = false;
+            let n = peek();
+            if n == ";" {
+                bump();
+            } else if n == "}}" && is_expr {
+                tail = true;
+            } else if block_like {
+            } else if n == "}}" {
+                return Err(diag.error_note("構文エラー: 文の終わりに `;` が必要です", end_of_stmt, "この後ろに `;` を書いてください",
+                    "ブロックの最後に `;` なしで書けるのは、値になる式だけです"));
+            } else {
+                return Err(diag.error("構文エラー: 文の終わりに `;` が必要です", end_of_stmt, "この後ろに `;` を書いてください"));
+            }
+        }
+    }
+
+    fn mut Result<ast.Stmt, diag.Diag> parse_stmt() {
+        let k = peek();
+        if k == "let" {
+            bump();
+            // `let 型 mut 名前 = 式`。すぐ後ろに `=` が来る名前が変数名で、その手前が型
+            let named_now = peek() == "mut" || (peek() == "ident" && peek2() == "=");
+            let t = if named_now { ast.no_type() } else { parse_type()? };
+            let m = eat("mut");
+            let s = span();
+            let n = expect_ident("変数名")?;
+            expect("=", "`=`")?;
+            let init = parse_expr()?;
+            declare(n);
+            return Ok(ast.Stmt.Let(n, !named_now, own t, m, s, own init));
+        }
+        if k == "if" { return Ok(ast.Stmt.Ex(own parse_if(false)?)); }
+        if k == "match" { return Ok(ast.Stmt.Ex(own parse_match(false)?)); }
+        if k == "while" {
+            bump();
+            let c = parse_cond()?;
+            let b = parse_loop_body()?;
+            return Ok(ast.Stmt.While(own c, own b));
+        }
+        if k == "loop" {
+            bump();
+            let b = parse_loop_body()?;
+            return Ok(ast.Stmt.Loop(own b));
+        }
+        if k == "for" { return parse_for(); }
+        if k == "break" || k == "continue" {
+            let s = bump();
+            if loop_depth == 0 {
+                if in_value_if {
+                    return Err(diag.error_note("値として使う if / match の中から、外のループへ {k} できません", s, "ここ",
+                        "文として使うか、ループの中で値を決めてから使ってください"));
+                }
+                return Err(diag.error("ループの外では {k} は使えません", s, "囲んでいる loop / while / for がない"));
+            }
+            if k == "break" { return Ok(ast.Stmt.Break(s)); }
+            return Ok(ast.Stmt.Continue(s));
+        }
+        if k == "return" {
+            // 値として使う if / match の中でも return できる
+            let start = bump();
+            let n = peek();
+            let has_value = !(n == ";" || n == "}}" || n == "eof");
+            let v = if has_value { parse_expr()? } else { ast.no_expr() };
+            let s = diag.join(start, prev_span());
+            return Ok(ast.Stmt.Return(has_value, own v, s));
+        }
+        let e = parse_expr()?;
+        let op = peek();
+        let bop = if op == "+=" || op == "++" { "+" }
+            else if op == "-=" || op == "--" { "-" }
+            else if op == "*=" { "*" }
+            else if op == "/=" { "/" }
+            else if op == "%=" { "%" }
+            else if op == "=" { "=" }
+            else { "" };
+        if bop == "" {
+            return Ok(ast.Stmt.Ex(own e));
+        }
+        let target_ok = match ref e.kind {
+            case Var(n) -> true;
+            case Deref(x) -> true;
+            case Field(x, n) -> true;
+            case Index(b, i) -> true;
+            default -> false;
+        };
+        if !target_ok && !use_consts {
+            return Err(diag.error("構文エラー: ここには代入できません", e.span, "代入先は変数名か `*p` か `p.f` か `a[i]` だけです"));
+        }
+        let ts = bump();
+        // `x += e` は `x = x + e`、`x++` は `x = x + 1` として扱う（文としてだけ書ける）
+        let rhs = if op == "++" || op == "--" { ast.mk(ast.ExprKind.Int(1), ts) } else { parse_expr()? };
+        let s = diag.join(e.span, prev_span());
+        let v = if bop == "=" { rhs } else { ast.mk(ast.ExprKind.Binary(bop, own ast.clone_expr(e), own rhs), s) };
+        Ok(ast.Stmt.Assign(own e, own v, s))
+    }
+
+    /// `if`。`as_value` なら値として使う位置なので else が必須で、中から外への break / continue はできない
+    fn mut Result<ast.Expr, diag.Diag> parse_if(bool as_value) {
+        let start = expect("if", "`if`")?;
+        let saved_depth = loop_depth;
+        let saved_value = in_value_if;
+        if as_value {
+            loop_depth = 0;
+            in_value_if = true;
+        }
+        let r = parse_if_rest(as_value, start);
+        loop_depth = saved_depth;
+        in_value_if = saved_value;
+        r
+    }
+
+    fn mut Result<ast.Expr, diag.Diag> parse_match(bool as_value) {
+        let start = expect("match", "`match`")?;
+        let sc = parse_cond()?;
+        let saved_depth = loop_depth;
+        let saved_value = in_value_if;
+        if as_value {
+            loop_depth = 0;
+            in_value_if = true;
+        }
+        let r = parse_match_rest(as_value, start, sc);
+        loop_depth = saved_depth;
+        in_value_if = saved_value;
+        r
+    }
+
+    fn mut Result<ast.Expr, diag.Diag> parse_match_rest(bool as_value, i64 start, ast.Expr sc) {
+        expect("{{", "`{{`")?;
+        let ast.MatchArm[] mut arms = [];
+        let mut has_default = false;
+        let mut dflt = ast.no_block();
+        loop {
+            skip_semis();
+            let k = peek();
+            if k == "}}" {
+                bump();
+                break;
+            } else if k == "case" {
+                bump();
+                let ast.Pat[] mut pats = [];
+                let i64[] mut spans = [];
+                loop {
+                    let pstart = span();
+                    let p = parse_pat()?;
+                    let ps = diag.join(pstart, prev_span());
+                    for a in arms {
+                        for (i, q) in a.pats {
+                            if same_case(q, p) {
+                                let mut d = diag.error("同じ値の case が二回あります", ps, "ここは決して選ばれない");
+                                d.labels.insert(0, diag.Label { span: a.spans[i], text: "最初はここ", primary: false });
+                                return Err(d);
+                            }
+                        }
+                    }
+                    for (i, q) in pats {
+                        if same_case(q, p) {
+                            let mut d = diag.error("同じ値の case が二回あります", ps, "ここは決して選ばれない");
+                            d.labels.insert(0, diag.Label { span: spans[i], text: "最初はここ", primary: false });
+                            return Err(d);
+                        }
+                    }
+                    pats.push(p);
+                    spans.push(ps);
+                    if peek() != "," { break; }
+                    bump();
+                }
+                push_scope();
+                for p in pats { declare_pat(p); }
+                let r = parse_arm_body(as_value);
+                pop_scope();
+                let body = r?;
+                arms.push(ast.MatchArm { pats: pats, spans: spans, body: body });
+            } else if k == "default" {
+                let s = bump();
+                if has_default {
+                    return Err(diag.error("default が二回あります", s, "ここが二回目"));
+                }
+                dflt = parse_arm_body(as_value)?;
+                has_default = true;
+            } else {
+                return Err(unexpected("`case` か `default` か `}}`"));
+            }
+        }
+        // enum の場合は、全部の種類を書いたかを型検査が調べる
+        let mut has_variants = false;
+        let mut has_true = false;
+        let mut has_false = false;
+        for a in arms {
+            for p in a.pats {
+                if is_variant_pat(p) { has_variants = true; }
+                match ref p {
+                    case Bool(b) -> {
+                        if b { has_true = true; } else { has_false = true; }
+                    }
+                    default -> {}
+                }
+            }
+        }
+        if as_value && !has_default && !(has_true && has_false) && !has_variants {
+            return Err(diag.error_note("値として使う match には default が必要です", diag.join(start, sc.span),
+                "どの case にも当てはまらないときの値がない", "`default -> 値` を足してください"));
+        }
+        Ok(ast.mk(ast.ExprKind.Match(own sc, own arms, has_default, own dflt), start))
+    }
+
+    /// case で受け取る名前をスコープに入れる（重ねた形の中も。`_` は除く）
+    fn mut declare_pat(ref ast.Pat p) {
+        match ref p {
+            case Variant(n, binds, spans, has_sub, subs) -> {
+                for (i, b) in binds {
+                    if has_sub[i] {
+                        declare_pat(subs[i]);
+                    } else if b != "_" {
+                        declare(b);
+                    }
+                }
+            }
+            default -> {}
+        }
+    }
+
+    /// `case` に書く値
+    fn mut Result<ast.Pat, diag.Diag> parse_pat() {
+        if nest >= MAX_NEST { return Err(too_deep()); }
+        nest += 1;
+        let r = parse_pat_in();
+        nest -= 1;
+        r
+    }
+
+    fn mut Result<ast.Pat, diag.Diag> parse_pat_in() {
+        let start = span();
+        let k = peek();
+        if k == "int" {
+            let n = toks[pos].num;
+            bump();
+            return Ok(ast.Pat.Int(false, n));
+        }
+        if k == "str" {
+            let s = text();
+            bump();
+            return Ok(ast.Pat.Str(s));
+        }
+        if k == "true" {
+            bump();
+            return Ok(ast.Pat.Bool(true));
+        }
+        if k == "false" {
+            bump();
+            return Ok(ast.Pat.Bool(false));
+        }
+        if k == "ident" {
+            // `Circle(r, _)` / `Empty` / `Some(x)` / `None`
+            let n = text();
+            bump();
+            let str[] mut binds = [];
+            let i64[] mut spans = [];
+            let bool[] mut has_sub = [];
+            let ast.Pat[] mut subs = [];
+            if eat("(") {
+                while peek() != ")" {
+                    let sp = span();
+                    // 中身の位置: 名前（小文字で始まる）か `_` なら受け取る名前。
+                    // 大文字で始まる名前・`名前(...)`・数や文字列なら、重ねた形
+                    let nested = if peek() == "ident" {
+                        let c = text().code();
+                        peek2() == "(" || (c >= 65 && c <= 90)
+                    } else {
+                        true
+                    };
+                    if nested {
+                        let pstart = span();
+                        let q = parse_pat()?;
+                        binds.push("_");
+                        spans.push(diag.join(pstart, prev_span()));
+                        has_sub.push(true);
+                        subs.push(q);
+                    } else {
+                        binds.push(expect_ident("中身を受け取る名前")?);
+                        spans.push(sp);
+                        has_sub.push(false);
+                        subs.push(ast.Pat.Bool(false));
+                    }
+                    if !eat(",") { break; }
+                }
+                expect(")", "`)`")?;
+            }
+            return Ok(ast.Pat.Variant(n, own binds, own spans, own has_sub, own subs));
+        }
+        if k == "-" {
+            bump();
+            if peek() == "int" {
+                let n = toks[pos].num;
+                bump();
+                return Ok(ast.Pat.Int(n != 0, n));
+            }
+            return Err(unexpected("整数"));
+        }
+        Err(diag.error("case に書けるのは、今のところ整数・真偽値・文字列の値と enum の種類だけです", start,
+            "ここに {describe(toks[pos])} があります"))
+    }
+
+    /// `-> 式;`、`-> 文;`、`-> { ... }`。どれもブロックにそろえる
+    fn mut Result<ast.Block, diag.Diag> parse_arm_body(bool as_value) {
+        expect("->", "`->`")?;
+        if peek() == "{{" {
+            return parse_value_block(as_value);
+        }
+        let st = parse_stmt()?;
+        let end = prev_span();
+        let is_expr = is_expr_stmt(st);
+        if !is_block_like(st) {
+            expect(";", "`;`（case の終わり）")?;
+        }
+        // `case None -> return 0;` は値が要らない（そこで関数を抜ける）
+        if as_value && !is_expr && !is_return(st) {
+            return Err(diag.error_note("値として使う match の case に値がありません", end, "ここは値ではなく文",
+                "`case 1 -> 値;` のように書いてください"));
+        }
+        Ok(ast.Block { stmts: [st], tail: is_expr, end: end })
+    }
+
+    fn mut Result<ast.Expr, diag.Diag> parse_if_rest(bool as_value, i64 start) {
+        let c = parse_cond()?;
+        let then = parse_value_block(as_value)?;
+        // `}` の次の行に else がある書き方も許す
+        let mut has_els = false;
+        let mut els = ast.no_block();
+        if peek() == "else" {
+            bump();
+            if peek() == "if" {
+                let nested = parse_if(as_value)?;
+                let end = prev_span();
+                els = ast.Block { stmts: [ast.Stmt.Ex(own nested)], tail: true, end: end };
+            } else {
+                els = parse_value_block(as_value)?;
+            }
+            has_els = true;
+        } else if as_value {
+            return Err(diag.error_note("値として使う if には else が必要です", diag.join(start, c.span),
+                "条件が false のときの値がない", "`if 条件 {{ 値 }} else {{ 値 }}` のように書いてください"));
+        }
+        Ok(ast.mk(ast.ExprKind.If(own c, own then, has_els, own els), start))
+    }
+
+    /// 値として使う if / match のブロック。最後に `;` のない式（値）が必要
+    fn mut Result<ast.Block, diag.Diag> parse_value_block(bool as_value) {
+        let b = parse_block()?;
+        // 最後が return なら値は要らない（そこで関数を抜ける）
+        let n = b.stmts.len();
+        let returns = n > 0 && is_return(b.stmts[n - 1]);
+        if as_value && !b.tail && !returns {
+            return Err(diag.error_note("値として使うブロックの最後に値がありません", b.end, "このブロックの値が決まらない",
+                "最後の式の `;` を外すと、それがブロックの値になります"));
+        }
+        Ok(b)
+    }
+
+    fn mut Result<ast.Block, diag.Diag> parse_loop_body() {
+        loop_depth += 1;
+        let r = parse_block();
+        loop_depth -= 1;
+        r
+    }
+
+    /// `for i in range(...) { ... } else { ... }` / `for x in a` / `for (k, v) in m`
+    fn mut Result<ast.Stmt, diag.Diag> parse_for() {
+        expect("for", "`for`")?;
+        let has_key = eat("(");
+        let mut key = "";
+        let mut key_span = 0;
+        if has_key {
+            key_span = span();
+            key = expect_ident("ループ変数の名前")?;
+            expect(",", "`,`")?;
+        }
+        let var_span = span();
+        let var = expect_ident("ループ変数の名前")?;
+        if has_key {
+            expect(")", "`)`")?;
+        }
+        expect("in", "`in`")?;
+        let is_range = peek() == "ident" && text() == "range" && peek2() == "(";
+        if is_range && has_key {
+            return Err(diag.error("range の for では名前を 1 つだけ書きます", var_span, "`for (i, x) in a` は配列・リスト・辞書を回すときの書き方"));
+        }
+        if !is_range {
+            let iter = parse_cond()?;
+            push_scope();
+            if has_key { declare(key); }
+            declare(var);
+            let r = parse_loop_body();
+            pop_scope();
+            let body = r?;
+            let has_els = eat("else");
+            let els = if has_els { parse_block()? } else { ast.no_block() };
+            return Ok(ast.Stmt.ForEach(has_key, key, key_span, var, var_span, own iter, own body, has_els, own els));
+        }
+        raw_call = true;
+        let call = parse_postfix()?;
+        let call_span = call.span;
+        let mut range_args = ast.no_expr();
+        let mut n = -1;
+        match ref call.kind {
+            case Call(cn, xs) -> {
+                n = xs.len();
+            }
+            default -> {}
+        }
+        if n < 0 {
+            return Err(unexpected("`(`"));
+        }
+        let ast.Expr[] mut range = [];
+        match ref call.kind {
+            case Call(cn, xs) -> {
+                for x in xs { range.push(ast.clone_expr(x)); }
+            }
+            default -> {}
+        }
+        if n == 0 || n > 3 {
+            return Err(diag.error_note("range の引数は 1〜3 個です", call_span, "{n} 個渡されました",
+                "range(終わり) / range(始め, 終わり) / range(始め, 終わり, 刻み)"));
+        }
+        push_scope();
+        declare(var);
+        let r = parse_loop_body();
+        pop_scope();
+        let body = r?;
+        let has_els = eat("else");
+        let els = if has_els { parse_block()? } else { ast.no_block() };
+        Ok(ast.Stmt.For(var, own range, call_span, own body, has_els, own els))
+    }
+
+    // ---------------------------------------------------------------- 型
+
+    /// 型: `i64`、`Player`、`own T`、`ref T`、`ref mut T`、`fn R(A)`、`(T)`、`T[3]`、`T[]`、`V[K]`
+    fn mut Result<ast.TypeExpr, diag.Diag> parse_type() {
+        if nest >= MAX_NEST { return Err(too_deep()); }
+        nest += 1;
+        let r = parse_type_in();
+        nest -= 1;
+        r
+    }
+
+    fn mut Result<ast.TypeExpr, diag.Diag> parse_type_in() {
+        let start = span();
+        let k = peek();
+        let mut t = ast.no_type();
+        if k == "own" {
+            bump();
+            let inner = parse_type()?;
+            t = ast.TypeExpr { kind: ast.TypeKind.Own(own inner), span: 0 };
+        } else if k == "ref" {
+            bump();
+            let m = eat("mut");
+            let inner = parse_type()?;
+            t = ast.TypeExpr { kind: ast.TypeKind.Ref(own inner, m), span: 0 };
+        } else if k == "ident" {
+            let n = text();
+            bump();
+            if eat("<") {
+                let ast.TypeExpr[] mut targs = [];
+                loop {
+                    targs.push(parse_type()?);
+                    if !eat(",") { break; }
+                }
+                expect(">", "`>`")?;
+                t = ast.TypeExpr { kind: ast.TypeKind.App(n, own targs), span: 0 };
+            } else {
+                t = ast.ty_name(n, 0);
+            }
+        } else if k == "fn" {
+            // `fn bool(i64, i64)`: 関数の型。`(` がすぐ来れば戻り値なし
+            bump();
+            let has_ret = peek() != "(";
+            let ret = if has_ret { parse_type()? } else { ast.no_type() };
+            expect("(", "`(`")?;
+            let ast.TypeExpr[] mut ps = [];
+            while peek() != ")" {
+                ps.push(parse_type()?);
+                if !eat(",") { break; }
+            }
+            expect(")", "`)`")?;
+            t = ast.TypeExpr { kind: ast.TypeKind.Fn(own ps, has_ret, own ret), span: 0 };
+        } else if k == "(" {
+            // `(own i64)[]`: かっこでまとめる
+            bump();
+            if eat(")") {
+                t = ast.ty_name("()", 0);
+            } else {
+                t = parse_type()?;
+                expect(")", "`)`")?;
+            }
+        } else {
+            return Err(unexpected("型"));
+        }
+        t.span = diag.join(start, prev_span());
+        // `i64[3]`、`i64[]`（リスト）、`i64[str]`（辞書）
+        while eat("[") {
+            if eat("]") {
+                t = ast.TypeExpr { kind: ast.TypeKind.List(own t), span: 0 };
+            } else if peek() == "ident" {
+                let key = parse_type()?;
+                expect("]", "`]`")?;
+                t = ast.TypeExpr { kind: ast.TypeKind.Map(own t, own key), span: 0 };
+            } else {
+                let n = array_len()?;
+                expect("]", "`]`")?;
+                t = ast.TypeExpr { kind: ast.TypeKind.Array(own t, n), span: 0 };
+            }
+            t.span = diag.join(start, prev_span());
+        }
+        Ok(t)
+    }
+
+    /// 配列の長さ（そのまま書いた数）
+    fn mut Result<u64, diag.Diag> array_len() {
+        if peek() == "int" {
+            let n = toks[pos].num;
+            bump();
+            Ok(n)
+        } else {
+            Err(unexpected("配列の長さ（数）"))
+        }
+    }
+
+    // ---------------------------------------------------------------- 式
+
+    fn mut Result<ast.Expr, diag.Diag> parse_expr() {
+        parse_binary(1)
+    }
+
+    /// 構造体リテラルを書ける位置の式
+    fn mut Result<ast.Expr, diag.Diag> expr_lit() {
+        let saved = no_struct_lit;
+        no_struct_lit = false;
+        let r = parse_expr();
+        no_struct_lit = saved;
+        r
+    }
+
+    /// `if` / `while` の条件。ここでは構造体リテラルを書けない
+    fn mut Result<ast.Expr, diag.Diag> parse_cond() {
+        let saved = no_struct_lit;
+        no_struct_lit = true;
+        let r = parse_expr();
+        no_struct_lit = saved;
+        r
+    }
+
+    fn mut Result<ast.Expr, diag.Diag> parse_binary(i64 min_prec) {
+        let base = nest;
+        let mut lhs = parse_cast()?;
+        loop {
+            // `>>` は `>` 2 つ（すき間なく並んだときだけ）
+            let mut shr = false;
+            if peek() == ">" && peek2() == ">" {
+                let a = toks[pos].span;
+                let b = if pos + 1 < toks.len() { toks[pos + 1].span } else { toks[toks.len() - 1].span };
+                shr = diag.line_of(a) == diag.line_of(b) && diag.col_of(a) + 1 == diag.col_of(b);
+            }
+            let op = if shr { ">>" } else { peek() };
+            let prec = if shr { 8 } else { binop_prec(op) };
+            if prec == 0 || prec < min_prec { break; }
+            deeper()?;
+            bump();
+            if shr { bump(); }
+            let rhs = parse_binary(prec + 1)?;
+            let s = diag.join(lhs.span, rhs.span);
+            lhs = ast.mk(ast.ExprKind.Binary(op, own lhs, own rhs), s);
+        }
+        nest = base;
+        Ok(lhs)
+    }
+
+    /// `e as T`。前置演算子より弱く、`*` や `+` より強い
+    fn mut Result<ast.Expr, diag.Diag> parse_cast() {
+        let base = nest;
+        let mut e = parse_unary()?;
+        while peek() == "as" {
+            deeper()?;
+            bump();
+            let t = parse_type()?;
+            let s = diag.join(e.span, t.span);
+            e = ast.mk(ast.ExprKind.Cast(own e, own t), s);
+        }
+        nest = base;
+        Ok(e)
+    }
+
+    fn mut Result<ast.Expr, diag.Diag> parse_unary() {
+        if nest >= MAX_NEST { return Err(too_deep()); }
+        nest += 1;
+        let r = parse_unary_in();
+        nest -= 1;
+        r
+    }
+
+    fn mut Result<ast.Expr, diag.Diag> parse_unary_in() {
+        let k = peek();
+        if k == "-" || k == "!" || k == "~" {
+            let start = bump();
+            let e = parse_unary()?;
+            let s = diag.join(start, e.span);
+            return Ok(ast.mk(ast.ExprKind.Unary(k, own e), s));
+        }
+        if k == "*" {
+            let start = bump();
+            let e = parse_unary()?;
+            let s = diag.join(start, e.span);
+            return Ok(ast.mk(ast.ExprKind.Deref(own e), s));
+        }
+        if k == "ref" {
+            let start = bump();
+            let m = eat("mut");
+            let e = parse_unary()?;
+            let s = diag.join(start, e.span);
+            return Ok(ast.mk(ast.ExprKind.Ref(own e, m), s));
+        }
+        if k == "own" {
+            let start = bump();
+            let e = parse_expr()?;
+            let s = diag.join(start, e.span);
+            return Ok(ast.mk(ast.ExprKind.Own(own e), s));
+        }
+        parse_postfix()
+    }
+
+    /// `.f`・`.m(...)`・`[i]`・`?`
+    fn mut Result<ast.Expr, diag.Diag> parse_postfix() {
+        let base = nest;
+        let mut e = parse_primary()?;
+        loop {
+            let k = peek();
+            if k == "?" || k == "[" || k == "." { deeper()?; }
+            if eat("?") {
+                let s = diag.join(e.span, toks[pos - 1].span);
+                e = ast.mk(ast.ExprKind.Try(own e), s);
+                continue;
+            }
+            if peek() == "[" {
+                bump();
+                let idx = expr_lit()?;
+                let end = expect("]", "`]`")?;
+                let s = diag.join(e.span, end);
+                e = ast.mk(ast.ExprKind.Index(own e, own idx), s);
+                continue;
+            }
+            if peek() != "." { break; }
+            bump();
+            let fspan = span();
+            let n = expect_ident("フィールド名")?;
+            if peek() == "(" {
+                // `e.name(...)` はメソッド呼び出し
+                let xs = parse_args(true)?;
+                let s = diag.join(e.span, prev_span());
+                e = ast.mk(ast.ExprKind.MethodCall(own e, n, own xs), s);
+                continue;
+            }
+            let s = diag.join(e.span, fspan);
+            e = ast.mk(ast.ExprKind.Field(own e, n), s);
+        }
+        nest = base;
+        Ok(e)
+    }
+
+    /// `( 式, 式 )`。`borrow` なら、引数にその場で書いたクロージャを記録する（ムーブする外の変数を借りて取り込む）
+    fn mut Result<ast.Expr[], diag.Diag> parse_args(bool borrow) {
+        expect("(", "`(`")?;
+        let ast.Expr[] mut xs = [];
+        while peek() != ")" {
+            let a = expr_lit()?;
+            if borrow {
+                match ref a.kind {
+                    case Lambda(l) -> borrow_lambdas.push(a.span);
+                    default -> {}
+                }
+            }
+            xs.push(a);
+            if !eat(",") { break; }
+        }
+        expect(")", "`)`")?;
+        Ok(xs)
+    }
+
+    /// 名前の式。メソッドの中のフィールド名は this.名前、定数は値
+    fn ast.Expr var_expr(str n, i64 s) {
+        if in_method && has(this_fields, n) && !is_local(n) {
+            return ast.mk(ast.ExprKind.Field(own ast.mk(ast.ExprKind.Var("this"), s), n), s);
+        }
+        if use_consts && !in_const {
+            for (i, c) in const_names {
+                if c == n {
+                    let mut v = ast.clone_expr(const_vals[i]);
+                    v.span = s;
+                    return v;
+                }
+            }
+        }
+        ast.mk(ast.ExprKind.Var(n), s)
+    }
+
+    /// 呼び出しの式。メソッドの中の静的メソッドは `型名.名前`、メソッドは this.名前(...)
+    fn mut ast.Expr call_expr(str n, ast.Expr[] xs, i64 s) {
+        let raw = raw_call;
+        raw_call = false;
+        if in_method && !raw {
+            if has(this_statics, n) {
+                return ast.mk(ast.ExprKind.Call(owner + "." + n, own xs), s);
+            }
+            if has(this_methods, n) {
+                return ast.mk(ast.ExprKind.MethodCall(own ast.mk(ast.ExprKind.Var("this"), s), n, own xs), s);
+            }
+        }
+        ast.mk(ast.ExprKind.Call(n, own xs), s)
+    }
+
+    fn ast.Expr variant(str en, str vn, ast.Expr[] xs, i64 s) {
+        ast.mk(ast.ExprKind.Variant(en, vn, own xs), s)
+    }
+
+    fn mut Result<ast.Expr, diag.Diag> parse_primary() {
+        let k = peek();
+        if k == "if" { return parse_if(true); }
+        if k == "match" { return parse_match(true); }
+        if k == "int" {
+            let n = toks[pos].num;
+            let s = bump();
+            return Ok(ast.mk(ast.ExprKind.Int(n), s));
+        }
+        if k == "float" {
+            let t = text();
+            let s = bump();
+            return match t.to_float() {
+                case Some(v) -> Ok(ast.mk(ast.ExprKind.Float(v), s));
+                case None -> Err(diag.error("小数の書き方がおかしいです", s, "ここ"));
+            };
+        }
+        if k == "str" {
+            let t = text();
+            let s = bump();
+            return Ok(ast.mk(ast.ExprKind.Str(t), s));
+        }
+        if k == "[" {
+            return parse_bracket();
+        }
+        if k == "interp" {
+            return parse_interp();
+        }
+        if k == "true" {
+            let s = bump();
+            return Ok(ast.mk(ast.ExprKind.Bool(true), s));
+        }
+        if k == "false" {
+            let s = bump();
+            return Ok(ast.mk(ast.ExprKind.Bool(false), s));
+        }
+        if k == "ident" {
+            return parse_name();
+        }
+        if k == "(" && at_lambda() {
+            return parse_lambda();
+        }
+        if k == "(" && peek2() == ")" {
+            let start = bump();
+            let end = bump();
+            return Ok(ast.mk(ast.ExprKind.Unit, diag.join(start, end)));
+        }
+        if k == "(" {
+            let start = bump();
+            let mut inner = expr_lit()?;
+            let end = expect(")", "`)`")?;
+            inner.span = diag.join(start, end);
+            return Ok(inner);
+        }
+        Err(unexpected("式"))
+    }
+
+    /// `[1, 2, 3]` / `[0; 5]` / `["a": 1]`
+    fn mut Result<ast.Expr, diag.Diag> parse_bracket() {
+        let start = bump();
+        let ast.Expr[] mut items = [];
+        if peek() != "]" {
+            let first = expr_lit()?;
+            if eat(";") {
+                let n = array_len()?;
+                let end = expect("]", "`]`")?;
+                return Ok(ast.mk(ast.ExprKind.ArrayRepeat(own first, n), diag.join(start, end)));
+            }
+            if eat(":") {
+                // `["a": 1, "b": 2]`: 辞書
+                let ast.Expr[] mut kvs = [first];
+                kvs.push(expr_lit()?);
+                while eat(",") {
+                    if peek() == "]" { break; }
+                    kvs.push(expr_lit()?);
+                    expect(":", "`:`")?;
+                    kvs.push(expr_lit()?);
+                }
+                let end = expect("]", "`]`")?;
+                return Ok(ast.mk(ast.ExprKind.MapLit(own kvs), diag.join(start, end)));
+            }
+            items.push(first);
+            while eat(",") {
+                if peek() == "]" { break; }
+                items.push(expr_lit()?);
+            }
+        }
+        let end = expect("]", "`]`")?;
+        Ok(ast.mk(ast.ExprKind.ArrayLit(own items), diag.join(start, end)))
+    }
+
+    /// 埋め込みのある文字列（字句解析が平らに並べたもの: interp → lit / code ... eof → end）
+    fn mut Result<ast.Expr, diag.Diag> parse_interp() {
+        let s = bump();
+        let ast.InterpPart[] mut parts = [];
+        loop {
+            let k = peek();
+            if k == "lit" {
+                parts.push(ast.InterpPart.Lit(text()));
+                bump();
+            } else if k == "code" {
+                bump();
+                // 埋め込みの中の式は、ループの外・値として使う if の中と同じ扱い（Rust 版は別のパーサで読む）
+                let saved_lit = no_struct_lit;
+                let saved_depth = loop_depth;
+                let saved_value = in_value_if;
+                no_struct_lit = false;
+                loop_depth = 0;
+                in_value_if = true;
+                let r = parse_expr();
+                no_struct_lit = saved_lit;
+                loop_depth = saved_depth;
+                in_value_if = saved_value;
+                let e = r?;
+                if peek() != "eof" {
+                    return Err(unexpected("`}}`（埋め込みの終わり）"));
+                }
+                bump();
+                parts.push(ast.InterpPart.Code(own e));
+            } else {
+                bump();
+                break;
+            }
+        }
+        Ok(ast.mk(ast.ExprKind.Interp(own parts), s))
+    }
+
+    /// 名前で始まる式
+    fn mut Result<ast.Expr, diag.Diag> parse_name() {
+        let n = text();
+        let k2 = peek2();
+        if n == "None" {
+            let s = bump();
+            return Ok(variant("Option", "None", [], s));
+        }
+        if n == "Some" && k2 == "(" {
+            let start = bump();
+            let xs = parse_args(false)?;
+            return Ok(variant("Option", "Some", xs, diag.join(start, prev_span())));
+        }
+        if (n == "Ok" || n == "Err") && k2 == "(" {
+            let start = bump();
+            let xs = parse_args(false)?;
+            return Ok(variant("Result", n, xs, diag.join(start, prev_span())));
+        }
+        if has(struct_names, n) && k2 == "." {
+            // `Point.origin(...)`: 静的メソッドの呼び出し
+            let start = bump();
+            bump();
+            let f = expect_ident("静的メソッドの名前")?;
+            if peek() != "(" {
+                return Err(diag.error("構造体名のあとには静的メソッドの呼び出しを書きます", diag.join(start, prev_span()),
+                    "`Point.origin()` のように `(...)` が必要"));
+            }
+            let xs = parse_args(true)?;
+            return Ok(call_expr(n + "." + f, xs, diag.join(start, prev_span())));
+        }
+        if has(enum_names, n) && k2 == "." {
+            // `Shape.Circle(5)` / `Shape.Empty`
+            let start = bump();
+            bump();
+            let vn = expect_ident("種類の名前")?;
+            let is_static = match enum_variants.get(n) {
+                case Some(vs) -> !vs.contains(" " + vn + " ");
+                case None -> false;
+            };
+            if is_static && peek() == "(" {
+                // `Shape.make(...)`: enum の静的メソッドの呼び出し
+                let xs = parse_args(true)?;
+                return Ok(call_expr(n + "." + vn, xs, diag.join(start, prev_span())));
+            }
+            if peek() == "(" {
+                let xs = parse_args(false)?;
+                return Ok(variant(n, vn, xs, diag.join(start, prev_span())));
+            }
+            return Ok(variant(n, vn, [], diag.join(start, prev_span())));
+        }
+        let start = bump();
+        if peek() == "(" {
+            // spawn のクロージャは、取り込んだ値をほかのスレッドへ移すので借りない
+            let xs = parse_args(n != "spawn")?;
+            return Ok(call_expr(n, xs, diag.join(start, prev_span())));
+        }
+        if peek() == "{{" && !no_struct_lit {
+            return parse_struct_lit(n, start);
+        }
+        Ok(var_expr(n, start))
+    }
+
+    fn mut Result<ast.Expr, diag.Diag> parse_struct_lit(str n, i64 start) {
+        expect("{{", "`{{`")?;
+        let ast.FieldInit[] mut inits = [];
+        while peek() != "}}" {
+            let s = span();
+            let f = expect_ident("フィールド名")?;
+            expect(":", "`:`")?;
+            let v = expr_lit()?;
+            inits.push(ast.FieldInit { name: f, span: s, value: v });
+            if peek() == "," {
+                bump();
+            } else {
+                break;
+            }
+        }
+        let end = expect("}}", "`}}`")?;
+        Ok(ast.mk(ast.ExprKind.StructLit(n, own inits), diag.join(start, end)))
+    }
+}
+
+struct TParams {
+    str[] names;
+    str[] bounds;
+}
+
+/// `enum 名前 { ... }` ごとに、種類の名前（中かっこの 1 段目で、文の始めにある名前）を集める（" A B " の形）
+fn str[str] scan_variants(ref lexer.Token[] toks) {
+    let str[str] mut out = [];
+    let mut k = 0;
+    while k + 1 < toks.len() {
+        if toks[k].kind == "enum" && toks[k + 1].kind == "ident" {
+            let n = toks[k + 1].text;
+            let mut open = k;
+            while open < toks.len() && toks[open].kind != "{{" { open += 1; }
+            if open < toks.len() {
+                let mut depth = 0;
+                let mut names = " ";
+                let mut at_start = false;
+                let mut i = open;
+                while i < toks.len() {
+                    let t = toks[i].kind;
+                    if t == "{{" {
+                        depth += 1;
+                        at_start = depth == 1;
+                    } else if t == "}}" {
+                        depth -= 1;
+                        if depth == 0 { break; }
+                        at_start = depth == 1;
+                    } else if t == ";" && depth == 1 {
+                        at_start = true;
+                    } else {
+                        if t == "ident" && depth == 1 && at_start {
+                            names += toks[i].text + " ";
+                        }
+                        at_start = false;
+                    }
+                    i += 1;
+                }
+                out[n] = names;
+            }
+        }
+        k += 1;
+    }
+    out
+}
+
+pub fn Result<ast.Program, diag.Diag> parse(lexer.Token[] toks) {
+    let str[] none = [];
+    let str[] none2 = [];
+    let str[str] none3 = [];
+    parse_with(toks, none, none2, none3)
+}
+
+/// `use` したモジュールのあるファイル。モジュールの pub な構造体・enum（`geom.Point`）と、enum ごとの種類も知らせる
+pub fn Result<ast.Program, diag.Diag> parse_with(lexer.Token[] toks, ref str[] more_structs, ref str[] more_enums,
+        ref str[str] more_variants) {
+    let str[] mut enum_names = [];
+    let str[] mut struct_names = [];
+    let mut k = 0;
+    while k + 1 < toks.len() {
+        if toks[k].kind == "enum" && toks[k + 1].kind == "ident" { enum_names.push(toks[k + 1].text); }
+        if toks[k].kind == "struct" && toks[k + 1].kind == "ident" { struct_names.push(toks[k + 1].text); }
+        k += 1;
+    }
+    // 組み込みの enum（prelude で定義）
+    enum_names.push("Option");
+    enum_names.push("Result");
+    let mut variants = scan_variants(toks);
+    for n in more_structs { struct_names.push(n); }
+    for n in more_enums { enum_names.push(n); }
+    for (n, vs) in more_variants { variants[n] = vs; }
+    let mut p = Parser {
+        toks: toks, pos: 0, no_struct_lit: false, loop_depth: 0, in_value_if: false,
+        enum_names: enum_names, struct_names: struct_names, enum_variants: variants,
+        bind_ready: false, in_method: false, this_fields: [], this_methods: [], this_statics: [], owner: "",
+        locals: [], marks: [], use_consts: false, in_const: false, const_names: [], const_vals: [],
+        raw_call: false, borrow_lambdas: [], nest: 0,
+    };
+    p.parse_program()
+}

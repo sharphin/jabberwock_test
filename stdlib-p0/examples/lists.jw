@@ -1,0 +1,27 @@
+// リスト i64[] と for x in a
+
+fn i64[] evens(i64 n) {
+    let i64[] mut v = [];
+    for i in range(n) {
+        if i % 2 == 0 {
+            v.push(i);
+        }
+    }
+    v
+}
+
+fn main() {
+    let v = evens(10);
+    print("v = {v}, 長さ {v.len()}");
+    let mut total = 0;
+    for x in v {
+        total += x;
+    }
+    print("合計 {total}");
+    let (own i64)[] mut boxes = [own 1, own 2];
+    boxes.push(own 3);
+    for b in boxes {
+        print("中身 {*b}");
+    }
+    print(boxes.pop());
+}

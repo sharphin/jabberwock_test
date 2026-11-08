@@ -1,0 +1,17 @@
+// 直接呼ぶ数値の補助関数を挟んでも、リスト要素の ref は有効。
+// 通常の bench/run.sh の比較対象とは分けた解析用マイクロベンチマーク。
+fn i64 mix(i64 n) { (n * 17 + 3) % 1009 }
+
+fn update(ref mut i64[] xs, i64 rounds) {
+    let p = ref mut xs[0];
+    for i in range(rounds) {
+        let n = mix(i);
+        *p += n;
+    }
+}
+
+fn main() {
+    let i64[] mut xs = [0];
+    update(ref mut xs, 300000000);
+    print(xs[0]);
+}

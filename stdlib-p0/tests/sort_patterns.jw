@@ -1,0 +1,105 @@
+struct E { i64 k; i64 i; }
+
+fn i64 next(ref mut i64 s) {
+    *s = (*s * 6364136223846793005 + 1442695040888963407);
+    (*s >> 33) & 1073741823
+}
+
+fn E[] make(i64 pat, i64 n, ref mut i64 s) {
+    let E[] mut v = [];
+    for i in range(n) {
+        let k = if pat == 0 { next(s) % 1000000 }
+            else if pat == 1 { i }
+            else if pat == 2 { n - i }
+            else if pat == 3 { 7 }
+            else if pat == 4 { i % 37 }
+            else if pat == 5 { next(s) % 4 }
+            else if pat == 6 { if i < n / 2 { i } else { n - i } }
+            else { if next(s) % 20 == 0 { next(s) % 1000 } else { i } };
+        v.push(E { k: k, i: i });
+    }
+    v
+}
+
+fn bool check(ref E[] v, i64 n, bool stable) {
+    if v.len() != n { return false; }
+    let mut seen = 0;
+    for j in range(n) {
+        seen = seen + v[j].i;
+        if j > 0 {
+            if v[j - 1].k > v[j].k { return false; }
+            if stable && v[j - 1].k == v[j].k && v[j - 1].i > v[j].i { return false; }
+        }
+    }
+    seen == n * (n - 1) / 2
+}
+
+fn main() {
+    let mut s = 12345;
+    let mut bad = 0;
+    let mut runs = 0;
+    let mut h = 0;
+    let mut calls = 0;
+    for n in [0, 1, 2, 3, 19, 20, 21, 22, 50, 100, 257, 1000] {
+        for pat in range(8) {
+            let mut a = make(pat, n, ref mut s);
+            let hr = ref mut h;
+            let cr = ref mut calls;
+            a.sort_by((x, y) -> { *hr = (*hr * 31 + x.i * 7 + y.i) & 1099511627775; *cr = *cr + 1; x.k < y.k });
+            if !check(ref a, n, true) { print("stable NG", n, pat); bad = bad + 1; }
+            let mut b = make(pat, n, ref mut s);
+            b.sort_unstable_by((x, y) -> { *hr = (*hr * 31 + x.i * 5 + y.i) & 1099511627775; *cr = *cr + 1; x.k < y.k });
+            if !check(ref b, n, false) { print("unstable NG", n, pat); bad = bad + 1; }
+            let i64[] mut c = [];
+            for e in b { c.push(e.k); }
+            let mut d = c;
+            let i64[] mut c2 = [];
+            for x in d { c2.push(x); }
+            c2.sort_unstable();
+            d.sort();
+            for j in range(n) { if c2[j] != d[j] { bad = bad + 1; } }
+            runs = runs + 1;
+        }
+    }
+    // 整数の幅ごと（実行ファイルは比べる関数なしの基数ソート）
+    let i8[] mut a8 = [];
+    let u16[] mut b16 = [];
+    let i32[] mut c32 = [];
+    let u64[] mut d64 = [];
+    let i64[] mut e64 = [];
+    for i in range(300) {
+        a8.push(((i * 37) % 256 - 128) as i8);
+        b16.push(((i * 7919) % 65536) as u16);
+        c32.push((next(ref mut s) - 536870912) as i32);
+        d64.push((next(ref mut s) as u64) * 4000000000 + 18000000000000000000);
+        e64.push(if i % 3 == 0 { -9000000000000000000 + i } else { 9000000000000000000 - i });
+    }
+    a8.sort_unstable();
+    b16.sort();
+    c32.sort();
+    d64.sort_unstable();
+    e64.sort();
+    let mut ok = true;
+    for j in range(1, 300) {
+        if a8[j - 1] > a8[j] || b16[j - 1] > b16[j] || c32[j - 1] > c32[j] || d64[j - 1] > d64[j] || e64[j - 1] > e64[j] { ok = false; }
+    }
+    print(ok, a8[0], a8[299], b16[0], b16[299], c32[0], d64[299], e64[0], e64[299]);
+    let mut desc = [5, 4, 3, 2, 1, 0, -1, -2];
+    desc.sort();
+    let mut up = [1, 2, 2, 3];
+    up.sort_unstable();
+    print(desc, up);
+    // 矛盾した比べ方でも止まり、要素はなくならない
+    for n in [5, 30, 300] {
+        let mut a = make(0, n, ref mut s);
+        a.sort_by((x, y) -> (x.k * 7 + y.k * 13) % 3 == 0);
+        let mut b = make(0, n, ref mut s);
+        b.sort_unstable_by((x, y) -> (x.k * 5 + y.k * 11) % 3 != 0);
+        let mut sa = 0;
+        let mut sb = 0;
+        for e in a { sa = sa + e.i; }
+        for e in b { sb = sb + e.i; }
+        print(sa == n * (n - 1) / 2, sb == n * (n - 1) / 2);
+    }
+    print(runs, bad, calls, h);
+}

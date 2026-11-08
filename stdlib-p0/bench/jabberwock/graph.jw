@@ -1,0 +1,43 @@
+// 300×300 の格子のグラフ（隣接は CSR: 先頭の位置と行き先のリスト）を幅優先で 300 回たどる
+fn main() {
+    let w = 300;
+    let n = w * w;
+    let i64[] mut start = [];
+    let i64[] mut edges = [];
+    for v in range(n) {
+        start.push(edges.len());
+        let x = v % w;
+        let y = v / w;
+        if x > 0 { edges.push(v - 1); }
+        if x < w - 1 { edges.push(v + 1); }
+        if y > 0 { edges.push(v - w); }
+        if y < w - 1 { edges.push(v + w); }
+    }
+    start.push(edges.len());
+    let i64[] mut dist = [];
+    let i64[] mut queue = [];
+    for v in range(n) { dist.push(0); queue.push(0); }
+    let mut total = 0;
+    for round in range(300) {
+        for v in range(n) { dist[v] = -1; }
+        let src = (round * 7919) % n;
+        dist[src] = 0;
+        queue[0] = src;
+        let mut head = 0;
+        let mut tail = 1;
+        while head < tail {
+            let v = queue[head];
+            head += 1;
+            for e in range(start[v], start[v + 1]) {
+                let u = edges[e];
+                if dist[u] < 0 {
+                    dist[u] = dist[v] + 1;
+                    queue[tail] = u;
+                    tail += 1;
+                }
+            }
+        }
+        for v in range(n) { total += dist[v]; }
+    }
+    print(total);
+}

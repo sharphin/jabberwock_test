@@ -1,0 +1,26 @@
+// 単語の数え上げ（試しに書いたプログラム）。辞書は入れた順に回る
+// ファイル名のあとに文章を渡すと、それを数える（jabberwock words.jw "a b a"）
+fn i64[str] count_words(ref str[] words) {
+    let i64[str] mut out = [];
+    for w in words {
+        if out.contains(w) {
+            out[w] += 1;
+        } else {
+            out[w] = 1;
+        }
+    }
+    out
+}
+
+fn main() {
+    let mut text = "the cat and the dog and the bird";
+    let a = args();
+    if a.len() > 0 {
+        text = a[0];
+    }
+    let words = text.split(" ");
+    let counts = count_words(words);
+    for (w, n) in counts {
+        print("{w}: {n}");
+    }
+}
