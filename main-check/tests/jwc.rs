@@ -393,6 +393,8 @@ fn alice_with_jwc() {
     assert_eq!(code, Some(2));
     assert!(err.contains("--native が要ります"), "{}", err);
     let (code, out, _) = alice(&["test", "--native"]);
+    // 道筋の区切りは OS のもの（Windows は `tests\t.jw`）
+    let out = out.replace('\\', "/");
     assert_eq!(code, Some(1));
     assert!(out.contains("test tests/t.jw::test_ok ... ok"), "{}", out);
     assert!(out.contains("test tests/t.jw::test_bad ... 失敗"), "{}", out);
