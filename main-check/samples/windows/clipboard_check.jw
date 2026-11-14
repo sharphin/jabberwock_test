@@ -1,0 +1,23 @@
+// std.clipboard を試す（いまクリップボードにあるものは消える）。想定の出力は docs/windows-std-check.md
+use std.clipboard;
+
+fn main() {
+    match clipboard.set_text("ひみつ pass", true) {
+        case Ok(n) -> {
+            print("get", clipboard.get_text());
+            print("clear_if", clipboard.clear_if(n));
+            print("get after", clipboard.get_text());
+            match clipboard.set_text("ふつう", false) {
+                case Ok(m) -> {
+                    let _ = clipboard.set_text("上書き", false);
+                    print("clear_if old", clipboard.clear_if(m));
+                    print("get", clipboard.get_text());
+                    print("clear", clipboard.clear());
+                    print("get", clipboard.get_text());
+                }
+                case Err(e) -> print("set2", e);
+            }
+        }
+        case Err(e) -> print("set", e);
+    }
+}

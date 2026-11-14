@@ -1,0 +1,44 @@
+struct Tree {
+    Option<own Tree> l;
+    Option<own Tree> r;
+}
+
+fn own Tree make(i64 d) {
+    if d == 0 {
+        own Tree { l: None, r: None }
+    } else {
+        own Tree { l: Some(make(d - 1)), r: Some(make(d - 1)) }
+    }
+}
+
+fn i64 check(ref Tree t) {
+    match ref t.l {
+        case Some(a) -> {
+            match ref t.r {
+                case Some(b) -> 1 + check(a) + check(b);
+                case None -> 1;
+            }
+        }
+        case None -> 1;
+    }
+}
+
+fn main() {
+    let n = 18;
+    let stretch = make(n + 1);
+    print(n + 1, check(stretch));
+    drop(stretch);
+    let long_lived = make(n);
+    let mut d = 4;
+    while d <= n {
+        let iters = 1 << (n - d + 4);
+        let mut chk = 0;
+        for i in range(iters) {
+            let t = make(d);
+            chk += check(t);
+        }
+        print(iters, d, chk);
+        d += 2;
+    }
+    print(n, check(long_lived));
+}

@@ -1,0 +1,28 @@
+use std.csv;
+use std.base64;
+use std.hash;
+fn Result<(), str> go() {
+    let rows = csv.parse("name,age\r\n\"Smith, J\",42\n\"say \"\"hi\"\"\",\n\"two\nlines\",x\n,\n")?;
+    print(rows.len());
+    for r in rows { print(r.len(), r); }
+    print(csv.format(rows));
+    print(csv.write_row(rows[1]));
+    let recs = csv.parse_records("a,b\n1,2\n3\n")?;
+    for m in recs { print(m); }
+    print(csv.parse("")?.len(), csv.parse("x")?.len());
+    for bad in ["\"abc", "\"a\"b,c", "a\"b"] {
+        match csv.parse(bad) { case Ok(r) -> print("ok?"); case Err(e) -> print(e); }
+    }
+    for s in ["", "f", "fo", "foo", "foob", "fooba", "foobar", "日本語"] {
+        let b = base64.encode_str(s);
+        let raw = s.bytes();
+        print("[" + b + "]", base64.decode_str(b)?, hash.hex(raw));
+    }
+    for bad in ["Zm9v!", "Z", "Zm=9"] {
+        match base64.decode(bad) { case Ok(r) -> print("ok?", r); case Err(e) -> print(e); }
+    }
+    let u8[] raw = [0, 255, 128, 1];
+    print(base64.encode(raw), hash.hex(raw), base64.decode("AP+AAQ==")?, hash.unhex("00ff8001"));
+    Ok(())
+}
+fn main() { match go() { case Ok(u) -> {} case Err(e) -> print("err", e); } }

@@ -1,0 +1,10 @@
+// ブロックを抜けた後に、中で借りた ref を使ってしまう
+fn main() {
+    let slot = own 0;
+    let mut r = ref slot;
+    if true {
+        let a = own 42;
+        r = ref a;
+    }
+    print(*r)
+}

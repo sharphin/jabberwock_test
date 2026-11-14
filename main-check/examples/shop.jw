@@ -1,0 +1,84 @@
+// 在庫と注文の処理: 構造体の辞書・interface・クロージャのリスト・並べ替え
+struct Item {
+    str name;
+    i64 price;
+    i64 stock;
+}
+
+struct Order {
+    i64 id;
+    str item;
+    i64 qty;
+}
+
+interface Discount {
+    fn i64 apply(ref Order o, i64 total);
+    fn str label();
+}
+
+struct Bulk {
+    i64 min_qty;
+    i64 percent;
+    fn i64 apply(ref Order o, i64 total) {
+        if o.qty >= min_qty { total - total * percent / 100 } else { total }
+    }
+    fn str label() { "まとめ買い {percent}%" }
+}
+
+struct Coupon {
+    i64 off;
+    fn i64 apply(ref Order o, i64 total) {
+        if total > off { total - off } else { 0 }
+    }
+    fn str label() { "クーポン {off} 円" }
+}
+
+struct Shop {
+    Item[str] items;
+    (own Discount)[] discounts;
+    str[] log;
+
+    fn mut Result<i64, str> sell(ref Order o) {
+        if !items.contains(o.item) { return Err("{o.item} は扱っていません"); }
+        let stock = items[o.item].stock;
+        if stock < o.qty { return Err("{o.item} の在庫が足りません（残り {stock}）"); }
+        items[o.item].stock -= o.qty;
+        let mut total = items[o.item].price * o.qty;
+        for d in discounts {
+            let before = total;
+            total = d.apply(o, total);
+            if total != before { log.push("#{o.id}: {d.label()} で {before} → {total}"); }
+        }
+        Ok(total)
+    }
+}
+
+fn main() {
+    let mut shop = Shop { items: [], discounts: [], log: [] };
+    shop.items["りんご"] = Item { name: "りんご", price: 120, stock: 10 };
+    shop.items["みかん"] = Item { name: "みかん", price: 80, stock: 3 };
+    shop.discounts.push(own Bulk { min_qty: 5, percent: 10 });
+    shop.discounts.push(own Coupon { off: 50 });
+
+    let Order[] mut orders = [
+        Order { id: 1, item: "りんご", qty: 6 },
+        Order { id: 2, item: "みかん", qty: 5 },
+        Order { id: 3, item: "ぶどう", qty: 1 },
+        Order { id: 4, item: "みかん", qty: 2 },
+    ];
+    orders.sort_by((a, b) -> a.qty < b.qty);
+    let mut sales = 0;
+    for o in orders {
+        match shop.sell(o) {
+            case Ok(t) -> { sales += t; print("#{o.id} {o.item} x{o.qty}: {t} 円"); }
+            case Err(m) -> print("#{o.id}: {m}");
+        }
+    }
+    print("売上 {sales} 円");
+    for l in shop.log { print(l); }
+    let str[] mut low = [];
+    for (n, it) in shop.items {
+        if it.stock < 5 { low.push(n); }
+    }
+    print("在庫が少ない: {low}");
+}

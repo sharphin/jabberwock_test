@@ -1,0 +1,58 @@
+// std.heap: 優先度つきキュー。`use std.heap;` で `let heap.Heap<str> mut h = heap.Heap.new(); h.push(3, "c");` のように使う。
+// 優先度（i64）の小さいものから取り出す（大きいものからにするなら、優先度に - をつけて入れる）。
+// 同じ優先度どうしの順番は決まっていない（ただし、同じ入れ方なら毎回同じ順になる）。
+
+/// 優先度の小さいものから出てくる列（2 分ヒープ）
+pub struct Heap<T> {
+    i64[] keys;
+    T[] vals;
+
+    /// 空の列
+    static fn Heap<T> new() { Heap { keys: [], vals: [] } }
+
+    fn i64 len() { keys.len() }
+
+    fn bool is_empty() { keys.len() == 0 }
+
+    /// 優先度 key で v を入れる
+    fn mut push(i64 key, T v) {
+        keys.push(key);
+        vals.push(v);
+        let mut i = keys.len() - 1;
+        while i > 0 {
+            let p = (i - 1) / 2;
+            if keys[p] <= keys[i] { break; }
+            keys.swap(i, p);
+            vals.swap(i, p);
+            i = p;
+        }
+    }
+
+    /// いちばん小さい優先度（空なら None）
+    fn Option<i64> peek_key() {
+        if keys.len() == 0 { None } else { Some(keys[0]) }
+    }
+
+    /// いちばん優先度の小さいものを取り出す（空なら None）
+    fn mut Option<T> pop() {
+        let n = keys.len();
+        if n == 0 { return None; }
+        keys.swap(0, n - 1);
+        vals.swap(0, n - 1);
+        keys.pop();
+        let out = vals.pop();
+        let m = n - 1;
+        let mut i = 0;
+        loop {
+            let l = i * 2 + 1;
+            if l >= m { break; }
+            let mut c = l;
+            if l + 1 < m && keys[l + 1] < keys[l] { c = l + 1; }
+            if keys[i] <= keys[c] { break; }
+            keys.swap(i, c);
+            vals.swap(i, c);
+            i = c;
+        }
+        out
+    }
+}

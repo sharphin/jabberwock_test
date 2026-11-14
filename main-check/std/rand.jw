@@ -1,0 +1,64 @@
+// std.rand: 乱数（暗号には使えない）。`use std.rand;` で `let mut r = rand.Rng.seeded(42);` `r.below(6)` のように使う。
+// 中身は splitmix64（64 ビットの状態を足して混ぜる）。同じ種なら、どの実行のしかたでも同じ並びになる。
+
+pub struct Rng {
+    u64 state;
+
+    /// 種 seed から作る（同じ種なら同じ並び）
+    static fn Rng seeded(u64 seed) { Rng { state: seed } }
+
+    /// 今の時刻を種にして作る（実行ごとに違う並び）
+    static fn Rng from_time() { Rng { state: unix_ms() as u64 ^ ((now_ns() as u64) << 20) } }
+
+    /// 次の 64 ビットの数
+    fn mut u64 next() {
+        state = state + 0x9e3779b97f4a7c15;
+        let mut z = state;
+        z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9;
+        z = (z ^ (z >> 27)) * 0x94d049bb133111eb;
+        z ^ (z >> 31)
+    }
+
+    /// 0 以上 n 未満の整数（どの値も同じ確からしさ。n は 1 以上）
+    fn mut i64 below(i64 n) {
+        assert(n > 0);
+        let m = n as u64;
+        // 余りが偏らないよう、端の数は捨てて引き直す
+        let limit = (0 - m) % m;
+        loop {
+            let r = next();
+            if r >= limit { return (r % m) as i64; }
+        }
+    }
+
+    /// lo 以上 hi 未満の整数（hi は lo より大きい）
+    fn mut i64 range(i64 lo, i64 hi) {
+        assert(hi > lo);
+        let span = (hi as u64) - (lo as u64);
+        let limit = (0 - span) % span;
+        loop {
+            let r = next();
+            if r >= limit { return ((lo as u64) + r % span) as i64; }
+        }
+    }
+
+    /// 0.0 以上 1.0 未満の小数
+    fn mut f64 float() {
+        (next() >> 11) as f64 / 9007199254740992.0
+    }
+
+    /// 確率 p で true
+    fn mut bool chance(f64 p) {
+        float() < p
+    }
+
+    /// リストの並びをばらばらにする（どの並びも同じ確からしさ）
+    fn mut shuffle<T>(ref mut T[] a) {
+        let mut n = a.len();
+        let mut rest = a.drain();
+        while n > 0 {
+            a.push(rest.remove(below(n)));
+            n -= 1;
+        }
+    }
+}

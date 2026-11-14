@@ -1,0 +1,32 @@
+// enum は中身を持てる。match は全部の場合を書かないとエラー（default でまとめてもよい）
+enum Shape {
+    Circle(i64 r);
+    Rect(i64 w, i64 h);
+    Empty;
+}
+
+fn i64 area(Shape s) {
+    match s {
+        case Circle(r) -> 3 * r * r;
+        case Rect(w, h) -> w * h;
+        case Empty -> 0;
+    }
+}
+
+// null はない。「ないかもしれない」は Option で表す
+fn Option<i64> find_square_root(i64 n) {
+    for i in range(n + 1) {
+        if i * i == n { return Some(i); }
+    }
+    None
+}
+
+fn main() {
+    print(area(Shape.Circle(2)), area(Shape.Rect(3, 4)), area(Shape.Empty));
+    for n in range(8, 10) {
+        match find_square_root(n) {
+            case Some(i) -> print(n, "の平方根は", i);
+            case None -> print(n, "は平方数ではない");
+        }
+    }
+}

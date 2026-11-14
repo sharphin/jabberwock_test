@@ -1,0 +1,31 @@
+// 小さい連結リスト（1000 個。キャッシュに収まる）を 10 万回たどる。ref の世代の検査の費用が隠れない
+struct Node {
+    i64 v;
+    Option<own Node> next;
+}
+
+fn i64 sum(ref Option<own Node> head) {
+    let mut s = 0;
+    let mut cur = head;
+    loop {
+        match cur {
+            case None -> return s;
+            case Some(n) -> {
+                s += n.v;
+                cur = ref n.next;
+            }
+        }
+    }
+}
+
+fn main() {
+    let Option<own Node> mut head = None;
+    for i in range(1000) {
+        head = Some(own Node { v: i, next: head });
+    }
+    let mut total = 0;
+    for k in range(100000) {
+        total += sum(ref head) % 1000;
+    }
+    print(total);
+}

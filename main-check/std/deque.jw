@@ -1,0 +1,63 @@
+// std.deque: 両端キュー。`use std.deque;` で `let deque.Deque<i64> mut q = deque.Deque.new(); q.push_back(1);` のように使う。
+// 前と後ろの 2 本のリストで持つ（front は逆順）。片側が空になったら、もう片側から移す（ならせば 1 回あたり定数の手間）。
+
+/// 両端から入れて取り出せる列
+pub struct Deque<T> {
+    T[] front;
+    T[] back;
+
+    /// 空の列
+    static fn Deque<T> new() { Deque { front: [], back: [] } }
+
+    fn i64 len() { front.len() + back.len() }
+
+    fn bool is_empty() { front.len() + back.len() == 0 }
+
+    /// 後ろに入れる
+    fn mut push_back(T v) { back.push(v); }
+
+    /// 前に入れる
+    fn mut push_front(T v) { front.push(v); }
+
+    /// 前から取り出す（空なら None）
+    fn mut Option<T> pop_front() {
+        if front.len() == 0 { move_half(true); }
+        front.pop()
+    }
+
+    /// 後ろから取り出す（空なら None）
+    fn mut Option<T> pop_back() {
+        if back.len() == 0 { move_half(false); }
+        back.pop()
+    }
+
+    /// 空になった側へ、反対側の半分（1 つなら 1 つ）を順番を保って移す
+    fn mut move_half(bool to_front) {
+        let from = if to_front { back.len() } else { front.len() };
+        // 移さずに残す数（反対側の端に近いほう）
+        let keep = from / 2;
+        let T[] mut rest = [];
+        if to_front {
+            // back の前の (from - keep) 個を front へ（front は逆順なので、後ろから積む）
+            move_n(ref mut back, ref mut rest, keep);
+            move_n(ref mut back, ref mut front, from - keep);
+            move_n(ref mut rest, ref mut back, keep);
+        } else {
+            move_n(ref mut front, ref mut rest, keep);
+            move_n(ref mut front, ref mut back, from - keep);
+            move_n(ref mut rest, ref mut front, keep);
+        }
+    }
+}
+
+/// a の後ろから n 個を取り出して、順に b の後ろへ積む
+fn move_n<T>(ref mut T[] a, ref mut T[] b, i64 n) {
+    let mut i = 0;
+    while i < n {
+        match a.pop() {
+            case Some(v) -> b.push(v);
+            case None -> return;
+        }
+        i += 1;
+    }
+}

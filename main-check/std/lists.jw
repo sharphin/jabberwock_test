@@ -1,0 +1,97 @@
+// std.lists: リストの便利な関数。`use std.lists;` で `lists.sum(xs)` のように使う。
+
+/// 合計
+pub fn i64 sum(ref i64[] a) {
+    let mut t = 0;
+    for x in a { t += x; }
+    t
+}
+
+/// 小数の合計
+pub fn f64 sum_f64(ref f64[] a) {
+    let mut t = 0.0;
+    for x in a { t += x; }
+    t
+}
+
+/// いちばん小さい要素（空なら None）
+pub fn Option<i64> min(ref i64[] a) {
+    if a.len() == 0 { return None; }
+    let mut m = a[0];
+    for x in a { if x < m { m = x; } }
+    Some(m)
+}
+
+/// いちばん大きい要素（空なら None）
+pub fn Option<i64> max(ref i64[] a) {
+    if a.len() == 0 { return None; }
+    let mut m = a[0];
+    for x in a { if x > m { m = x; } }
+    Some(m)
+}
+
+/// from から to の手前までの整数のリスト
+pub fn i64[] range_of(i64 from, i64 to) {
+    let i64[] mut out = [];
+    for i in range(from, to) { out.push(i); }
+    out
+}
+
+/// a の from から to の手前までを写したリスト（範囲は 0〜len に切り詰める）
+pub fn i64[] slice(ref i64[] a, i64 from, i64 to) {
+    let i64[] mut out = [];
+    let mut i = from.max(0);
+    let end = to.min(a.len());
+    while i < end {
+        out.push(a[i]);
+        i += 1;
+    }
+    out
+}
+
+/// 文字列のリストの部分（`slice` の str 版）
+pub fn str[] slice_str(ref str[] a, i64 from, i64 to) {
+    let str[] mut out = [];
+    let mut i = from.max(0);
+    let end = to.min(a.len());
+    while i < end {
+        out.push(a[i]);
+        i += 1;
+    }
+    out
+}
+
+/// b の要素をすべて a の後ろに足す（b は空になる）
+pub fn extend<T>(ref mut T[] a, ref mut T[] b) {
+    b.reverse();
+    while b.len() > 0 {
+        match b.pop() {
+            case Some(x) -> a.push(x);
+            case None -> {}
+        }
+    }
+}
+
+/// f が真になる要素があるか
+pub fn bool any(ref i64[] a, fn bool(i64) f) {
+    for x in a { if f(x) { return true; } }
+    false
+}
+
+/// すべての要素で f が真か（空なら真）
+pub fn bool all(ref i64[] a, fn bool(i64) f) {
+    for x in a { if !f(x) { return false; } }
+    true
+}
+
+/// 並んだリスト a で x を二分探索する。あればその位置、なければ Err(入れるべき位置)
+pub fn Result<i64, i64> binary_search(ref i64[] a, i64 x) {
+    let mut lo = 0;
+    let mut hi = a.len();
+    while lo < hi {
+        let mid = lo + (hi - lo) / 2;
+        if a[mid] == x { return Ok(mid); }
+        if a[mid] < x { lo = mid + 1; } else { hi = mid; }
+    }
+    Err(lo)
+}

@@ -1,0 +1,37 @@
+use std.fs;
+
+fn Result<(), str> go(str d) {
+    print(fs.exists(d));
+    fs.make_dirs(fs.join(d, "x/y"))?;
+    fs.make_dirs(fs.join(d, "x"))?;
+    write_file(fs.join(d, "a.txt"), "hello")?;
+    fs.append_text(fs.join(d, "a.txt"), " world")?;
+    fs.append_text(fs.join(d, "new.log"), "1")?;
+    write_file(fs.join(d, "x/y/b.jw"), "b")?;
+    print(read_file(fs.join(d, "a.txt"))?);
+    print(fs.list_dir(d)?);
+    for p in fs.walk(d)? { print(p.slice(d.len(), p.len())); }
+    let i = fs.stat(fs.join(d, "a.txt"))?;
+    print(i.size, i.is_file, i.is_dir, i.is_link, i.modified_ms > 0);
+    print(fs.is_dir(fs.join(d, "x")), fs.is_file(fs.join(d, "x")), fs.is_file(fs.join(d, "nope")));
+    fs.rename(fs.join(d, "a.txt"), fs.join(d, "c.txt"))?;
+    print(fs.exists(fs.join(d, "a.txt")), fs.exists(fs.join(d, "c.txt")));
+    let errs = [fs.remove(fs.join(d, "x")), fs.make_dir(d), fs.remove(fs.join(d, "nope")), fs.rename(fs.join(d, "nope"), d), fs.stat("a\0b").map((v) -> ())];
+    for e in errs {
+        match e { case Ok(u) -> print("ok?"); case Err(m) -> print(m.replace(d, "D")); }
+    }
+    match fs.list_dir(fs.join(d, "nope")) { case Ok(u) -> print("ok?"); case Err(m) -> print(m.replace(d, "D")); }
+    match fs.list_dir(fs.join(d, "c.txt")) { case Ok(u) -> print("ok?"); case Err(m) -> print(m.replace(d, "D")); }
+    print(fs.exists("a\0b"));
+    for p in ["x/y/b.jw", "x/y", "x", "c.txt", "new.log"] { fs.remove(fs.join(d, p))?; }
+    fs.remove(d)?;
+    print(fs.exists(d));
+    Ok(())
+}
+
+fn main() {
+    print(fs.join("a", "b"), fs.join("a/", "b"), fs.join("a", "/b"), fs.join("", "b"));
+    print(fs.parent("a/b/c.txt"), "[" + fs.parent("c.txt") + "]", fs.parent("/c"));
+    print(fs.file_name("a/b/c.tar.gz"), fs.ext("a/b/c.tar.gz"), fs.stem("a/b/c.tar.gz"), "[" + fs.ext(".env") + "]", fs.stem(".env"), fs.file_name("x\\y.txt"));
+    match go("DIR") { case Ok(u) -> print("ok"); case Err(e) -> print("err:", e); }
+}

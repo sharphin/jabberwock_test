@@ -1,0 +1,6 @@
+// 項目10: 外部効果は通常実行で1回だけ起きる。追記相当の操作なので二重実行を見逃さない。
+fn append(str path) {
+    let before = read_file(path).unwrap_or("");
+    write_file(path, before + "x");
+}
+fn main() { append(args()[0]); }

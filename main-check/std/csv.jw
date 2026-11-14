@@ -1,0 +1,133 @@
+// 標準ライブラリ std.csv: CSV（RFC 4180）の読み書き。`use std.csv;` と書いて使う
+//   let rows = csv.parse("name,age\r\n\"山田, 太郎\",30\r\n")?;   // str[][]: [[name, age], [山田, 太郎, 30]]
+//   let s = csv.format(ref rows);                                  // "name,age\r\n\"山田, 太郎\",30\r\n"
+// .jw だけで書いている。区切りは `,`（parse_sep・format_sep で変えられる）、行の終わりは CRLF か LF。値はどれも文字列（数や型には直さない）。
+
+/// CSV を読む。`"` で囲んだ値の中には `,`・改行・`""`（`"` 1 つ）を書ける。
+/// 終わりの改行のあとに空の行は作らない。囲んでいない値の中の `"`・閉じた `"` のあとの余計な文字・閉じていない `"` は Err（何行目かを書く）
+pub fn Result<str[][], str> parse(str s) { parse_sep(s, ',') }
+
+/// 区切りを sep にして読む（`'\t'` なら TSV）。sep が `"`・改行なら Err。エラーの文は parse と同じ（`,` と書く）
+pub fn Result<str[][], str> parse_sep(str s, char sep) {
+    if sep == '"' || sep == '\n' || sep == '\r' { return Err("CSV の区切りに `\"` と改行は使えません"); }
+    let cs = s.chars();
+    let str[][] mut rows = [];
+    let str[] mut row = [];
+    let mut field = "";
+    let mut i = 0;
+    let mut line = 1;
+    // 今の値を読み始めたところか（行の始めの空の値と、何もない行の終わりを見分ける）
+    let mut fresh = true;
+    while i < cs.len() {
+        let c = cs[i];
+        if fresh && c == '"' {
+            // 囲んだ値
+            let start = line;
+            i += 1;
+            let mut closed = false;
+            while i < cs.len() {
+                let q = cs[i];
+                if q == '"' {
+                    if i + 1 < cs.len() && cs[i + 1] == '"' {
+                        field += "\"";
+                        i += 2;
+                    } else {
+                        closed = true;
+                        i += 1;
+                        break;
+                    }
+                } else {
+                    if q == '\n' { line += 1; }
+                    field += q.to_str();
+                    i += 1;
+                }
+            }
+            if !closed { return Err("CSV の {start} 行目の `\"` が閉じていません"); }
+            if i < cs.len() && cs[i] != sep && cs[i] != '\n' && cs[i] != '\r' {
+                return Err("CSV の {line} 行目: 閉じた `\"` のあとに `,` か改行がありません");
+            }
+            fresh = false;
+        } else if c == sep {
+            row.push(field);
+            field = "";
+            fresh = true;
+            i += 1;
+        } else if c == '\r' || c == '\n' {
+            if c == '\r' && i + 1 < cs.len() && cs[i + 1] == '\n' { i += 1; }
+            row.push(field);
+            field = "";
+            rows.push(row);
+            row = [];
+            fresh = true;
+            line += 1;
+            i += 1;
+        } else if c == '"' {
+            return Err("CSV の {line} 行目: 囲んでいない値の中に `\"` があります（`\"` で囲んで `\"\"` と書いてください）");
+        } else {
+            field += c.to_str();
+            fresh = false;
+            i += 1;
+        }
+    }
+    // 終わりに改行がない最後の行
+    if !fresh || row.len() > 0 {
+        row.push(field);
+        rows.push(row);
+    }
+    Ok(rows)
+}
+
+/// CSV にする。`,`・`"`・改行を含む値は `"` で囲み、`"` は `""` にする。行の終わりはどれも CRLF
+pub fn str format(ref str[][] rows) {
+    let mut out = "";
+    for row in rows { out += join_row(ref row, ','); out += "\r\n"; }
+    out
+}
+
+/// 区切りを sep にして書く（sep を含む値も `"` で囲む）。sep が `"`・改行なら Err
+pub fn Result<str, str> format_sep(ref str[][] rows, char sep) {
+    if sep == '"' || sep == '\n' || sep == '\r' { return Err("CSV の区切りに `\"` と改行は使えません"); }
+    let mut out = "";
+    for row in rows { out += join_row(ref row, sep); out += "\r\n"; }
+    Ok(out)
+}
+
+/// 1 行を書く（改行はつけない）
+pub fn str write_row(ref str[] row) { join_row(ref row, ',') }
+
+fn str join_row(ref str[] row, char sep) {
+    let mut out = "";
+    for (i, f) in row {
+        if i > 0 { out += sep.to_str(); }
+        out += quote_sep(f, sep);
+    }
+    out
+}
+
+/// 値 1 つを CSV の形にする（要るときだけ `"` で囲む）
+pub fn str quote(str v) { quote_sep(v, ',') }
+
+fn str quote_sep(str v, char sep) {
+    if v.contains(sep.to_str()) || v.contains("\"") || v.contains("\n") || v.contains("\r") {
+        "\"" + v.replace("\"", "\"\"") + "\""
+    } else {
+        v
+    }
+}
+
+/// 1 行目を見出しとして、各行を「見出し → 値」の辞書にする（足りない欄は ""、多い欄は捨てる）
+pub fn Result<(str[str])[], str> parse_records(str text) {
+    let rows = parse(text)?;
+    let (str[str])[] mut out = [];
+    if rows.len() == 0 { return Ok(out); }
+    let head = rows[0].map((h) -> h);
+    for (i, r) in rows {
+        if i == 0 { continue; }
+        let str[str] mut m = [];
+        for (j, h) in head {
+            m[h] = if j < r.len() { r[j] } else { "" };
+        }
+        out.push(m);
+    }
+    Ok(out)
+}

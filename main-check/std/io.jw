@@ -1,0 +1,17 @@
+// 標準ライブラリ std.io: 標準入力を待ち時間つきで読む。`use std.io;` と書いて使う
+//   match io.read_line_for(50) {              // 50 ミリ秒まで待つ
+//       case Ok(Some(line)) -> ...;          // 1 行（終わりの改行は取る）
+//       case Ok(None) -> ...;                // 入力の終わり
+//       case Err(e) -> ...;                  // 時間切れ（"時間切れです"）。読みかけの行は次に回す
+//   }
+// read_line と同じ入れ物から読むので、まぜて使ってよい。ほかの出来事（ブラウザのエンジンなど）を待ちながら、
+// 親のプロセスからの行も受け取るときに使う。読む前に print の出力を書き出す（read_line と同じ）。
+// Windows の端末から読むときは、キーのほかの出来事（マウスなど）でも待つのをやめて読みに行くので、ms より長く待つことがある。
+
+/// ms ミリ秒（0 なら待たずに、今ある分だけ）まで待って 1 行読む。ms が負なら実行時エラー
+pub fn Result<Option<str>, str> read_line_for(i64 ms) {
+    match __read_line_for(ms) {
+        case Some(l) -> Ok(Some(l));
+        case None -> if __stdin_ended() { Ok(None) } else { Err("時間切れです") };
+    }
+}

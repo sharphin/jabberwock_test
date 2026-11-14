@@ -1,0 +1,12 @@
+fn main() {
+    let mut a = own 1;
+    let r = ref a;
+    let chan<i64> ready = chan();
+    let t = spawn(() -> {
+        drop(a);
+        ready.send(0);
+        for i in range(100000) { let b = own i; drop(b); }
+    });
+    ready.recv();
+    print(*r);
+}

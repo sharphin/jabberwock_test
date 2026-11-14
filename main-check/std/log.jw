@@ -1,0 +1,57 @@
+// std.log: 標準エラーへのログ。`use std.log;` で次のように使う
+//   let mut lg = log.Logger.new();       // Info 以上を、時刻つきで出す
+//   lg.info("始めます");                  // 2026-11-11T12:00:00.000Z INFO 始めます
+//   lg.set_level(log.Level.Debug);
+// 時刻は UTC（std.date の format）。テストなどで時刻を出したくなければ set_time(false)。
+use std.date;
+
+/// ログの重さ（Debug < Info < Warn < Error）
+pub enum Level { Debug; Info; Warn; Error; }
+
+fn i64 rank(ref Level l) {
+    match l {
+        case Debug -> 0;
+        case Info -> 1;
+        case Warn -> 2;
+        case Error -> 3;
+    }
+}
+
+fn str label(ref Level l) {
+    match l {
+        case Debug -> "DEBUG";
+        case Info -> "INFO";
+        case Warn -> "WARN";
+        case Error -> "ERROR";
+    }
+}
+
+/// どこまで出すかと、時刻をつけるかを持つ
+pub struct Logger {
+    i64 min;
+    bool time;
+
+    /// Info 以上を時刻つきで出す
+    static fn Logger new() { Logger { min: 1, time: true } }
+
+    /// l より軽いものは出さない
+    fn mut set_level(Level l) { min = rank(l); }
+
+    /// 行の頭に時刻をつけるか
+    fn mut set_time(bool on) { time = on; }
+
+    /// l の重さで msg を 1 行出す（軽すぎれば出さない）
+    fn write(Level l, str msg) {
+        if rank(l) < min { return; }
+        if time {
+            eprint(date.now().format(), label(l), msg);
+        } else {
+            eprint(label(l), msg);
+        }
+    }
+
+    fn debug(str msg) { write(Level.Debug, msg); }
+    fn info(str msg) { write(Level.Info, msg); }
+    fn warn(str msg) { write(Level.Warn, msg); }
+    fn error(str msg) { write(Level.Error, msg); }
+}

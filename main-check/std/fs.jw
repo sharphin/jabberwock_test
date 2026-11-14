@@ -1,0 +1,210 @@
+// 標準ライブラリ std.fs: ファイル。`use std.fs;` と書いて使う
+//
+// File は資源（ムーブだけできる。ほかのスレッドへは渡せない）。持ち主がいなくなると黙って閉じるので、
+// 書いた内容が残ったか確かめたいときは `fs.close(f)` の結果を見る。
+//   let mut f = fs.create("out.txt")?;
+//   f.write_text("こんにちは\n")?;
+//   fs.close(f)?;
+// メソッドは `read(n)`（最大 n バイト。終わりなら空のリスト）・`read_text()`（残り全部。UTF-8 でなければ Err）・
+// `write(bytes)`（u8[] をムーブして全部書く）・`write_text(s)`。どれも Result で、持ち主が mut であること。
+
+pub resource File;
+
+/// 読むために開く
+pub fn Result<File, str> open(str path) { __fs_open(path, 0) }
+
+/// 書くために開く（なければ作る。あれば空にする）
+pub fn Result<File, str> create(str path) { __fs_open(path, 1) }
+
+/// 後ろに足すために開く（なければ作る）
+pub fn Result<File, str> append(str path) { __fs_open(path, 2) }
+
+/// 閉じる。失敗しても File はもう使えない（Err は書いた内容が残っていないかもしれないという知らせ）
+pub fn Result<(), str> close(File f) { __res_close(f) }
+
+/// ファイルかディレクトリがあるか
+pub fn bool exists(str path) { __fs_exists(path) }
+
+/// ディレクトリの中の名前（`.` と `..` は除く。名前の順）
+pub fn Result<str[], str> list_dir(str path) { __fs_list(path) }
+
+/// ディレクトリを作る（親はあること。もうあれば Err）
+pub fn Result<(), str> make_dir(str path) { __fs_make_dir(path) }
+
+/// ディレクトリを親から順に作る（もうあれば何もしない）
+pub fn Result<(), str> make_dirs(str path) {
+    if is_dir(path) { return Ok(()); }
+    let up = parent(path);
+    if up != "" && !is_dir(up) { make_dirs(up)?; }
+    make_dir(path)
+}
+
+/// ファイルか、空のディレクトリを消す
+pub fn Result<(), str> remove(str path) { __fs_remove(path) }
+
+/// 名前を変える。to があれば置き換える
+pub fn Result<(), str> rename(str from, str to) { __fs_rename(from, to) }
+
+/// ファイルの後ろに text を足す（なければ作る）
+pub fn Result<(), str> append_text(str path, str text) { __fs_append(path, text) }
+
+/// ファイル・ディレクトリの情報
+pub struct Info {
+    // 中身の大きさ（バイト。ファイルでなければ 0）
+    i64 size;
+    bool is_file;
+    bool is_dir;
+    // path そのものがシンボリックリンク（Windows ではリパースポイント）か。ほかの欄はたどった先のもの
+    bool is_link;
+    // 更新時刻（1970-01-01 UTC からのミリ秒。Windows は秒の単位）
+    i64 modified_ms;
+}
+
+/// 情報を読む（なければ Err。リンクの先がなければ is_file も is_dir も false）
+pub fn Result<Info, str> stat(str path) {
+    let v = __fs_stat(path)?;
+    Ok(Info { size: v[1], is_file: v[0] == 0, is_dir: v[0] == 1, is_link: v[3] == 1, modified_ms: v[2] })
+}
+
+/// ファイルか（なければ false）
+pub fn bool is_file(str path) {
+    match stat(path) {
+        case Ok(i) -> i.is_file;
+        case Err(e) -> false;
+    }
+}
+
+/// ディレクトリか（なければ false）
+pub fn bool is_dir(str path) {
+    match stat(path) {
+        case Ok(i) -> i.is_dir;
+        case Err(e) -> false;
+    }
+}
+
+/// ファイルを写す。to があれば上書きする（安全な上書きではない。途中で失敗すると to は途中までになる）
+pub fn Result<(), str> copy(str from, str to) {
+    if from == to { return Err("写す元と先が同じです: " + from); }
+    if !is_file(from) { return Err("写す元がファイルではありません: " + from); }
+    let mut src = open(from)?;
+    let mut dst = create(to)?;
+    loop {
+        let chunk = src.read(1048576)?;
+        if chunk.len() == 0 { break; }
+        dst.write(chunk)?;
+    }
+    close(src)?;
+    close(dst)
+}
+
+/// ファイルか、ディレクトリを中身ごと消す。リンクはたどらず、リンクそのものを消す（なければ Err）
+pub fn Result<(), str> remove_all(str path) {
+    let info = stat(path)?;
+    if info.is_dir && !info.is_link {
+        for name in list_dir(path)? { remove_all(path + "/" + name)?; }
+    }
+    remove(path)
+}
+
+/// 安全な上書き: `path + ".tmp"` に全部書いて閉じてから path へ名前を変える。
+/// 途中で失敗しても path は元のまま（読む側には古い中身か新しい中身のどちらかが見える）。電源断まで耐えるとは約束しない
+pub fn Result<(), str> write_atomic(str path, u8[] data) {
+    let tmp = path + ".tmp";
+    let mut f = create(tmp)?;
+    match f.write(data) {
+        case Ok(_) -> {}
+        case Err(e) -> {
+            close(f);
+            remove(tmp);
+            return Err(e);
+        }
+    }
+    match close(f) {
+        case Ok(_) -> {}
+        case Err(e) -> {
+            remove(tmp);
+            return Err(e);
+        }
+    }
+    match rename(tmp, path) {
+        case Ok(_) -> return Ok(());
+        case Err(e) -> {
+            remove(tmp);
+            return Err(e);
+        }
+    }
+}
+
+/// write_atomic の文字列版
+pub fn Result<(), str> write_text_atomic(str path, str s) { write_atomic(path, s.bytes()) }
+
+/// path の下にあるファイルすべてのパス（`join(path, ...)` の形。ディレクトリの中は名前の順に深さ優先。リンクのディレクトリには入らない）
+pub fn Result<str[], str> walk(str path) {
+    let str[] mut out = [];
+    walk_into(path, ref mut out)?;
+    Ok(out)
+}
+
+fn Result<(), str> walk_into(str dir, ref mut str[] out) {
+    for name in list_dir(dir)? {
+        let p = join(dir, name);
+        let info = stat(p)?;
+        if info.is_dir && !info.is_link {
+            walk_into(p, out)?;
+        } else if info.is_file {
+            out.push(p);
+        }
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------- パス（文字列だけで決める。ファイルは見ない）
+
+/// a と b をつなぐ（b が `/` で始まれば b のまま。a が空なら b）
+pub fn str join(str a, str b) {
+    if a == "" || b.starts_with("/") { return b; }
+    if a.ends_with("/") || a.ends_with("\\") { return a + b; }
+    a + "/" + b
+}
+
+/// 最後の区切り（`/` か `\`）の位置。なければ -1
+fn i64 last_sep(str p) {
+    let cs = p.chars();
+    let mut i = cs.len() - 1;
+    while i >= 0 {
+        if cs[i] == '/' || cs[i] == '\\' { return i; }
+        i--;
+    }
+    -1
+}
+
+/// 親のディレクトリ（`a/b/c.txt` → `a/b`、`c.txt` → ``、`/c` → `/`）
+pub fn str parent(str path) {
+    let i = last_sep(path);
+    if i < 0 { return ""; }
+    if i == 0 { return path.slice(0, 1); }
+    path.slice(0, i)
+}
+
+/// 最後の名前（`a/b/c.txt` → `c.txt`）
+pub fn str file_name(str path) { path.slice(last_sep(path) + 1, path.len()) }
+
+/// 拡張子（`c.tar.gz` → `gz`。点で始まる名前 `.env` や点のない名前は ``）
+pub fn str ext(str path) {
+    let name = file_name(path);
+    let cs = name.chars();
+    let mut i = cs.len() - 1;
+    while i > 0 {
+        if cs[i] == '.' { return name.slice(i + 1, name.len()); }
+        i--;
+    }
+    ""
+}
+
+/// 拡張子を除いた名前（`a/c.tar.gz` → `c.tar`）
+pub fn str stem(str path) {
+    let name = file_name(path);
+    let e = ext(path);
+    if e == "" { return name; }
+    name.slice(0, name.len() - e.len() - 1)
+}

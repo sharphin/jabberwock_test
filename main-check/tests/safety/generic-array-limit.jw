@@ -1,0 +1,4 @@
+// 項目9の再現用。型の具体化後に固定長配列が1 MiBを超える。
+struct Buffer<T> { T[131072] cells; }
+fn accept(Buffer<i64[2]> b) {}
+fn main() {}

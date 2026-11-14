@@ -1,0 +1,22 @@
+// 配列: 長さは型の一部。定数の添字の範囲外は実行前に見つかる
+
+fn i64 sum(ref i64[5] a) {
+    let mut total = 0;
+    for i in range(0, a.len()) {
+        total += a[i];
+    }
+    total
+}
+
+fn main() {
+    let mut squares = [0; 5];
+    for i in range(0, squares.len()) {
+        squares[i] = i * i;
+    }
+    print("squares = {squares}");
+    let s = own squares;
+    print("合計 = {sum(ref s)}");
+    let mut grid = [[0; 3]; 2];
+    grid[1][2] = 7;
+    print(grid);
+}

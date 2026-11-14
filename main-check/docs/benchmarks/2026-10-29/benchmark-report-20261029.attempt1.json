@@ -1,0 +1,574 @@
+{
+  "schema_version": 2,
+  "started_utc": "2026-10-28T23:57:17.500219+00:00",
+  "git_sha": "52c22771aef65e79403da810bd377fb2e2fa4af7",
+  "environment": {
+    "platform": "Linux-6.18.55-x86_64-with-glibc2.41",
+    "machine": "x86_64",
+    "processor": "",
+    "clang": "Debian clang version 19.1.7 (3~deb12u1)",
+    "clang++": "Debian clang version 19.1.7 (3~deb12u1)",
+    "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+    "go": null
+  },
+  "runs": 8,
+  "suite": [
+    "fib",
+    "matmul",
+    "mandelbrot",
+    "sort",
+    "linkedlist"
+  ],
+  "subjects": [
+    "jwc",
+    "rust",
+    "cpp",
+    "go"
+  ],
+  "measurement_order_balance": "BALANCED",
+  "flags": {
+    "jwc_codegen": [
+      "--ll"
+    ],
+    "jwc_native": [
+      "clang",
+      "-O2",
+      "-flto",
+      "-fuse-ld=lld"
+    ],
+    "rust": [
+      "rustc",
+      "-C",
+      "opt-level=3",
+      "-C",
+      "lto=fat",
+      "--edition",
+      "2021"
+    ],
+    "cpp": [
+      "clang++",
+      "-O2",
+      "-flto",
+      "-fuse-ld=lld",
+      "-std=c++17",
+      "-pthread"
+    ],
+    "go": [
+      "go",
+      "build"
+    ]
+  },
+  "compiler_hashes": {
+    "jwc": "2bb3a9669455b00aa4cb014a48c14d346e6f62696062913430da1bb1355ff19a",
+    "runtime": "4020f3be75324ff4baada3f4b02bb871c1cc902b2e86a38d1bc9f5d844660e92",
+    "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+    "clang++": "Debian clang version 19.1.7 (3~deb12u1)",
+    "go": null
+  },
+  "source_hashes": {
+    "fib": {
+      "jwc": "6da6fdf1a058ce6b32cfefea48407b9b91360b4373e17f16c25db0c60c052ba2",
+      "cpp": "4e7adfc7e7afd67492b57cb84d306e8461ca879928abb66826fd35dc803b0779",
+      "rust": "aa42a6aa23ba202ad96b42a6194a6f1fe6cbeb4146378797bb86d80dec44eda6",
+      "go": "03ed3bffe9d7abc9177c9255279955d923d5ef1e18f67ce5a45d722bc51f4c50"
+    },
+    "matmul": {
+      "jwc": "50e2ee7dca092bd17be2b1dafdd4288b6b1fe26a48c1c5e3a170d45ed14343ad",
+      "cpp": "d95ad6218b6373489d123cd32f50770ef9c7a775efc9115f9ad9a627c3d38e03",
+      "rust": "51c251f8b5bbfffe802cac72a16a57d964b21b6448fc8206a2f216f3da9cb763",
+      "go": "2a3c024b3a7345cb6811b66306fac3d56b8cdbdc4f05280ab9aed1def0a2d211"
+    },
+    "mandelbrot": {
+      "jwc": "f501ccb11ad068f028c21485d11d92cbfc3b15b5c5a7565dd8ea8184ed633d92",
+      "cpp": "2527aa3e68d0c5c8b5e05f820f3818915d5416802b07d0ccb4813e13005736bd",
+      "rust": "2fd0b821f1e33b0016b6eb966c9049c05ecb9154b3820ea709d609d3c65ef968",
+      "go": "60bceba85d7e4ed7071df2644d91b03e758febbc740168b1370743c2eb2900a9"
+    },
+    "sort": {
+      "jwc": "526c06c72e5ae72a4c2b3c9885cdd48b30fd23982c62a87b93e208affab15cad",
+      "cpp": "fcb09bcb51e77f34c76476bbcd316bc5b482e68244d248d89725545d3d11c417",
+      "rust": "08c1ce4f435a985113e9ed7d2279d70d2314abdacc04afca429b4c578924049d",
+      "go": "a1c7daeca83c371f529d808adef6e107453042f3b73625406292aeecfe7a2a8b"
+    },
+    "linkedlist": {
+      "jwc": "64a2ed136f4a3fcce13540926f1ba0f7eb34564b916edf4f7a8cc39d0960ea31",
+      "cpp": "7e33d3e29ae1cc8611026610ba8852c65e7ba6a5e62ea3a1fb52fdbabb420491",
+      "rust": "f6b0cc179d8e56794630c5ce05a63a75dc6deb3315e1e0d8fae7bd7acf6cbbc4",
+      "go": "db8c8fd9d590bac4f44613dc851cd016580c204bfb47e20b8972598d15c1c36e"
+    }
+  },
+  "preparation": [
+    {
+      "name": "bootstrap-rust-compiler",
+      "cmd": [
+        "cargo",
+        "build",
+        "--release"
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": "   Compiling jabberwock v0.1.0 (/workspace/jabberwock)\n    Finished `release` profile [optimized] target(s) in 20.62s\n"
+    },
+    {
+      "name": "bootstrap-jwc",
+      "cmd": [
+        "/workspace/jabberwock/target/release/jabberwock",
+        "build",
+        "-o",
+        "/workspace/jabberwock/target/release/jwc-benchmark",
+        "/workspace/jabberwock/jwc/main.jw"
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": "作りました: /workspace/jabberwock/target/release/jwc-benchmark\n"
+    },
+    {
+      "name": "measure-helper",
+      "cmd": [
+        "cc",
+        "-O2",
+        "-o",
+        "/workspace/jabberwock/target/benchmark-report-20261029-work/measure",
+        "/workspace/jabberwock/bench/measure.c"
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    }
+  ],
+  "cases": {
+    "fib": {
+      "status": "FAIL",
+      "commands": [
+        {
+          "stage": "jwc-LLVM",
+          "exit": 0,
+          "cmd": [
+            "/workspace/jabberwock/target/release/jwc-benchmark",
+            "--ll",
+            "/workspace/jabberwock/bench/jabberwock/fib.jw"
+          ],
+          "llvm_bytes": 20496,
+          "stderr": ""
+        },
+        {
+          "stage": "jwc-native",
+          "cmd": [
+            "clang",
+            "-O2",
+            "-flto",
+            "-fuse-ld=lld",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/fib/jwc.ll",
+            "/workspace/jabberwock/runtime/jw_rt.c",
+            "-lm",
+            "-pthread",
+            "-Wno-override-module",
+            "-o",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/fib/jwc"
+          ],
+          "exit": 0,
+          "stdout": "",
+          "stderr": ""
+        },
+        {
+          "stage": "rust",
+          "cmd": [
+            "rustc",
+            "-C",
+            "opt-level=3",
+            "-C",
+            "lto=fat",
+            "--edition",
+            "2021",
+            "-o",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/fib/rust",
+            "/workspace/jabberwock/bench/rust/fib.rs"
+          ],
+          "exit": 0,
+          "stdout": "",
+          "stderr": ""
+        },
+        {
+          "stage": "cpp",
+          "cmd": [
+            "clang++",
+            "-O2",
+            "-flto",
+            "-fuse-ld=lld",
+            "-std=c++17",
+            "-pthread",
+            "-o",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/fib/cpp",
+            "/workspace/jabberwock/bench/cpp/fib.cpp"
+          ],
+          "exit": 0,
+          "stdout": "",
+          "stderr": ""
+        },
+        {
+          "stage": "go",
+          "cmd": [
+            "go",
+            "build",
+            "-o",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/fib/go",
+            "/workspace/jabberwock/bench/go/fib.go"
+          ],
+          "exit": 1,
+          "stdout": "",
+          "stderr": "Go: Unknown option: build\n"
+        }
+      ],
+      "metrics": {},
+      "outputs": {},
+      "reason": "go compilation failed"
+    },
+    "matmul": {
+      "status": "FAIL",
+      "commands": [
+        {
+          "stage": "jwc-LLVM",
+          "exit": 0,
+          "cmd": [
+            "/workspace/jabberwock/target/release/jwc-benchmark",
+            "--ll",
+            "/workspace/jabberwock/bench/jabberwock/matmul.jw"
+          ],
+          "llvm_bytes": 88473,
+          "stderr": ""
+        },
+        {
+          "stage": "jwc-native",
+          "cmd": [
+            "clang",
+            "-O2",
+            "-flto",
+            "-fuse-ld=lld",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/matmul/jwc.ll",
+            "/workspace/jabberwock/runtime/jw_rt.c",
+            "-lm",
+            "-pthread",
+            "-Wno-override-module",
+            "-o",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/matmul/jwc"
+          ],
+          "exit": 0,
+          "stdout": "",
+          "stderr": ""
+        },
+        {
+          "stage": "rust",
+          "cmd": [
+            "rustc",
+            "-C",
+            "opt-level=3",
+            "-C",
+            "lto=fat",
+            "--edition",
+            "2021",
+            "-o",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/matmul/rust",
+            "/workspace/jabberwock/bench/rust/matmul.rs"
+          ],
+          "exit": 0,
+          "stdout": "",
+          "stderr": ""
+        },
+        {
+          "stage": "cpp",
+          "cmd": [
+            "clang++",
+            "-O2",
+            "-flto",
+            "-fuse-ld=lld",
+            "-std=c++17",
+            "-pthread",
+            "-o",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/matmul/cpp",
+            "/workspace/jabberwock/bench/cpp/matmul.cpp"
+          ],
+          "exit": 0,
+          "stdout": "",
+          "stderr": ""
+        },
+        {
+          "stage": "go",
+          "cmd": [
+            "go",
+            "build",
+            "-o",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/matmul/go",
+            "/workspace/jabberwock/bench/go/matmul.go"
+          ],
+          "exit": 1,
+          "stdout": "",
+          "stderr": "Go: Unknown option: build\n"
+        }
+      ],
+      "metrics": {},
+      "outputs": {},
+      "reason": "go compilation failed"
+    },
+    "mandelbrot": {
+      "status": "FAIL",
+      "commands": [
+        {
+          "stage": "jwc-LLVM",
+          "exit": 0,
+          "cmd": [
+            "/workspace/jabberwock/target/release/jwc-benchmark",
+            "--ll",
+            "/workspace/jabberwock/bench/jabberwock/mandelbrot.jw"
+          ],
+          "llvm_bytes": 113535,
+          "stderr": ""
+        },
+        {
+          "stage": "jwc-native",
+          "cmd": [
+            "clang",
+            "-O2",
+            "-flto",
+            "-fuse-ld=lld",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/mandelbrot/jwc.ll",
+            "/workspace/jabberwock/runtime/jw_rt.c",
+            "-lm",
+            "-pthread",
+            "-Wno-override-module",
+            "-o",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/mandelbrot/jwc"
+          ],
+          "exit": 0,
+          "stdout": "",
+          "stderr": ""
+        },
+        {
+          "stage": "rust",
+          "cmd": [
+            "rustc",
+            "-C",
+            "opt-level=3",
+            "-C",
+            "lto=fat",
+            "--edition",
+            "2021",
+            "-o",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/mandelbrot/rust",
+            "/workspace/jabberwock/bench/rust/mandelbrot.rs"
+          ],
+          "exit": 0,
+          "stdout": "",
+          "stderr": ""
+        },
+        {
+          "stage": "cpp",
+          "cmd": [
+            "clang++",
+            "-O2",
+            "-flto",
+            "-fuse-ld=lld",
+            "-std=c++17",
+            "-pthread",
+            "-o",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/mandelbrot/cpp",
+            "/workspace/jabberwock/bench/cpp/mandelbrot.cpp"
+          ],
+          "exit": 0,
+          "stdout": "",
+          "stderr": ""
+        },
+        {
+          "stage": "go",
+          "cmd": [
+            "go",
+            "build",
+            "-o",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/mandelbrot/go",
+            "/workspace/jabberwock/bench/go/mandelbrot.go"
+          ],
+          "exit": 1,
+          "stdout": "",
+          "stderr": "Go: Unknown option: build\n"
+        }
+      ],
+      "metrics": {},
+      "outputs": {},
+      "reason": "go compilation failed"
+    },
+    "sort": {
+      "status": "FAIL",
+      "commands": [
+        {
+          "stage": "jwc-LLVM",
+          "exit": 0,
+          "cmd": [
+            "/workspace/jabberwock/target/release/jwc-benchmark",
+            "--ll",
+            "/workspace/jabberwock/bench/jabberwock/sort.jw"
+          ],
+          "llvm_bytes": 39101,
+          "stderr": ""
+        },
+        {
+          "stage": "jwc-native",
+          "cmd": [
+            "clang",
+            "-O2",
+            "-flto",
+            "-fuse-ld=lld",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/sort/jwc.ll",
+            "/workspace/jabberwock/runtime/jw_rt.c",
+            "-lm",
+            "-pthread",
+            "-Wno-override-module",
+            "-o",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/sort/jwc"
+          ],
+          "exit": 0,
+          "stdout": "",
+          "stderr": ""
+        },
+        {
+          "stage": "rust",
+          "cmd": [
+            "rustc",
+            "-C",
+            "opt-level=3",
+            "-C",
+            "lto=fat",
+            "--edition",
+            "2021",
+            "-o",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/sort/rust",
+            "/workspace/jabberwock/bench/rust/sort.rs"
+          ],
+          "exit": 0,
+          "stdout": "",
+          "stderr": ""
+        },
+        {
+          "stage": "cpp",
+          "cmd": [
+            "clang++",
+            "-O2",
+            "-flto",
+            "-fuse-ld=lld",
+            "-std=c++17",
+            "-pthread",
+            "-o",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/sort/cpp",
+            "/workspace/jabberwock/bench/cpp/sort.cpp"
+          ],
+          "exit": 0,
+          "stdout": "",
+          "stderr": ""
+        },
+        {
+          "stage": "go",
+          "cmd": [
+            "go",
+            "build",
+            "-o",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/sort/go",
+            "/workspace/jabberwock/bench/go/sort.go"
+          ],
+          "exit": 1,
+          "stdout": "",
+          "stderr": "Go: Unknown option: build\n"
+        }
+      ],
+      "metrics": {},
+      "outputs": {},
+      "reason": "go compilation failed"
+    },
+    "linkedlist": {
+      "status": "FAIL",
+      "commands": [
+        {
+          "stage": "jwc-LLVM",
+          "exit": 0,
+          "cmd": [
+            "/workspace/jabberwock/target/release/jwc-benchmark",
+            "--ll",
+            "/workspace/jabberwock/bench/jabberwock/linkedlist.jw"
+          ],
+          "llvm_bytes": 50990,
+          "stderr": ""
+        },
+        {
+          "stage": "jwc-native",
+          "cmd": [
+            "clang",
+            "-O2",
+            "-flto",
+            "-fuse-ld=lld",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/linkedlist/jwc.ll",
+            "/workspace/jabberwock/runtime/jw_rt.c",
+            "-lm",
+            "-pthread",
+            "-Wno-override-module",
+            "-o",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/linkedlist/jwc"
+          ],
+          "exit": 0,
+          "stdout": "",
+          "stderr": ""
+        },
+        {
+          "stage": "rust",
+          "cmd": [
+            "rustc",
+            "-C",
+            "opt-level=3",
+            "-C",
+            "lto=fat",
+            "--edition",
+            "2021",
+            "-o",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/linkedlist/rust",
+            "/workspace/jabberwock/bench/rust/linkedlist.rs"
+          ],
+          "exit": 0,
+          "stdout": "",
+          "stderr": ""
+        },
+        {
+          "stage": "cpp",
+          "cmd": [
+            "clang++",
+            "-O2",
+            "-flto",
+            "-fuse-ld=lld",
+            "-std=c++17",
+            "-pthread",
+            "-o",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/linkedlist/cpp",
+            "/workspace/jabberwock/bench/cpp/linkedlist.cpp"
+          ],
+          "exit": 0,
+          "stdout": "",
+          "stderr": ""
+        },
+        {
+          "stage": "go",
+          "cmd": [
+            "go",
+            "build",
+            "-o",
+            "/workspace/jabberwock/target/benchmark-report-20261029-work/linkedlist/go",
+            "/workspace/jabberwock/bench/go/linkedlist.go"
+          ],
+          "exit": 1,
+          "stdout": "",
+          "stderr": "Go: Unknown option: build\n"
+        }
+      ],
+      "metrics": {},
+      "outputs": {},
+      "reason": "go compilation failed"
+    }
+  },
+  "baseline_comparison": null,
+  "limitations": "Rust-based Jabberwock compiler is bootstrap only. jwc emits LLVM; clang links shared C runtime. Equivalent outputs required. Differences in libraries and algorithms remain; LTO flags are set for each compiled target but are not identical optimizers.",
+  "updated_utc": "2026-10-29T00:01:26.166237+00:00"
+}

@@ -1,0 +1,19 @@
+use std.sets;
+fn main() {
+    let mut s = sets.StrSet.new();
+    print(s.add("b"), s.add("a"), s.add("b"), s.len(), s.is_empty());
+    print(s.has("a"), s.has("z"), s.items());
+    let t = sets.StrSet.of(["a", "c", "a"]);
+    print(t.items(), t.len());
+    print(s.union(t).items(), s.intersect(t).items(), s.minus(t).items(), t.minus(s).items());
+    print(s.remove("a"), s.remove("a"), s.items(), s.contains_all(sets.StrSet.of(["b"])), s.contains_all(t));
+    let mut n = sets.IntSet.of([3, 1, 3, 2]);
+    n.add(-5);
+    print(n.items(), n.has(2), n.len());
+    let cs = sets.CharSet.of("hello".chars());
+    print(cs.items(), cs.has('l'), cs.has('z'));
+    let mut seen = sets.IntSet.new();
+    for x in [5, 3, 5, 1, 3] {
+        if !seen.add(x) { print("dup", x); }
+    }
+}

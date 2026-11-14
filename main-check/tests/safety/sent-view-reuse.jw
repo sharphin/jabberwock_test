@@ -1,0 +1,13 @@
+fn main() {
+    let (own i64)[] ps = [own 1];
+    for p in ps {
+        let chan<i64> ready = chan();
+        let t = spawn(() -> {
+            drop(ps);
+            ready.send(0);
+            for i in range(100000) { let b = own i; drop(b); }
+        });
+        ready.recv();
+        print(*p);
+    }
+}

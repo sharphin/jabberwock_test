@@ -1,0 +1,200 @@
+// 標準ライブラリ std.text: 文字列の補助。`use std.text;` と書いて `text.pad_left("7", 3, "0")` のように使う
+// 長さと位置は文字単位（str のメソッドと同じ）
+
+/// 左を fill（1 文字）で埋めて width 文字にする。もとから width 文字以上ならそのまま
+pub fn str pad_left(str s, i64 width, str fill) {
+    assert(fill.len() == 1);
+    if s.len() >= width { return s; }
+    fill.repeat(width - s.len()) + s
+}
+
+/// 右を fill（1 文字）で埋めて width 文字にする。もとから width 文字以上ならそのまま
+pub fn str pad_right(str s, i64 width, str fill) {
+    assert(fill.len() == 1);
+    if s.len() >= width { return s; }
+    s + fill.repeat(width - s.len())
+}
+
+/// 文字を逆の順に並べる
+pub fn str reverse(str s) {
+    let cs = s.chars();
+    let mut out = "";
+    let mut i = cs.len();
+    while i > 0 {
+        i -= 1;
+        out += cs[i].to_str();
+    }
+    out
+}
+
+/// sub が重ならずに何回出てくるか（sub が空なら実行時エラー）
+pub fn i64 count(str s, str sub) {
+    assert(sub != "");
+    let mut n = 0;
+    let mut rest = s;
+    loop {
+        match rest.find(sub) {
+            case Some(i) -> {
+                n += 1;
+                rest = rest.slice(i + sub.len(), rest.len());
+            }
+            case None -> break;
+        }
+    }
+    n
+}
+
+/// 空でなく、すべて 0〜9 の文字か
+pub fn bool is_digits(str s) {
+    if s == "" { return false; }
+    for c in s.chars() {
+        if !c.is_digit() { return false; }
+    }
+    true
+}
+
+/// UTF-8 のバイトを文字列にする。正しい UTF-8 でなければ None（長すぎる形・サロゲート・0x10FFFF より上は不正）
+pub fn Option<str> from_utf8(ref u8[] b) {
+    let mut out = "";
+    let mut i = 0;
+    let n = b.len();
+    while i < n {
+        let c = b[i] as i64;
+        let mut k = 0;
+        let mut cp = 0;
+        let mut low = 0;
+        if c < 128 {
+            out += chr(c);
+            i += 1;
+            continue;
+        } else if c >= 194 && c <= 223 {
+            k = 1;
+            cp = c - 192;
+            low = 128;
+        } else if c >= 224 && c <= 239 {
+            k = 2;
+            cp = c - 224;
+            low = 2048;
+        } else if c >= 240 && c <= 244 {
+            k = 3;
+            cp = c - 240;
+            low = 65536;
+        } else {
+            return None;
+        }
+        if i + k >= n { return None; }
+        for j in range(1, k + 1) {
+            let d = b[i + j] as i64;
+            if d < 128 || d > 191 { return None; }
+            cp = cp * 64 + (d - 128);
+        }
+        if cp < low || cp > 1114111 || (cp >= 55296 && cp <= 57343) { return None; }
+        out += chr(cp);
+        i += k + 1;
+    }
+    Some(out)
+}
+
+/// s を真ん中に置いて、左右を fill で埋める（割り切れないときは右を多くする）
+pub fn str center(str s, i64 width, str fill) {
+    let n = s.len();
+    if n >= width { return s; }
+    let left = (width - n) / 2;
+    fill.repeat(left) + s + fill.repeat(width - n - left)
+}
+
+/// 左の空白を取る
+pub fn str trim_start(str s) {
+    let cs = s.chars();
+    let mut i = 0;
+    while i < cs.len() && cs[i].is_space() { i += 1; }
+    s.slice(i, cs.len())
+}
+
+/// 右の空白を取る
+pub fn str trim_end(str s) {
+    let cs = s.chars();
+    let mut j = cs.len();
+    while j > 0 && cs[j - 1].is_space() { j -= 1; }
+    s.slice(0, j)
+}
+
+/// 空白で区切った語（空の語は入れない）
+pub fn str[] words(str s) {
+    let str[] mut out = [];
+    let mut cur = "";
+    for c in s.chars() {
+        if c.is_space() {
+            if cur.len() > 0 {
+                out.push(cur);
+                cur = "";
+            }
+        } else {
+            cur += c.to_str();
+        }
+    }
+    if cur.len() > 0 { out.push(cur); }
+    out
+}
+
+/// sub が最後に現れる位置
+pub fn Option<i64> rfind(str s, str sub) {
+    let Option<i64> mut found = None;
+    let mut from = 0;
+    loop {
+        match s.slice(from, s.len()).find(sub) {
+            case Some(i) -> {
+                found = Some(from + i);
+                from = from + i + 1;
+                if sub.len() == 0 || from > s.len() { break; }
+            }
+            case None -> break;
+        }
+    }
+    found
+}
+
+/// 整数を base 進数（2〜36）の文字列にする。英字は小文字
+pub fn str to_base(i64 x, i64 base) {
+    assert(base >= 2 && base <= 36);
+    let digits = "0123456789abcdefghijklmnopqrstuvwxyz";
+    if x == 0 { return "0"; }
+    let neg = x < 0;
+    let mut out = "";
+    let mut v = x;
+    while v != 0 {
+        let mut d = v % base;
+        if d < 0 { d = -d; }
+        out = digits.slice(d, d + 1) + out;
+        v = v / base;
+    }
+    if neg { "-" + out } else { out }
+}
+
+/// 16 進数の文字列（`to_base(x, 16)`）
+pub fn str hex(i64 x) {
+    to_base(x, 16)
+}
+
+/// base 進数（2〜36）の文字列を読む。前に `-` を書ける。大文字も読む。読めなければ None
+pub fn Option<i64> parse_int(str s, i64 base) {
+    assert(base >= 2 && base <= 36);
+    let cs = s.chars();
+    if cs.len() == 0 { return None; }
+    let mut i = 0;
+    let neg = cs[0] == '-';
+    if neg || cs[0] == '+' { i = 1; }
+    if i >= cs.len() { return None; }
+    let mut v = 0;
+    while i < cs.len() {
+        let k = cs[i] as i64;
+        let mut d = 99;
+        if k >= 48 && k <= 57 { d = k - 48; }
+        if k >= 97 && k <= 122 { d = k - 97 + 10; }
+        if k >= 65 && k <= 90 { d = k - 65 + 10; }
+        if d >= base { return None; }
+        if neg { v = v * base - d; } else { v = v * base + d; }
+        i += 1;
+    }
+    Some(v)
+}

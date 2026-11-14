@@ -1,0 +1,415 @@
+{
+  "recorded_at_utc": "2026-10-26T03:14:58.258704+00:00",
+  "source_revision": "9250e0e75d87eecaae4830fafcdf6769b6652236",
+  "scope": "Additional local Linux practical verification. Not all 12 items passed. No compiler-source fixes in this change.",
+  "compiler_release_suite": {
+    "command": "JW_NATIVE=1 JW_REQUIRE_RETIREMENT_TESTS=1 cargo test --release --no-fail-fast",
+    "exit_code": 0,
+    "runner_passed": 366,
+    "runner_failed": 0,
+    "groups": 37,
+    "log_path": "/tmp/practical-release-all.log",
+    "log_sha256": "7afbb4dfa8baf13a67945821f6c60636b58c13a1f5353556533a84e16be93079",
+    "automatic_debug_IR_native_comparison": "not executed in the release library; explicit native/fuzz/jwc/retirement tests run independently"
+  },
+  "effects_script_exit_code": 1,
+  "effects": {
+    "scope": "Partial practical items 10/11/12: effects occur exactly once before success/error; not whole-item acceptance",
+    "platform": "linux",
+    "instrumentation": "none",
+    "ordinary_cli_JW_NATIVE": "unset",
+    "compiler_sha256": {
+      "debug": "7c0d3ed3d2a636b7ab3b7f544b85271506704c8991cd02159bbc4f9810546b1d",
+      "release": "5b0d216a9f9cc7ed000b338d5bd3c20447315fd0aa2ae42c086808781c63186f",
+      "jwc": "c61b6dde038236d79eb20ecd67408b0bc3ce2db8ffed8130cc148c7e3762eb02"
+    },
+    "source_sha256": {
+      "runtime/jw_rt.c": "631aeeed19a18433dd2d9499c5b3b83391da9a8c0617cf04e0d5b24f8f808d95",
+      "scripts/retest_practical_effects.py": "61ea2f506c4bc62054ad0a3933755368d16cadf9ade207781c71f0b8b33d5e17",
+      "tests/safety/effect-once.jw": "65c8910d9fa036075a0778329d2b44f4e06bbdeab4ef5c376fa95a8c29a35777",
+      "tests/safety/effect-before-error.jw": "76b631a20d74bdafb9d9c9bfb37baf4941f3069820ca22c5c75c1a20dd6e42b0"
+    },
+    "results": [
+      {
+        "case": "effect-once.jw",
+        "configuration": "debug-checked",
+        "status": "fail",
+        "expected_exit": 0,
+        "expected_file": "x",
+        "observed_file": "xx",
+        "observed": {
+          "exit": 0,
+          "stdout": "",
+          "stderr": ""
+        }
+      },
+      {
+        "case": "effect-once.jw",
+        "configuration": "debug-elided",
+        "status": "fail",
+        "expected_exit": 0,
+        "expected_file": "x",
+        "observed_file": "xx",
+        "observed": {
+          "exit": 0,
+          "stdout": "",
+          "stderr": ""
+        }
+      },
+      {
+        "case": "effect-once.jw",
+        "configuration": "release-checked",
+        "status": "pass",
+        "expected_exit": 0,
+        "expected_file": "x",
+        "observed_file": "x",
+        "observed": {
+          "exit": 0,
+          "stdout": "",
+          "stderr": ""
+        }
+      },
+      {
+        "case": "effect-once.jw",
+        "configuration": "release-elided",
+        "status": "pass",
+        "expected_exit": 0,
+        "expected_file": "x",
+        "observed_file": "x",
+        "observed": {
+          "exit": 0,
+          "stdout": "",
+          "stderr": ""
+        }
+      },
+      {
+        "case": "effect-once.jw",
+        "configuration": "rust-native-O1",
+        "status": "pass",
+        "expected_exit": 0,
+        "expected_file": "x",
+        "observed_file": "x",
+        "observed": {
+          "exit": 0,
+          "stdout": "",
+          "stderr": "[live] 0\n"
+        }
+      },
+      {
+        "case": "effect-once.jw",
+        "configuration": "rust-native-O2",
+        "status": "pass",
+        "expected_exit": 0,
+        "expected_file": "x",
+        "observed_file": "x",
+        "observed": {
+          "exit": 0,
+          "stdout": "",
+          "stderr": "[live] 0\n"
+        }
+      },
+      {
+        "case": "effect-once.jw",
+        "configuration": "jwc-native-O1",
+        "status": "pass",
+        "expected_exit": 0,
+        "expected_file": "x",
+        "observed_file": "x",
+        "observed": {
+          "exit": 0,
+          "stdout": "",
+          "stderr": "[live] 0\n"
+        }
+      },
+      {
+        "case": "effect-once.jw",
+        "configuration": "jwc-native-O2",
+        "status": "pass",
+        "expected_exit": 0,
+        "expected_file": "x",
+        "observed_file": "x",
+        "observed": {
+          "exit": 0,
+          "stdout": "",
+          "stderr": "[live] 0\n"
+        }
+      },
+      {
+        "case": "effect-before-error.jw",
+        "configuration": "debug-checked",
+        "status": "fail",
+        "expected_exit": 1,
+        "expected_file": "x",
+        "observed_file": "xx",
+        "observed": {
+          "exit": 1,
+          "stdout": "",
+          "stderr": "error: 無効になった参照を使いました (dangling reference)\n  --> /workspace/jabberwock/tests/safety/effect-before-error.jw:11:11\n   |\n 8 |     let r = ref x;\n   |             ----- ここで `x` を借りた\n 9 |     drop(x);\n   |     ------- ここで解放された: `x` が drop で明示的に解放された\n   ...\n11 |     print(*r);\n   |           ^^ ここで使ったが、借りた先はもう存在しない\n   |\n   = note: 参照は、借りた元の所有者より長くは生きられません\n"
+        }
+      },
+      {
+        "case": "effect-before-error.jw",
+        "configuration": "debug-elided",
+        "status": "fail",
+        "expected_exit": 1,
+        "expected_file": "x",
+        "observed_file": "xx",
+        "observed": {
+          "exit": 1,
+          "stdout": "",
+          "stderr": "error: 無効になった参照を使いました (dangling reference)\n  --> /workspace/jabberwock/tests/safety/effect-before-error.jw:11:11\n   |\n 8 |     let r = ref x;\n   |             ----- ここで `x` を借りた\n 9 |     drop(x);\n   |     ------- ここで解放された: `x` が drop で明示的に解放された\n   ...\n11 |     print(*r);\n   |           ^^ ここで使ったが、借りた先はもう存在しない\n   |\n   = note: 参照は、借りた元の所有者より長くは生きられません\n"
+        }
+      },
+      {
+        "case": "effect-before-error.jw",
+        "configuration": "release-checked",
+        "status": "pass",
+        "expected_exit": 1,
+        "expected_file": "x",
+        "observed_file": "x",
+        "observed": {
+          "exit": 1,
+          "stdout": "",
+          "stderr": "error: 無効になった参照を使いました (dangling reference)\n  --> /workspace/jabberwock/tests/safety/effect-before-error.jw:11:11\n   |\n 8 |     let r = ref x;\n   |             ----- ここで `x` を借りた\n 9 |     drop(x);\n   |     ------- ここで解放された: `x` が drop で明示的に解放された\n   ...\n11 |     print(*r);\n   |           ^^ ここで使ったが、借りた先はもう存在しない\n   |\n   = note: 参照は、借りた元の所有者より長くは生きられません\n"
+        }
+      },
+      {
+        "case": "effect-before-error.jw",
+        "configuration": "release-elided",
+        "status": "pass",
+        "expected_exit": 1,
+        "expected_file": "x",
+        "observed_file": "x",
+        "observed": {
+          "exit": 1,
+          "stdout": "",
+          "stderr": "error: 無効になった参照を使いました (dangling reference)\n  --> /workspace/jabberwock/tests/safety/effect-before-error.jw:11:11\n   |\n 8 |     let r = ref x;\n   |             ----- ここで `x` を借りた\n 9 |     drop(x);\n   |     ------- ここで解放された: `x` が drop で明示的に解放された\n   ...\n11 |     print(*r);\n   |           ^^ ここで使ったが、借りた先はもう存在しない\n   |\n   = note: 参照は、借りた元の所有者より長くは生きられません\n"
+        }
+      },
+      {
+        "case": "effect-before-error.jw",
+        "configuration": "rust-native-O1",
+        "status": "pass",
+        "expected_exit": 1,
+        "expected_file": "x",
+        "observed_file": "x",
+        "observed": {
+          "exit": 1,
+          "stdout": "",
+          "stderr": "error: 無効になった参照を使いました (dangling reference)\n  --> /workspace/jabberwock/tests/safety/effect-before-error.jw:11:11\n   |\n 8 |     let r = ref x;\n   |             ----- ここで `x` を借りた\n 9 |     drop(x);\n   |     ------- ここで解放された: `x` が drop で明示的に解放された\n   ...\n11 |     print(*r);\n   |           ^^ ここで使ったが、借りた先はもう存在しない\n   |\n   = note: 参照は、借りた元の所有者より長くは生きられません\n"
+        }
+      },
+      {
+        "case": "effect-before-error.jw",
+        "configuration": "rust-native-O2",
+        "status": "pass",
+        "expected_exit": 1,
+        "expected_file": "x",
+        "observed_file": "x",
+        "observed": {
+          "exit": 1,
+          "stdout": "",
+          "stderr": "error: 無効になった参照を使いました (dangling reference)\n  --> /workspace/jabberwock/tests/safety/effect-before-error.jw:11:11\n   |\n 8 |     let r = ref x;\n   |             ----- ここで `x` を借りた\n 9 |     drop(x);\n   |     ------- ここで解放された: `x` が drop で明示的に解放された\n   ...\n11 |     print(*r);\n   |           ^^ ここで使ったが、借りた先はもう存在しない\n   |\n   = note: 参照は、借りた元の所有者より長くは生きられません\n"
+        }
+      },
+      {
+        "case": "effect-before-error.jw",
+        "configuration": "jwc-native-O1",
+        "status": "pass",
+        "expected_exit": 1,
+        "expected_file": "x",
+        "observed_file": "x",
+        "observed": {
+          "exit": 1,
+          "stdout": "",
+          "stderr": "error: 無効になった参照を使いました (dangling reference)\n  --> /workspace/jabberwock/tests/safety/effect-before-error.jw:11:11\n   |\n 8 |     let r = ref x;\n   |             ----- ここで `x` を借りた\n 9 |     drop(x);\n   |     ------- ここで解放された: `x` が drop で明示的に解放された\n   ...\n11 |     print(*r);\n   |           ^^ ここで使ったが、借りた先はもう存在しない\n   |\n   = note: 参照は、借りた元の所有者より長くは生きられません\n"
+        }
+      },
+      {
+        "case": "effect-before-error.jw",
+        "configuration": "jwc-native-O2",
+        "status": "pass",
+        "expected_exit": 1,
+        "expected_file": "x",
+        "observed_file": "x",
+        "observed": {
+          "exit": 1,
+          "stdout": "",
+          "stderr": "error: 無効になった参照を使いました (dangling reference)\n  --> /workspace/jabberwock/tests/safety/effect-before-error.jw:11:11\n   |\n 8 |     let r = ref x;\n   |             ----- ここで `x` を借りた\n 9 |     drop(x);\n   |     ------- ここで解放された: `x` が drop で明示的に解放された\n   ...\n11 |     print(*r);\n   |           ^^ ここで使ったが、借りた先はもう存在しない\n   |\n   = note: 参照は、借りた元の所有者より長くは生きられません\n"
+        }
+      }
+    ],
+    "infrastructure_errors": []
+  },
+  "resource_edges": {
+    "script_exit_code": 1,
+    "command": "python3 scripts/retest_safety_edges.py --compiler target/release/jabberwock --jwc /tmp/jw-jwc-test-314047/jwc --output /tmp/practical-release-8-9.json",
+    "compiler_sha256": {
+      "rust": "5b0d216a9f9cc7ed000b338d5bd3c20447315fd0aa2ae42c086808781c63186f",
+      "jwc": "c61b6dde038236d79eb20ecd67408b0bc3ce2db8ffed8130cc148c7e3762eb02"
+    },
+    "infrastructure_errors": [],
+    "cases": [
+      {
+        "item": 9,
+        "case": "rust--typed",
+        "status": "fail",
+        "exit": 0,
+        "stderr": "",
+        "stdout_sha256": "b3e2ea7425c954ddcc3f08ea15d8cc130b4379d8e01aa973b69c5039e89c33bc"
+      },
+      {
+        "item": 9,
+        "case": "rust--typed-within-limit",
+        "status": "pass",
+        "exit": 0,
+        "stderr": "",
+        "stdout_sha256": "db5a9a20faa14ac6e6cbb6adce4cd6136ec17f92c13288994fd44429222e8172"
+      },
+      {
+        "item": 9,
+        "case": "rust--ir-raw",
+        "status": "fail",
+        "exit": 0,
+        "stderr": "",
+        "stdout_sha256": "ab182d4951dc8aa9f3e9f1dd9c1cbc44c9957a1e2ada7c47503fadacbac7d70d"
+      },
+      {
+        "item": 9,
+        "case": "rust--ir-raw-within-limit",
+        "status": "pass",
+        "exit": 0,
+        "stderr": "",
+        "stdout_sha256": "ab182d4951dc8aa9f3e9f1dd9c1cbc44c9957a1e2ada7c47503fadacbac7d70d"
+      },
+      {
+        "item": 9,
+        "case": "rust--ir",
+        "status": "fail",
+        "exit": 0,
+        "stderr": "",
+        "stdout_sha256": "ab182d4951dc8aa9f3e9f1dd9c1cbc44c9957a1e2ada7c47503fadacbac7d70d"
+      },
+      {
+        "item": 9,
+        "case": "rust--ir-within-limit",
+        "status": "pass",
+        "exit": 0,
+        "stderr": "",
+        "stdout_sha256": "ab182d4951dc8aa9f3e9f1dd9c1cbc44c9957a1e2ada7c47503fadacbac7d70d"
+      },
+      {
+        "item": 9,
+        "case": "rust--ll",
+        "status": "fail",
+        "exit": 0,
+        "stderr": "",
+        "stdout_sha256": "87e1ae9b22189b85c177fd7cdf09965b75d2c8c8d6b7a428f11941562591f13f"
+      },
+      {
+        "item": 9,
+        "case": "rust--ll-within-limit",
+        "status": "pass",
+        "exit": 0,
+        "stderr": "",
+        "stdout_sha256": "813a12bfec5323654fd01c05a60ee91678e4efe1a680781c6580ea2d265b8998"
+      },
+      {
+        "item": 9,
+        "case": "jwc--typed",
+        "status": "fail",
+        "exit": 0,
+        "stderr": "",
+        "stdout_sha256": "b3e2ea7425c954ddcc3f08ea15d8cc130b4379d8e01aa973b69c5039e89c33bc"
+      },
+      {
+        "item": 9,
+        "case": "jwc--typed-within-limit",
+        "status": "pass",
+        "exit": 0,
+        "stderr": "",
+        "stdout_sha256": "db5a9a20faa14ac6e6cbb6adce4cd6136ec17f92c13288994fd44429222e8172"
+      },
+      {
+        "item": 9,
+        "case": "jwc--ir-raw",
+        "status": "fail",
+        "exit": 0,
+        "stderr": "",
+        "stdout_sha256": "ab182d4951dc8aa9f3e9f1dd9c1cbc44c9957a1e2ada7c47503fadacbac7d70d"
+      },
+      {
+        "item": 9,
+        "case": "jwc--ir-raw-within-limit",
+        "status": "pass",
+        "exit": 0,
+        "stderr": "",
+        "stdout_sha256": "ab182d4951dc8aa9f3e9f1dd9c1cbc44c9957a1e2ada7c47503fadacbac7d70d"
+      },
+      {
+        "item": 9,
+        "case": "jwc--ir",
+        "status": "fail",
+        "exit": 0,
+        "stderr": "",
+        "stdout_sha256": "ab182d4951dc8aa9f3e9f1dd9c1cbc44c9957a1e2ada7c47503fadacbac7d70d"
+      },
+      {
+        "item": 9,
+        "case": "jwc--ir-within-limit",
+        "status": "pass",
+        "exit": 0,
+        "stderr": "",
+        "stdout_sha256": "ab182d4951dc8aa9f3e9f1dd9c1cbc44c9957a1e2ada7c47503fadacbac7d70d"
+      },
+      {
+        "item": 9,
+        "case": "jwc--ll",
+        "status": "fail",
+        "exit": 0,
+        "stderr": "",
+        "stdout_sha256": "87e1ae9b22189b85c177fd7cdf09965b75d2c8c8d6b7a428f11941562591f13f"
+      },
+      {
+        "item": 9,
+        "case": "jwc--ll-within-limit",
+        "status": "pass",
+        "exit": 0,
+        "stderr": "",
+        "stdout_sha256": "813a12bfec5323654fd01c05a60ee91678e4efe1a680781c6580ea2d265b8998"
+      },
+      {
+        "item": 8,
+        "case": "interp-allocation-failure",
+        "status": "pass",
+        "exit": 1,
+        "stderr": "error: メモリが足りません\n --> /workspace/jabberwock/tests/safety/resource-exhaustion.jw:2:19\n  |\n2 | fn main() { print(\"x\".repeat(281474976710656).len()); }\n  |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^ repeat(281474976710656)\n",
+        "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "item": 8,
+        "case": "rust-native-allocation-failure",
+        "status": "fail",
+        "exit": 2,
+        "stderr": "内部エラー: メモリが足りません\n",
+        "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "item": 8,
+        "case": "jwc-native-allocation-failure",
+        "status": "fail",
+        "exit": 2,
+        "stderr": "内部エラー: メモリが足りません\n",
+        "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    ]
+  },
+  "limitations": [
+    "Effects cases are not sanitizer-instrumented.",
+    "Release test count includes existing conditional test returns; it is not a count of native comparisons.",
+    "Items 8 and 9 still fail. Item 10 still repeats external effects in the debug CLI.",
+    "Item 11 still lacks a complete path inventory and failure-injection coverage.",
+    "Windows current-change tests and LSan remain unverified. GitHub jobs for source revision did not start.",
+    "Local logs and this record are not GitHub Actions artifacts."
+  ]
+}

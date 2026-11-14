@@ -1,0 +1,13 @@
+// 項目10/11: エラーより前の効果を再実行せず、後の効果は起こさない。
+fn append(str path) {
+    let before = read_file(path).unwrap_or("");
+    write_file(path, before + "x");
+}
+fn main() {
+    let x = own 9;
+    let r = ref x;
+    drop(x);
+    append(args()[0]);
+    print(*r);
+    append(args()[0]);
+}

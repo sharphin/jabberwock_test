@@ -1,0 +1,60 @@
+// 二分探索木（試しに書いたプログラム）。ref の引数には ref を書かずに渡せる（自動で借りる）
+struct Node {
+    i64 key;
+    Option<own Node> left;
+    Option<own Node> right;
+}
+
+struct Tree {
+    Option<own Node> root;
+    i64 size;
+
+    fn mut insert(i64 key) {
+        size += 1;
+        insert_at(ref mut root, key);
+    }
+
+    fn bool contains(i64 key) {
+        let mut cur = ref root;
+        loop {
+            match cur {
+                case None -> return false;
+                case Some(n) -> {
+                    if n.key == key { return true; }
+                    if key < n.key { cur = ref n.left; } else { cur = ref n.right; }
+                }
+            }
+        }
+    }
+}
+
+fn insert_at(ref mut Option<own Node> slot, i64 key) {
+    match slot {
+        case None -> *slot = Some(own Node { key: key, left: None, right: None });
+        case Some(n) -> {
+            if key < n.key { insert_at(ref mut n.left, key); } else { insert_at(ref mut n.right, key); }
+        }
+    }
+}
+
+fn walk(ref Option<own Node> t, ref mut i64[] out) {
+    match t {
+        case None -> {}
+        case Some(n) -> {
+            walk(n.left, out);
+            out.push(n.key);
+            walk(n.right, out);
+        }
+    }
+}
+
+fn main() {
+    let mut t = Tree { root: None, size: 0 };
+    for k in [5, 3, 8, 1, 4, 9, 7] {
+        t.insert(k);
+    }
+    let i64[] mut keys = [];
+    walk(t.root, ref mut keys);
+    print("size {t.size}: {keys}");
+    print(t.contains(4), t.contains(6));
+}

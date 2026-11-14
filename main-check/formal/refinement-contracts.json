@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "contracts": [
+    {
+      "theorem": "JabberwockFormal.EmittedGate.branch_continues_iff_valid",
+      "expected_type": "∀ saved current : BitVec 64, JabberwockFormal.EmittedGate.executeGateBranch saved current = JabberwockFormal.EmittedGate.GateBranch.continue ↔ current = saved ∧ current ≠ (18446744073709551615 : BitVec 64)"
+    },
+    {
+      "theorem": "JabberwockFormal.EmittedGate.no_retired_gate",
+      "expected_type": "∀ saved : BitVec 64, JabberwockFormal.EmittedGate.llvmContinues saved (18446744073709551615 : BitVec 64) = false"
+    },
+    {
+      "theorem": "JabberwockFormal.ElisionDecision.sound_elision_preserves_read",
+      "expected_type": "∀ (facts : JabberwockFormal.CheckElision.AnalyzerFacts) (root : Option JabberwockFormal.CheckElision.AnalyzerFact) (i : Nat) (a : JabberwockFormal.CheckElision.Access), JabberwockFormal.ElisionDecision.FactSoundAtAccess facts root a → JabberwockFormal.ElisionDecision.elideFirst facts root i = true → JabberwockFormal.CheckElision.checkedRead a.saved a.current a.payload = JabberwockFormal.CheckElision.uncheckedRead a.saved a.current a.payload"
+    },
+    {
+      "theorem": "JabberwockFormal.Jwc.ReferenceAccess.successful_write_is_writable",
+      "expected_type": "∀ (writable : Bool) (saved current : BitVec 64), JabberwockFormal.Jwc.ReferenceAccess.checkedWrite writable saved current = Except.ok () → writable = true"
+    },
+    {
+      "theorem": "JabberwockFormal.Jwc.ReferenceAccess.move_preserves_unique",
+      "expected_type": "∀ {s result : JabberwockFormal.Ownership.Store} {source target : Nat}, JabberwockFormal.Ownership.Unique s → JabberwockFormal.Jwc.ReferenceAccess.moveOwner s source target = Except.ok result → JabberwockFormal.Ownership.Unique result"
+    },
+    {
+      "theorem": "JabberwockFormal.Rust.ReferenceAccess.successful_write_is_writable",
+      "expected_type": "∀ (writable : Bool) (saved current : BitVec 64), JabberwockFormal.Rust.ReferenceAccess.checkedWrite writable saved current = Except.ok () → writable = true"
+    },
+    {
+      "theorem": "JabberwockFormal.Rust.ReferenceAccess.move_preserves_unique",
+      "expected_type": "∀ {s result : JabberwockFormal.Ownership.Store} {source target : Nat}, JabberwockFormal.Ownership.Unique s → JabberwockFormal.Rust.ReferenceAccess.moveOwner s source target = Except.ok result → JabberwockFormal.Ownership.Unique result"
+    }
+  ]
+}

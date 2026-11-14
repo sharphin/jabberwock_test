@@ -1,0 +1,222 @@
+// std.cli: コマンドライン引数を読む。`use std.cli;` で次のように使う。
+//   let mut p = cli.Parser.new("wc", "行を数える");
+//   p.flag("verbose", "v", "詳しく出す");
+//   p.option("out", "o", "出力先", "-");   // 値をとるオプション（4 つめは既定値。なければ ""）
+//   p.arg("file", "読むファイル");          // 位置引数の名前（使い方の表示だけに使う）
+//   let a = match p.parse(args()) {
+//       case Ok(a) -> a;
+//       case Err(e) -> { eprint(e); eprint(p.usage()); exit(2); }
+//   };
+//   if a.help { print(p.usage()); exit(0); }
+//   a.has("verbose")  a.get("out")  a.get_int("n")  a.rest（位置引数）
+// 書き方: `--name` `--name=値` `--name 値` `-v` `-vq`（まとめた短い名前） `-o 値` `-o値`。`--` のあとはすべて位置引数。
+// `-` だけ・`-5` のように数字が続くものは位置引数。`-h` / `--help` は `help` を立てる（自分で -h を決めたらそちら）。
+
+/// `-5` のように `-` のすぐあとが数字か
+fn bool is_number_like(str x) {
+    let cs = x.chars();
+    cs.len() > 1 && cs[1].is_digit()
+}
+
+/// 表示の幅（ASCII は 1、日本語など U+1100 以上は 2 とみなす）
+fn i64 width_of(str s) {
+    let mut w = 0;
+    for c in s.chars() {
+        w += if c as i64 >= 0x1100 { 2 } else { 1 };
+    }
+    w
+}
+
+struct Spec {
+    str long;
+    str short;
+    str help;
+    bool takes_value;
+    str fallback;
+}
+
+/// 読んだ結果
+pub struct Args {
+    // 書かれたフラグ・オプションの名前（長い名前）
+    bool[str] given;
+    // オプションの値（書かれなかったものは既定値。既定値のないものは入らない）
+    str[str] values;
+    // 位置引数（書かれた順）
+    str[] rest;
+    // `-h` か `--help` があった
+    bool help;
+
+    /// フラグかオプションが書かれたか
+    fn bool has(str name) { given.contains(name) }
+
+    /// オプションの値（書かれなければ既定値。既定値もなければ ""）
+    fn str get(str name) {
+        if values.contains(name) { return values[name]; }
+        ""
+    }
+
+    /// オプションの値を整数にしたもの（値がない・整数でなければ None）
+    fn Option<i64> get_int(str name) {
+        if values.contains(name) { return values[name].to_int(); }
+        None
+    }
+}
+
+pub struct Parser {
+    str prog;
+    str about;
+    Spec[] specs;
+    str[] arg_names;
+    str[] arg_helps;
+
+    /// prog はプログラムの名前、about は 1 行の説明（使い方の表示に出す）
+    static fn Parser new(str prog, str about) { Parser { prog: prog, about: about, specs: [], arg_names: [], arg_helps: [] } }
+
+    /// 値をとらないフラグ（short は 1 文字か ""）
+    fn mut flag(str long, str short, str help) {
+        specs.push(Spec { long: long, short: short, help: help, takes_value: false, fallback: "" });
+    }
+
+    /// 値をとるオプション（fallback が "" なら既定値なし）
+    fn mut option(str long, str short, str help, str fallback) {
+        specs.push(Spec { long: long, short: short, help: help, takes_value: true, fallback: fallback });
+    }
+
+    /// 位置引数の名前と説明（使い方の表示だけに使う。数は調べない）
+    fn mut arg(str arg_name, str help) {
+        arg_names.push(arg_name);
+        arg_helps.push(help);
+    }
+
+    /// 引数を読む（`args()` をそのまま渡す。プログラムの名前は入っていない）。知らないオプション・値がないときは Err
+    fn Result<Args, str> parse(ref str[] argv) {
+        let mut a = Args { given: [], values: [], rest: [], help: false };
+        for s in specs {
+            if s.takes_value && s.fallback != "" { a.values[s.long] = s.fallback; }
+        }
+        let n = argv.len();
+        let mut i = 0;
+        let mut only_rest = false;
+        while i < n {
+            let x = argv[i];
+            i++;
+            if only_rest || x == "-" || !x.starts_with("-") || is_number_like(x) {
+                a.rest.push(x);
+                continue;
+            }
+            if x == "--" {
+                only_rest = true;
+                continue;
+            }
+            if x.starts_with("--") {
+                let body = x.slice(2, x.len());
+                let mut key = body;
+                let mut val = "";
+                let mut has_val = false;
+                match body.find("=") {
+                    case Some(k) -> {
+                        key = body.slice(0, k);
+                        val = body.slice(k + 1, body.len());
+                        has_val = true;
+                    }
+                    case None -> {}
+                }
+                let k = find_long(key);
+                if k < 0 {
+                    if key == "help" && !has_val { a.help = true; continue; }
+                    return Err("知らないオプションです: --" + key);
+                }
+                let s = ref specs[k];
+                if !s.takes_value {
+                    if has_val { return Err("--" + key + " は値をとりません"); }
+                    a.given[key] = true;
+                    continue;
+                }
+                if !has_val {
+                    if i >= n { return Err("--" + key + " に値がありません"); }
+                    val = argv[i];
+                    i++;
+                }
+                a.given[key] = true;
+                a.values[key] = val;
+                continue;
+            }
+            // 短い名前（まとめて書ける。値をとるものはそこで終わり、残りか次の引数が値）
+            let cs = x.chars();
+            let mut j = 1;
+            while j < cs.len() {
+                let c = cs[j].to_str();
+                j++;
+                let k = find_short(c);
+                if k < 0 {
+                    if c == "h" { a.help = true; continue; }
+                    return Err("知らないオプションです: -" + c);
+                }
+                let s = ref specs[k];
+                a.given[s.long] = true;
+                if s.takes_value {
+                    let mut val = x.slice(j, x.len());
+                    if j >= cs.len() {
+                        if i >= n { return Err("-" + c + " に値がありません"); }
+                        val = argv[i];
+                        i++;
+                    }
+                    a.values[s.long] = val;
+                    break;
+                }
+            }
+        }
+        Ok(a)
+    }
+
+    fn i64 find_long(str key) {
+        for (i, s) in specs {
+            if s.long == key { return i; }
+        }
+        -1
+    }
+
+    fn i64 find_short(str c) {
+        for (i, s) in specs {
+            if s.short != "" && s.short == c { return i; }
+        }
+        -1
+    }
+
+    /// 使い方の説明（最後に改行はつけない）
+    fn str usage() {
+        let mut head = "使い方: " + prog;
+        if specs.len() > 0 { head += " [オプション]"; }
+        for x in arg_names { head += " <" + x + ">"; }
+        let mut out = head;
+        if about != "" { out += "\n" + about; }
+        let str[] mut lefts = [];
+        let str[] mut helps = [];
+        for (i, x) in arg_names {
+            lefts.push("<" + x + ">");
+            helps.push(arg_helps[i]);
+        }
+        let first_opt = lefts.len();
+        for s in specs {
+            let mut l = if s.short != "" { "-" + s.short + ", " } else { "    " };
+            l += "--" + s.long;
+            if s.takes_value { l += " <値>"; }
+            let mut h = s.help;
+            if s.takes_value && s.fallback != "" { h += "（既定: " + s.fallback + "）"; }
+            lefts.push(l);
+            helps.push(h);
+        }
+        if find_short("h") < 0 && find_long("help") < 0 {
+            lefts.push("-h, --help");
+            helps.push("この説明を出す");
+        }
+        let mut width = 0;
+        for l in lefts { width = width.max(width_of(l)); }
+        for (i, l) in lefts {
+            if i == 0 && first_opt > 0 { out += "\n\n引数:"; }
+            if i == first_opt { out += "\n\nオプション:"; }
+            out += "\n  " + l + " ".repeat(width - width_of(l) + 2) + helps[i];
+        }
+        out
+    }
+}

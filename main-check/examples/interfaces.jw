@@ -1,0 +1,37 @@
+// interface（Go 風）: メソッドがそろっていれば、宣言しなくても当てはまる
+
+interface Shape {
+    fn i64 area();
+    fn str name();
+}
+
+struct Square {
+    i64 side;
+
+    fn i64 area() { side * side }
+    fn str name() { "正方形" }
+}
+
+struct Rect {
+    i64 w;
+    i64 h;
+
+    fn i64 area() { w * h }
+    fn str name() { "長方形" }
+}
+
+fn describe<T: Shape>(ref T s) {
+    print(s.name(), "の面積は", s.area());
+}
+
+fn T max<T: ordered>(T a, T b) {
+    if a > b { a } else { b }
+}
+
+fn main() {
+    let sq = own Square { side: 3 };
+    let r = own Rect { w: 2, h: 5 };
+    describe(ref sq);
+    describe(ref r);
+    print(max(sq.area(), r.area()), max("apple", "banana"));
+}

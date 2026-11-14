@@ -1,0 +1,24 @@
+// 標準ライブラリ std.clipboard: クリップボードの文字。`use std.clipboard;` と書いて使う。今は Windows だけ（ほかの OS では Err）
+//   let n = clipboard.set_text(password, true)?;     // true なら秘密（クリップボードの履歴・ほかの端末への同期に載せない）
+//   time.sleep(30000);
+//   clipboard.clear_if(n)?;                           // そのあとだれも変えていなければ消す（秘密をもう一度読まない）
+//   let s = clipboard.get_text()?;                    // 置いてある文字（なければ ""）
+
+/// 文字を置く。置いたあとの番号を返す（clear_if に渡す）
+pub fn Result<i64, str> set_text(str s, bool secret) { __clip_set(s, if secret { 1 } else { 0 }) }
+
+/// 置いてある文字。文字でなければ ""
+pub fn Result<str, str> get_text() { __clip_get() }
+
+/// set_text のあと、だれもクリップボードを変えていなければ消す。消したら true
+pub fn Result<bool, str> clear_if(i64 n) {
+    assert(n >= 0);
+    let r = __clip_clear(n)?;
+    Ok(r == 1)
+}
+
+/// 何が置いてあっても消す
+pub fn Result<(), str> clear() {
+    __clip_clear(-1)?;
+    Ok(())
+}

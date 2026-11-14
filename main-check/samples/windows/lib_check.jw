@@ -1,0 +1,57 @@
+// Windows の実機で std の追加分を確かめるサンプル（fs・date・csv・regex・hash・base64・random）。
+// 今いるフォルダーの下に jw_lib_check というフォルダーを作り、最後に消す。出力は docs/windows-std-check.md の想定と比べる。
+use std.fs;
+use std.date;
+use std.csv;
+use std.regex;
+use std.hash;
+use std.base64;
+use std.random;
+
+fn Result<(), str> files() {
+    let top = "jw_lib_check";
+    if fs.exists(top) { fs.remove_all(top)?; }
+    fs.make_dir(top)?;
+    fs.make_dir(top + "/sub")?;
+    fs.write_text_atomic(top + "/a.txt", "こんにちは\r\n")?;
+    fs.copy(top + "/a.txt", top + "/sub/b.txt")?;
+    let info = fs.stat(top + "/sub/b.txt")?;
+    print("fs", info.size, info.is_file, info.is_dir, info.is_link, info.modified_ms > 0);
+    print("fs", fs.is_dir(top + "/sub"), fs.is_file(top + "/sub"), fs.list_dir(top + "/sub")?);
+    match fs.copy(top + "/a.txt", top + "/a.txt") {
+        case Ok(_) -> print("fs ?");
+        case Err(e) -> print("fs Err", e);
+    }
+    match fs.stat(top + "/nai") {
+        case Ok(_) -> print("fs ?");
+        case Err(e) -> print("fs stat の Err あり");
+    }
+    fs.remove_all(top)?;
+    print("fs", fs.exists(top));
+    Ok(())
+}
+
+fn Result<(), str> data() {
+    let d = date.parse("2026-10-31T19:37:52.25+09:00")?;
+    print("date", d.format(), d.unix_ms(), d.weekday(), d.day_of_year());
+    let now = date.now();
+    print("date", now.year >= 2026);
+    let rows = csv.parse("名前,点\r\n\"山田, 太郎\",90\r\n")?;
+    print("csv", rows, csv.format(ref rows) == "名前,点\r\n\"山田, 太郎\",90\r\n");
+    let re = regex.compile("(\\d+)年(\\d+)月")?;
+    print("regex", re.replace_all("2026年10月と2027年1月", "$1/$2"), re.find_all("2026年10月と2027年1月").len());
+    let abc = "abc".bytes();
+    let h = hash.sha256(ref abc);
+    print("hash", hash.hex(ref h));
+    print("base64", base64.encode(ref abc));
+    let r = random.bytes(16);
+    let n = random.int(1, 7);
+    print("random", r.len(), n >= 1 && n <= 6);
+    Ok(())
+}
+
+fn main() {
+    match files() { case Ok(_) -> {} case Err(e) -> print("fs Err", e); }
+    match data() { case Ok(_) -> {} case Err(e) -> print("Err", e); }
+    print("おわり");
+}

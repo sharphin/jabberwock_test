@@ -1,0 +1,33 @@
+use std.cli;
+
+fn show(str[] argv) {
+    let mut p = cli.Parser.new("wc", "行を数える");
+    p.flag("verbose", "v", "詳しく出す");
+    p.flag("quiet", "q", "黙る");
+    p.option("out", "o", "出力先", "-");
+    p.option("n", "", "回数", "");
+    p.arg("file", "読むファイル");
+    match p.parse(argv) {
+        case Ok(a) -> print(a.has("verbose"), a.has("quiet"), a.has("out"), a.get("out"), a.get_int("n"), a.rest, a.help);
+        case Err(e) -> print("Err:", e);
+    }
+}
+
+fn main() {
+    show(["a.txt", "-v", "--out=x", "b"]);
+    show(["-vq", "-ofile", "--n", "12", "--", "-v", "--x"]);
+    show(["-qo", "y", "-", "-5", "--verbose"]);
+    show(["--nope"]);
+    show(["-z"]);
+    show(["--out"]);
+    show(["--verbose=1"]);
+    show(["-h"]);
+    show(["--help", "--n=x"]);
+    let mut p = cli.Parser.new("wc", "行を数える");
+    p.flag("verbose", "v", "詳しく出す");
+    p.option("out", "o", "出力先", "-");
+    p.option("count", "", "回数", "");
+    p.arg("file", "読むファイル");
+    print(p.usage());
+    print(cli.Parser.new("x", "").usage());
+}

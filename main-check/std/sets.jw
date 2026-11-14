@@ -1,0 +1,210 @@
+// std.sets: 集合。`use std.sets;` で `let mut s = sets.StrSet.new(); s.add("a");` のように使う。
+// 中身は辞書（値は true）なので、add / remove / has は速い。入れた順を覚える（items() はその順）。
+// 型ごとに IntSet（i64）・StrSet（str）・CharSet（char）がある（構造体などのキーは、辞書のキーに使えるようになってから）。
+
+/// i64 の集合（同じ値は 1 つだけ。入れた順を覚える）
+pub struct IntSet {
+    bool[i64] m;
+
+    /// 空の集合
+    static fn IntSet new() { IntSet { m: [] } }
+
+    /// リストの値を入れた集合
+    static fn IntSet of(ref i64[] xs) {
+        let mut s = IntSet { m: [] };
+        for x in xs { s.m[x] = true; }
+        s
+    }
+
+    /// 入れる。新しく入ったら true（もうあれば false）
+    fn mut bool add(i64 x) {
+        if m.contains(x) { return false; }
+        m[x] = true;
+        true
+    }
+
+    /// 除く。あったら true
+    fn mut bool remove(i64 x) { m.remove(x).is_some() }
+
+    /// x があるか
+    fn bool has(i64 x) { m.contains(x) }
+
+    fn i64 len() { m.len() }
+
+    fn bool is_empty() { m.len() == 0 }
+
+    /// 中の値のリスト（入れた順）
+    fn i64[] items() { m.keys() }
+
+    /// どちらかにあるもの（この集合の順、続けて other だけにあるもの）
+    fn IntSet union(ref IntSet other) {
+        let mut s = IntSet { m: [] };
+        for x in m.keys() { s.m[x] = true; }
+        for x in other.m.keys() { s.m[x] = true; }
+        s
+    }
+
+    /// 両方にあるもの（この集合の順）
+    fn IntSet intersect(ref IntSet other) {
+        let mut s = IntSet { m: [] };
+        for x in m.keys() {
+            if other.m.contains(x) { s.m[x] = true; }
+        }
+        s
+    }
+
+    /// この集合にあって other にないもの（この集合の順）
+    fn IntSet minus(ref IntSet other) {
+        let mut s = IntSet { m: [] };
+        for x in m.keys() {
+            if !other.m.contains(x) { s.m[x] = true; }
+        }
+        s
+    }
+
+    /// other の値をすべて含むか
+    fn bool contains_all(ref IntSet other) {
+        for x in other.m.keys() {
+            if !m.contains(x) { return false; }
+        }
+        true
+    }
+}
+
+/// str の集合（同じ値は 1 つだけ。入れた順を覚える）
+pub struct StrSet {
+    bool[str] m;
+
+    /// 空の集合
+    static fn StrSet new() { StrSet { m: [] } }
+
+    /// リストの値を入れた集合
+    static fn StrSet of(ref str[] xs) {
+        let mut s = StrSet { m: [] };
+        for x in xs { s.m[x] = true; }
+        s
+    }
+
+    /// 入れる。新しく入ったら true（もうあれば false）
+    fn mut bool add(str x) {
+        if m.contains(x) { return false; }
+        m[x] = true;
+        true
+    }
+
+    /// 除く。あったら true
+    fn mut bool remove(str x) { m.remove(x).is_some() }
+
+    /// x があるか
+    fn bool has(str x) { m.contains(x) }
+
+    fn i64 len() { m.len() }
+
+    fn bool is_empty() { m.len() == 0 }
+
+    /// 中の値のリスト（入れた順）
+    fn str[] items() { m.keys() }
+
+    /// どちらかにあるもの（この集合の順、続けて other だけにあるもの）
+    fn StrSet union(ref StrSet other) {
+        let mut s = StrSet { m: [] };
+        for x in m.keys() { s.m[x] = true; }
+        for x in other.m.keys() { s.m[x] = true; }
+        s
+    }
+
+    /// 両方にあるもの（この集合の順）
+    fn StrSet intersect(ref StrSet other) {
+        let mut s = StrSet { m: [] };
+        for x in m.keys() {
+            if other.m.contains(x) { s.m[x] = true; }
+        }
+        s
+    }
+
+    /// この集合にあって other にないもの（この集合の順）
+    fn StrSet minus(ref StrSet other) {
+        let mut s = StrSet { m: [] };
+        for x in m.keys() {
+            if !other.m.contains(x) { s.m[x] = true; }
+        }
+        s
+    }
+
+    /// other の値をすべて含むか
+    fn bool contains_all(ref StrSet other) {
+        for x in other.m.keys() {
+            if !m.contains(x) { return false; }
+        }
+        true
+    }
+}
+
+/// char の集合（同じ値は 1 つだけ。入れた順を覚える）
+pub struct CharSet {
+    bool[char] m;
+
+    /// 空の集合
+    static fn CharSet new() { CharSet { m: [] } }
+
+    /// リストの値を入れた集合
+    static fn CharSet of(ref char[] xs) {
+        let mut s = CharSet { m: [] };
+        for x in xs { s.m[x] = true; }
+        s
+    }
+
+    /// 入れる。新しく入ったら true（もうあれば false）
+    fn mut bool add(char x) {
+        if m.contains(x) { return false; }
+        m[x] = true;
+        true
+    }
+
+    /// 除く。あったら true
+    fn mut bool remove(char x) { m.remove(x).is_some() }
+
+    /// x があるか
+    fn bool has(char x) { m.contains(x) }
+
+    fn i64 len() { m.len() }
+
+    fn bool is_empty() { m.len() == 0 }
+
+    /// 中の値のリスト（入れた順）
+    fn char[] items() { m.keys() }
+
+    /// どちらかにあるもの（この集合の順、続けて other だけにあるもの）
+    fn CharSet union(ref CharSet other) {
+        let mut s = CharSet { m: [] };
+        for x in m.keys() { s.m[x] = true; }
+        for x in other.m.keys() { s.m[x] = true; }
+        s
+    }
+
+    /// 両方にあるもの（この集合の順）
+    fn CharSet intersect(ref CharSet other) {
+        let mut s = CharSet { m: [] };
+        for x in m.keys() {
+            if other.m.contains(x) { s.m[x] = true; }
+        }
+        s
+    }
+
+    /// この集合にあって other にないもの（この集合の順）
+    fn CharSet minus(ref CharSet other) {
+        let mut s = CharSet { m: [] };
+        for x in m.keys() {
+            if !other.m.contains(x) { s.m[x] = true; }
+        }
+        s
+    }
+
+    /// other の値をすべて含むか
+    fn bool contains_all(ref CharSet other) {
+        for x in other.m.keys() {
+            if !m.contains(x) { return false; }
+        }
+        true
+    }
+}

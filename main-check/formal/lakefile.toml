@@ -1,0 +1,14 @@
+name = "jabberwock-formal"
+version = "0.1.0"
+defaultTargets = ["JabberwockFormal"]
+
+[[lean_lib]]
+name = "JabberwockFormal"
+
+[[lean_exe]]
+name = "elision-check"
+root = "JabberwockFormal.CheckerMain"
+
+[[lean_exe]]
+name = "core-conform"
+root = "JabberwockFormal.ConformMain"

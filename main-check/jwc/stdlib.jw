@@ -1,0 +1,5382 @@
+// 標準ライブラリ（std/*.jw）を文字列にしたもの。`use std.名前;` で modules.jw が読む。
+// 手で書き換えない: std/ を直したら `python3 scripts/sync_stdlib.py` で作り直す。
+pub fn str[] names() {
+    let str[] mut out = [];
+    out.push("base64");
+    out.push("browser");
+    out.push("cli");
+    out.push("clipboard");
+    out.push("crypto");
+    out.push("csv");
+    out.push("date");
+    out.push("deque");
+    out.push("env");
+    out.push("fs");
+    out.push("gzip");
+    out.push("hash");
+    out.push("heap");
+    out.push("http");
+    out.push("io");
+    out.push("json");
+    out.push("lists");
+    out.push("log");
+    out.push("math");
+    out.push("net");
+    out.push("pg");
+    out.push("process");
+    out.push("rand");
+    out.push("random");
+    out.push("regex");
+    out.push("sets");
+    out.push("text");
+    out.push("time");
+    out.push("tls");
+    out.push("url");
+    out
+}
+
+pub fn Option<str> source(str name) {
+    if name == "base64" {
+        return Some("""
+// 標準ライブラリ std.base64: base64（RFC 4648 の標準の文字。`=` で埋める）。`use std.base64;` と書いて使う
+//   let s = base64.encode(ref data);      // str
+//   let back = base64.decode(s)?;         // u8[]。base64 でなければ Err
+// .jw だけで書いている。URL 用の文字（`-` と `_`）はまだない。
+
+fn str alphabet() {{ "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/" }}
+
+/// base64 の文字列にする
+pub fn str encode(ref u8[] b) {{
+    let cs = alphabet().chars();
+    let mut s = "";
+    let mut i = 0;
+    while i < b.len() {{
+        let n = b.len() - i;
+        let x0 = b[i] as i64;
+        let x1 = if n > 1 {{ b[i + 1] as i64 }} else {{ 0 }};
+        let x2 = if n > 2 {{ b[i + 2] as i64 }} else {{ 0 }};
+        let v = (x0 << 16) | (x1 << 8) | x2;
+        s += cs[(v >> 18) & 63].to_str() + cs[(v >> 12) & 63].to_str();
+        s += if n > 1 {{ cs[(v >> 6) & 63].to_str() }} else {{ "=" }};
+        s += if n > 2 {{ cs[v & 63].to_str() }} else {{ "=" }};
+        i += 3;
+    }}
+    s
+}}
+
+/// base64 の文字列を戻す。長さが 4 の倍数でない・ほかの文字がある・`=` が途中にある・余りのビットが 0 でないなら Err（空白や改行も受け付けない）
+pub fn Result<u8[], str> decode(str s) {{
+    let cs = alphabet();
+    let xs = s.chars();
+    if xs.len() % 4 != 0 {{ return Err("base64 の長さが 4 の倍数ではありません"); }}
+    let mut pad = 0;
+    if xs.len() > 0 && xs[xs.len() - 1] == '=' {{ pad = 1; }}
+    if pad == 1 && xs[xs.len() - 2] == '=' {{ pad = 2; }}
+    let u8[] mut out = [];
+    let mut acc = 0;
+    let mut nbits = 0;
+    for (i, ch) in xs {{
+        if i >= xs.len() - pad {{ break; }}
+        let v = match cs.find(ch.to_str()) {{
+            case Some(k) -> k;
+            case None -> return Err("base64 にない文字があります: " + ch.to_str());
+        }};
+        acc = ((acc << 6) | v) & 16777215;
+        nbits += 6;
+        if nbits >= 8 {{
+            nbits -= 8;
+            out.push(((acc >> nbits) & 255) as u8);
+        }}
+    }}
+    if acc & ((1 << nbits) - 1) != 0 {{ return Err("base64 の終わりの余りのビットが 0 ではありません"); }}
+    Ok(out)
+}}
+
+/// 文字列（UTF-8 のバイト）を base64 にする
+pub fn str encode_str(str s) {{
+    let b = s.bytes();
+    encode(b)
+}}
+
+/// base64 を戻して文字列にする（base64 でないか、UTF-8 でなければ Err）
+pub fn Result<str, str> decode_str(str s) {{
+    match decode(s)?.to_str() {{
+        case Some(t) -> Ok(t);
+        case None -> Err("base64 を戻したバイトが UTF-8 ではありません");
+    }}
+}}
+""");
+    }
+    if name == "browser" {
+        return Some("""
+// 標準ライブラリ std.browser: ブラウザのエンジン（Web ページを表示する部品）を使う。`use std.browser;` と書いて使う
+//   let mut e = browser.open(browser.Config {{ title: "試し", data_dir: "data", width: 1024, height: 768, ephemeral: true }})?;
+//   let tab = e.tab_new()?;
+//   e.navigate(tab, "https://example.com/")?;
+//   loop {{
+//       match e.wait(-1) {{
+//           case Some(CloseRequested) -> break;
+//           case Some(ev) -> print(ev);
+//           case None -> {{}}
+//       }}
+//   }}
+// エンジンとの境目は runtime/engine/jw_engine.h（C の関数だけ）。エンジンの実装は `jwc build --link` で渡す
+// （試験用の偽エンジンは runtime/engine/mock/jwe_mock.c。WebView2 版などは別に作る）。
+// 呼び返しはしない。イベントはエンジンが溜め、poll / wait で 1 つずつ取りに行く。
+// Engine は資源を持つ（ムーブだけ。ほかのスレッドへは渡せない。持ち主がいなくなると閉じる）。
+
+pub resource Handle;
+
+/// 開くときの設定
+pub struct Config {{
+    str title;
+    str data_dir;     // Cookie などの置き場所（1 か所だけ）
+    i64 width;        // 論理ピクセル（1〜100000）
+    i64 height;
+    bool ephemeral;   // true なら何もディスクに残さない
+}}
+
+/// エンジンから来るできごと（jw_engine.h の JWE_EV_*）
+pub enum Event {{
+    Ready;
+    CloseRequested;
+    NavStarted(i64 tab, str url);
+    NavFinished(i64 tab, str url, i64 code);   // code 0 は成功
+    UrlChanged(i64 tab, str url);
+    TitleChanged(i64 tab, str title);
+    HistoryChanged(i64 tab, bool back, bool forward);
+    NewTabRequested(i64 tab, str url);
+    ChromeMessage(str text);
+    Key(i64 code);                              // KeyCode.of(code) で読む
+    PermissionDenied(i64 tab, str what);
+    Failed(i64 code, str text);
+}}
+
+/// キーの番号（jw_engine.h の JWE_KEY_*）
+pub enum KeyCode {{
+    FocusAddress;
+    NewTab;
+    CloseTab;
+    NextTab;
+    PrevTab;
+    Reload;
+    Back;
+    Forward;
+    Unknown;
+
+    static fn KeyCode of(i64 n) {{
+        match n {{
+            case 1 -> KeyCode.FocusAddress;
+            case 2 -> KeyCode.NewTab;
+            case 3 -> KeyCode.CloseTab;
+            case 4 -> KeyCode.NextTab;
+            case 5 -> KeyCode.PrevTab;
+            case 6 -> KeyCode.Reload;
+            case 7 -> KeyCode.Back;
+            case 8 -> KeyCode.Forward;
+            default -> KeyCode.Unknown;
+        }}
+    }}
+}}
+
+/// エンジンができること
+pub struct Info {{
+    str name;
+    bool script;      // ページの JavaScript が動く
+    bool chrome_view; // 外枠を HTML で出せる（chrome_load / chrome_post）
+    bool persist;     // Cookie などを残せる
+    bool frameless;   // OS のタイトルバーがなく、外枠が窓の一番上まで来る（外枠が ー □ × を出し、window を呼ぶ）
+}}
+
+
+/// 開いたエンジン
+pub struct Engine {{
+    Handle h;
+
+    fn Info info() {{
+        let c = h.caps();
+        Info {{ name: h.name(), script: c % 2 == 1, chrome_view: (c / 2) % 2 == 1, persist: (c / 4) % 2 == 1, frameless: (c / 8) % 2 == 1 }}
+    }}
+
+    /// イベントがあれば取り出す（待たない）
+    fn mut Option<Event> poll() {{ next(-2) }}
+
+    /// イベントが来るか timeout_ms ミリ秒たつまで待つ（-1 は無期限。待つ前に print の出力を書き出す）
+    fn mut Option<Event> wait(i64 timeout_ms) {{
+        if timeout_ms < -1 {{ return next(-3); }}
+        next(timeout_ms)
+    }}
+
+    fn mut Option<Event> next(i64 timeout_ms) {{
+        let k = h.next(timeout_ms);
+        if k == 0 {{ return None; }}
+        let tab = h.event_tab();
+        let code = h.event_code();
+        let s = h.event_text();
+        let ev = match k {{
+            case 1 -> Event.Ready;
+            case 2 -> Event.CloseRequested;
+            case 3 -> Event.NavStarted(tab, s);
+            case 4 -> Event.NavFinished(tab, s, code);
+            case 5 -> Event.UrlChanged(tab, s);
+            case 6 -> Event.TitleChanged(tab, s);
+            case 7 -> Event.HistoryChanged(tab, code % 2 == 1, (code / 2) % 2 == 1);
+            case 8 -> Event.NewTabRequested(tab, s);
+            case 9 -> Event.ChromeMessage(s);
+            case 10 -> Event.Key(code);
+            case 11 -> Event.PermissionDenied(tab, s);
+            case 12 -> Event.Failed(code, s);
+            default -> Event.Failed(code, "知らない種類のイベント（{{k}}）: " + s);
+        }};
+        Some(ev)
+    }}
+
+    /// タブを作る（番号は 1 から。閉じた番号は使い回さない）
+    fn mut Result<i64, str> tab_new() {{
+        let r = h.call(1, 0, "", 0);
+        if r < 0 {{ return Err(status(r)); }}
+        Ok(r)
+    }}
+
+    fn mut Result<(), str> tab_close(i64 tab) {{ done(h.call(2, tab, "", 0)) }}
+
+    /// 見えるタブを切り替える
+    fn mut Result<(), str> tab_show(i64 tab) {{ done(h.call(3, tab, "", 0)) }}
+
+    fn mut Result<(), str> navigate(i64 tab, str url) {{ done(h.call(4, tab, url, 0)) }}
+    fn mut Result<(), str> back(i64 tab) {{ done(h.call(5, tab, "", 0)) }}
+    fn mut Result<(), str> forward(i64 tab) {{ done(h.call(6, tab, "", 0)) }}
+    fn mut Result<(), str> reload(i64 tab) {{ done(h.call(7, tab, "", 0)) }}
+    fn mut Result<(), str> stop(i64 tab) {{ done(h.call(8, tab, "", 0)) }}
+
+    /// 外枠の HTML を出す（Info.chrome_view があるときだけ）。height は外枠の高さ（論理ピクセル）
+    fn mut Result<(), str> chrome_load(str html, i64 height) {{ done(h.call(9, 0, html, height)) }}
+
+    /// 外枠の HTML へ文字列を送る
+    fn mut Result<(), str> chrome_post(str msg) {{ done(h.call(10, 0, msg, 0)) }}
+
+    fn mut Result<(), str> set_title(str title) {{ done(h.call(11, 0, title, 0)) }}
+
+    /// Cookie・キャッシュ・サイトのデータを全部消す
+    fn mut Result<(), str> clear_site_data() {{ done(h.call(12, 0, "", 0)) }}
+
+    /// 外枠の高さを変える（論理ピクセル）。負なら外枠が窓全体を覆い、タブのページは隠れる（設定画面など）
+    fn mut Result<(), str> chrome_height(i64 height) {{ done(h.call(13, 0, "", if height < 0 {{ -1 }} else {{ height }})) }}
+
+    /// 窓の操作（jw_engine.h の JWE_WINDOW_*）。op は 1 押している間マウスで動かす・2 最小化・3 最大化の切り替え・4 最小化を戻して手前に出す。
+    /// Info.frameless の外枠のボタンから呼ぶ。1〜4 の外なら Err
+    fn mut Result<(), str> window(i64 op) {{ done(h.call(14, 0, "", op)) }}
+
+    /// タブのログインの欄にユーザー名とパスワードを入れる（金庫から、利用者が押したときだけ）。
+    /// site は "https://example.com" の形の出どころ。今のページの出どころが完全に同じときだけ入れ、違えば Err で何もしない
+    fn mut Result<(), str> fill_login(i64 tab, str site, str user, str password) {{
+        done(h.call(15, tab, "{{site.byte_len()}}:{{user.byte_len()}}:" + site + user + password, 0))
+    }}
+}}
+
+/// エンジンを開く。最初のイベントは Ready（それより前の navigate も受け付ける）
+pub fn Result<Engine, str> open(Config cfg) {{
+    let h = __browser_open(cfg.title, cfg.data_dir, cfg.width, cfg.height, if cfg.ephemeral {{ 1 }} else {{ 0 }})?;
+    Ok(Engine {{ h: h }})
+}}
+
+/// 閉じる（開いているタブも全部。ephemeral なら置き場所の中も消す）。何もしなければ、持ち主がいなくなったところで閉じる
+pub fn close(Engine e) {{ drop(e); }}
+
+fn Result<(), str> done(i64 r) {{
+    if r < 0 {{ return Err(status(r)); }}
+    Ok(())
+}}
+
+fn str status(i64 r) {{
+    match -r {{
+        case 1 -> "エンジンが使えません";
+        case 2 -> "そのタブはありません";
+        case 3 -> "引数が正しくありません";
+        case 4 -> "このエンジンにはその機能がありません";
+        default -> "エンジンの操作が失敗しました（{{-r}}）";
+    }}
+}}
+""");
+    }
+    if name == "cli" {
+        return Some("""
+// std.cli: コマンドライン引数を読む。`use std.cli;` で次のように使う。
+//   let mut p = cli.Parser.new("wc", "行を数える");
+//   p.flag("verbose", "v", "詳しく出す");
+//   p.option("out", "o", "出力先", "-");   // 値をとるオプション（4 つめは既定値。なければ ""）
+//   p.arg("file", "読むファイル");          // 位置引数の名前（使い方の表示だけに使う）
+//   let a = match p.parse(args()) {{
+//       case Ok(a) -> a;
+//       case Err(e) -> {{ eprint(e); eprint(p.usage()); exit(2); }}
+//   }};
+//   if a.help {{ print(p.usage()); exit(0); }}
+//   a.has("verbose")  a.get("out")  a.get_int("n")  a.rest（位置引数）
+// 書き方: `--name` `--name=値` `--name 値` `-v` `-vq`（まとめた短い名前） `-o 値` `-o値`。`--` のあとはすべて位置引数。
+// `-` だけ・`-5` のように数字が続くものは位置引数。`-h` / `--help` は `help` を立てる（自分で -h を決めたらそちら）。
+
+/// `-5` のように `-` のすぐあとが数字か
+fn bool is_number_like(str x) {{
+    let cs = x.chars();
+    cs.len() > 1 && cs[1].is_digit()
+}}
+
+/// 表示の幅（ASCII は 1、日本語など U+1100 以上は 2 とみなす）
+fn i64 width_of(str s) {{
+    let mut w = 0;
+    for c in s.chars() {{
+        w += if c as i64 >= 0x1100 {{ 2 }} else {{ 1 }};
+    }}
+    w
+}}
+
+struct Spec {{
+    str long;
+    str short;
+    str help;
+    bool takes_value;
+    str fallback;
+}}
+
+/// 読んだ結果
+pub struct Args {{
+    // 書かれたフラグ・オプションの名前（長い名前）
+    bool[str] given;
+    // オプションの値（書かれなかったものは既定値。既定値のないものは入らない）
+    str[str] values;
+    // 位置引数（書かれた順）
+    str[] rest;
+    // `-h` か `--help` があった
+    bool help;
+
+    /// フラグかオプションが書かれたか
+    fn bool has(str name) {{ given.contains(name) }}
+
+    /// オプションの値（書かれなければ既定値。既定値もなければ ""）
+    fn str get(str name) {{
+        if values.contains(name) {{ return values[name]; }}
+        ""
+    }}
+
+    /// オプションの値を整数にしたもの（値がない・整数でなければ None）
+    fn Option<i64> get_int(str name) {{
+        if values.contains(name) {{ return values[name].to_int(); }}
+        None
+    }}
+}}
+
+pub struct Parser {{
+    str prog;
+    str about;
+    Spec[] specs;
+    str[] arg_names;
+    str[] arg_helps;
+
+    /// prog はプログラムの名前、about は 1 行の説明（使い方の表示に出す）
+    static fn Parser new(str prog, str about) {{ Parser {{ prog: prog, about: about, specs: [], arg_names: [], arg_helps: [] }} }}
+
+    /// 値をとらないフラグ（short は 1 文字か ""）
+    fn mut flag(str long, str short, str help) {{
+        specs.push(Spec {{ long: long, short: short, help: help, takes_value: false, fallback: "" }});
+    }}
+
+    /// 値をとるオプション（fallback が "" なら既定値なし）
+    fn mut option(str long, str short, str help, str fallback) {{
+        specs.push(Spec {{ long: long, short: short, help: help, takes_value: true, fallback: fallback }});
+    }}
+
+    /// 位置引数の名前と説明（使い方の表示だけに使う。数は調べない）
+    fn mut arg(str arg_name, str help) {{
+        arg_names.push(arg_name);
+        arg_helps.push(help);
+    }}
+
+    /// 引数を読む（`args()` をそのまま渡す。プログラムの名前は入っていない）。知らないオプション・値がないときは Err
+    fn Result<Args, str> parse(ref str[] argv) {{
+        let mut a = Args {{ given: [], values: [], rest: [], help: false }};
+        for s in specs {{
+            if s.takes_value && s.fallback != "" {{ a.values[s.long] = s.fallback; }}
+        }}
+        let n = argv.len();
+        let mut i = 0;
+        let mut only_rest = false;
+        while i < n {{
+            let x = argv[i];
+            i++;
+            if only_rest || x == "-" || !x.starts_with("-") || is_number_like(x) {{
+                a.rest.push(x);
+                continue;
+            }}
+            if x == "--" {{
+                only_rest = true;
+                continue;
+            }}
+            if x.starts_with("--") {{
+                let body = x.slice(2, x.len());
+                let mut key = body;
+                let mut val = "";
+                let mut has_val = false;
+                match body.find("=") {{
+                    case Some(k) -> {{
+                        key = body.slice(0, k);
+                        val = body.slice(k + 1, body.len());
+                        has_val = true;
+                    }}
+                    case None -> {{}}
+                }}
+                let k = find_long(key);
+                if k < 0 {{
+                    if key == "help" && !has_val {{ a.help = true; continue; }}
+                    return Err("知らないオプションです: --" + key);
+                }}
+                let s = ref specs[k];
+                if !s.takes_value {{
+                    if has_val {{ return Err("--" + key + " は値をとりません"); }}
+                    a.given[key] = true;
+                    continue;
+                }}
+                if !has_val {{
+                    if i >= n {{ return Err("--" + key + " に値がありません"); }}
+                    val = argv[i];
+                    i++;
+                }}
+                a.given[key] = true;
+                a.values[key] = val;
+                continue;
+            }}
+            // 短い名前（まとめて書ける。値をとるものはそこで終わり、残りか次の引数が値）
+            let cs = x.chars();
+            let mut j = 1;
+            while j < cs.len() {{
+                let c = cs[j].to_str();
+                j++;
+                let k = find_short(c);
+                if k < 0 {{
+                    if c == "h" {{ a.help = true; continue; }}
+                    return Err("知らないオプションです: -" + c);
+                }}
+                let s = ref specs[k];
+                a.given[s.long] = true;
+                if s.takes_value {{
+                    let mut val = x.slice(j, x.len());
+                    if j >= cs.len() {{
+                        if i >= n {{ return Err("-" + c + " に値がありません"); }}
+                        val = argv[i];
+                        i++;
+                    }}
+                    a.values[s.long] = val;
+                    break;
+                }}
+            }}
+        }}
+        Ok(a)
+    }}
+
+    fn i64 find_long(str key) {{
+        for (i, s) in specs {{
+            if s.long == key {{ return i; }}
+        }}
+        -1
+    }}
+
+    fn i64 find_short(str c) {{
+        for (i, s) in specs {{
+            if s.short != "" && s.short == c {{ return i; }}
+        }}
+        -1
+    }}
+
+    /// 使い方の説明（最後に改行はつけない）
+    fn str usage() {{
+        let mut head = "使い方: " + prog;
+        if specs.len() > 0 {{ head += " [オプション]"; }}
+        for x in arg_names {{ head += " <" + x + ">"; }}
+        let mut out = head;
+        if about != "" {{ out += "\\n" + about; }}
+        let str[] mut lefts = [];
+        let str[] mut helps = [];
+        for (i, x) in arg_names {{
+            lefts.push("<" + x + ">");
+            helps.push(arg_helps[i]);
+        }}
+        let first_opt = lefts.len();
+        for s in specs {{
+            let mut l = if s.short != "" {{ "-" + s.short + ", " }} else {{ "    " }};
+            l += "--" + s.long;
+            if s.takes_value {{ l += " <値>"; }}
+            let mut h = s.help;
+            if s.takes_value && s.fallback != "" {{ h += "（既定: " + s.fallback + "）"; }}
+            lefts.push(l);
+            helps.push(h);
+        }}
+        if find_short("h") < 0 && find_long("help") < 0 {{
+            lefts.push("-h, --help");
+            helps.push("この説明を出す");
+        }}
+        let mut width = 0;
+        for l in lefts {{ width = width.max(width_of(l)); }}
+        for (i, l) in lefts {{
+            if i == 0 && first_opt > 0 {{ out += "\\n\\n引数:"; }}
+            if i == first_opt {{ out += "\\n\\nオプション:"; }}
+            out += "\\n  " + l + " ".repeat(width - width_of(l) + 2) + helps[i];
+        }}
+        out
+    }}
+}}
+""");
+    }
+    if name == "clipboard" {
+        return Some("""
+// 標準ライブラリ std.clipboard: クリップボードの文字。`use std.clipboard;` と書いて使う。今は Windows だけ（ほかの OS では Err）
+//   let n = clipboard.set_text(password, true)?;     // true なら秘密（クリップボードの履歴・ほかの端末への同期に載せない）
+//   time.sleep(30000);
+//   clipboard.clear_if(n)?;                           // そのあとだれも変えていなければ消す（秘密をもう一度読まない）
+//   let s = clipboard.get_text()?;                    // 置いてある文字（なければ ""）
+
+/// 文字を置く。置いたあとの番号を返す（clear_if に渡す）
+pub fn Result<i64, str> set_text(str s, bool secret) {{ __clip_set(s, if secret {{ 1 }} else {{ 0 }}) }}
+
+/// 置いてある文字。文字でなければ ""
+pub fn Result<str, str> get_text() {{ __clip_get() }}
+
+/// set_text のあと、だれもクリップボードを変えていなければ消す。消したら true
+pub fn Result<bool, str> clear_if(i64 n) {{
+    assert(n >= 0);
+    let r = __clip_clear(n)?;
+    Ok(r == 1)
+}}
+
+/// 何が置いてあっても消す
+pub fn Result<(), str> clear() {{
+    __clip_clear(-1)?;
+    Ok(())
+}}
+""");
+    }
+    if name == "crypto" {
+        return Some("""
+// 標準ライブラリ std.crypto: ChaCha20-Poly1305（RFC 8439。秘密の鍵で暗号化し、改ざんを見つける印を付ける）。`use std.crypto;` と書いて使う
+//   let key = random.bytes(32);                      // 鍵は 32 バイト
+//   let nonce = random.bytes(12);                    // nonce は 12 バイト。同じ鍵で同じ nonce を 2 度使わない
+//   let sealed = crypto.seal(ref key, ref nonce, ref aad, ref plain);    // 暗号文の後ろに 16 バイトの印
+//   let back = crypto.open(ref key, ref nonce, ref aad, ref sealed);     // Option<u8[]>。鍵が違う・書き換えられていれば None
+// .jw だけで書いている（元はブラウザの金庫の browser/app/crypto.jw）。鍵・nonce の長さが違えば実行時エラー。
+// 時間が中身によらないようにしているのは、印の比べ方だけ（u32 の足し算・回転は分かれ道を作らない）。
+
+// ---- ChaCha20（RFC 8439 2.3） ----
+
+fn u32 rotl(u32 x, i64 n) {{
+    (x << n) | (x >> (32 - n))
+}}
+
+fn quarter(ref mut u32[16] s, i64 a, i64 b, i64 c, i64 d) {{
+    s[a] = s[a] + s[b];
+    s[d] = rotl(s[d] ^ s[a], 16);
+    s[c] = s[c] + s[d];
+    s[b] = rotl(s[b] ^ s[c], 12);
+    s[a] = s[a] + s[b];
+    s[d] = rotl(s[d] ^ s[a], 8);
+    s[c] = s[c] + s[d];
+    s[b] = rotl(s[b] ^ s[c], 7);
+}}
+
+fn u32 le32(ref u8[] b, i64 off) {{
+    (b[off] as u32) | ((b[off + 1] as u32) << 8) | ((b[off + 2] as u32) << 16) | ((b[off + 3] as u32) << 24)
+}}
+
+// 64 バイトの鍵の流れを 1 つ作る
+fn u8[] chacha_block(ref u8[] key, u32 counter, ref u8[] nonce) {{
+    let u32[16] mut init = [0; 16];
+    init[0] = 0x61707865;
+    init[1] = 0x3320646e;
+    init[2] = 0x79622d32;
+    init[3] = 0x6b206574;
+    for i in range(8) {{
+        init[4 + i] = le32(key, i * 4);
+    }}
+    init[12] = counter;
+    init[13] = le32(nonce, 0);
+    init[14] = le32(nonce, 4);
+    init[15] = le32(nonce, 8);
+    let mut s = init;
+    for _ in range(10) {{
+        quarter(ref mut s, 0, 4, 8, 12);
+        quarter(ref mut s, 1, 5, 9, 13);
+        quarter(ref mut s, 2, 6, 10, 14);
+        quarter(ref mut s, 3, 7, 11, 15);
+        quarter(ref mut s, 0, 5, 10, 15);
+        quarter(ref mut s, 1, 6, 11, 12);
+        quarter(ref mut s, 2, 7, 8, 13);
+        quarter(ref mut s, 3, 4, 9, 14);
+    }}
+    let u8[] mut out = [];
+    for i in range(16) {{
+        let x = s[i] + init[i];
+        out.push(x as u8);
+        out.push((x >> 8) as u8);
+        out.push((x >> 16) as u8);
+        out.push((x >> 24) as u8);
+    }}
+    out
+}}
+
+// 鍵 32 バイト・nonce 12 バイトで data を暗号化する（復号も同じ）。counter は最初の塊の番号
+pub fn u8[] chacha20(ref u8[] key, u32 counter, ref u8[] nonce, ref u8[] data) {{
+    assert(key.len() == 32 && nonce.len() == 12);
+    let u8[] mut out = [];
+    let mut c = counter;
+    let mut off = 0;
+    while off < data.len() {{
+        let ks = chacha_block(key, c, nonce);
+        let mut i = 0;
+        while i < 64 && off + i < data.len() {{
+            out.push(data[off + i] ^ ks[i]);
+            i++;
+        }}
+        off += 64;
+        c = c + 1;
+    }}
+    out
+}}
+
+// ---- Poly1305（RFC 8439 2.5。26 ビットずつ 5 つに分けて計算する） ----
+
+pub fn u8[] poly1305(ref u8[] key, ref u8[] msg) {{
+    assert(key.len() == 32);
+    let u64 r0 = (le32(key, 0) as u64) & 0x3ffffff;
+    let u64 r1 = ((le32(key, 3) as u64) >> 2) & 0x3ffff03;
+    let u64 r2 = ((le32(key, 6) as u64) >> 4) & 0x3ffc0ff;
+    let u64 r3 = ((le32(key, 9) as u64) >> 6) & 0x3f03fff;
+    let u64 r4 = ((le32(key, 12) as u64) >> 8) & 0x00fffff;
+    let s1 = r1 * 5;
+    let s2 = r2 * 5;
+    let s3 = r3 * 5;
+    let s4 = r4 * 5;
+    let u64 mut h0 = 0;
+    let u64 mut h1 = 0;
+    let u64 mut h2 = 0;
+    let u64 mut h3 = 0;
+    let u64 mut h4 = 0;
+    let n = msg.len();
+    let mut off = 0;
+    while off < n {{
+        // 16 バイト（最後は短い）に 1 を足した数
+        let u8[] mut blk = [];
+        let mut i = 0;
+        while i < 16 && off + i < n {{
+            blk.push(msg[off + i]);
+            i++;
+        }}
+        let u64 hibit = if i == 16 {{ 1 << 24 }} else {{ 0 }};
+        if i < 16 {{
+            blk.push(1);
+        }}
+        while blk.len() < 17 {{
+            blk.push(0);
+        }}
+        h0 = h0 + ((le32(blk, 0) as u64) & 0x3ffffff);
+        h1 = h1 + (((le32(blk, 3) as u64) >> 2) & 0x3ffffff);
+        h2 = h2 + (((le32(blk, 6) as u64) >> 4) & 0x3ffffff);
+        h3 = h3 + (((le32(blk, 9) as u64) >> 6) & 0x3ffffff);
+        h4 = h4 + (((le32(blk, 12) as u64) >> 8) | hibit);
+        let d0 = h0 * r0 + h1 * s4 + h2 * s3 + h3 * s2 + h4 * s1;
+        let mut d1 = h0 * r1 + h1 * r0 + h2 * s4 + h3 * s3 + h4 * s2;
+        let mut d2 = h0 * r2 + h1 * r1 + h2 * r0 + h3 * s4 + h4 * s3;
+        let mut d3 = h0 * r3 + h1 * r2 + h2 * r1 + h3 * r0 + h4 * s4;
+        let mut d4 = h0 * r4 + h1 * r3 + h2 * r2 + h3 * r1 + h4 * r0;
+        let mut c = d0 >> 26;
+        h0 = d0 & 0x3ffffff;
+        d1 = d1 + c;
+        c = d1 >> 26;
+        h1 = d1 & 0x3ffffff;
+        d2 = d2 + c;
+        c = d2 >> 26;
+        h2 = d2 & 0x3ffffff;
+        d3 = d3 + c;
+        c = d3 >> 26;
+        h3 = d3 & 0x3ffffff;
+        d4 = d4 + c;
+        c = d4 >> 26;
+        h4 = d4 & 0x3ffffff;
+        h0 = h0 + c * 5;
+        c = h0 >> 26;
+        h0 = h0 & 0x3ffffff;
+        h1 = h1 + c;
+        off += 16;
+    }}
+    // 最後まで繰り上げる
+    let mut c = h1 >> 26;
+    h1 = h1 & 0x3ffffff;
+    h2 = h2 + c;
+    c = h2 >> 26;
+    h2 = h2 & 0x3ffffff;
+    h3 = h3 + c;
+    c = h3 >> 26;
+    h3 = h3 & 0x3ffffff;
+    h4 = h4 + c;
+    c = h4 >> 26;
+    h4 = h4 & 0x3ffffff;
+    h0 = h0 + c * 5;
+    c = h0 >> 26;
+    h0 = h0 & 0x3ffffff;
+    h1 = h1 + c;
+    // h - (2^130 - 5) を計算し、負でなければそちらを使う
+    let mut g0 = h0 + 5;
+    c = g0 >> 26;
+    g0 = g0 & 0x3ffffff;
+    let mut g1 = h1 + c;
+    c = g1 >> 26;
+    g1 = g1 & 0x3ffffff;
+    let mut g2 = h2 + c;
+    c = g2 >> 26;
+    g2 = g2 & 0x3ffffff;
+    let mut g3 = h3 + c;
+    c = g3 >> 26;
+    g3 = g3 & 0x3ffffff;
+    let g4 = h4 + c;
+    if (g4 >> 26) != 0 {{
+        h0 = g0;
+        h1 = g1;
+        h2 = g2;
+        h3 = g3;
+        h4 = g4 & 0x3ffffff;
+    }}
+    // 2^128 で割った余りに s を足す
+    let u64 w0 = (h0 | (h1 << 26)) & 0xffffffff;
+    let u64 w1 = ((h1 >> 6) | (h2 << 20)) & 0xffffffff;
+    let u64 w2 = ((h2 >> 12) | (h3 << 14)) & 0xffffffff;
+    let u64 w3 = ((h3 >> 18) | (h4 << 8)) & 0xffffffff;
+    let mut f = w0 + (le32(key, 16) as u64);
+    let u8[] mut out = [];
+    let u64[4] ws = [w0, w1, w2, w3];
+    for i in range(4) {{
+        if i > 0 {{
+            f = ws[i] + (le32(key, 16 + i * 4) as u64) + (f >> 32);
+        }}
+        out.push(f as u8);
+        out.push((f >> 8) as u8);
+        out.push((f >> 16) as u8);
+        out.push((f >> 24) as u8);
+    }}
+    out
+}}
+
+// ---- ChaCha20-Poly1305（RFC 8439 2.8） ----
+
+fn pad16(ref mut u8[] m) {{
+    while m.len() % 16 != 0 {{
+        m.push(0);
+    }}
+}}
+
+fn push_le64(ref mut u8[] m, i64 n) {{
+    for i in range(8) {{
+        m.push((n >> (i * 8)) as u8);
+    }}
+}}
+
+fn u8[] tag(ref u8[] key, ref u8[] nonce, ref u8[] aad, ref u8[] ct) {{
+    let block = chacha_block(key, 0, nonce);
+    let u8[] mut pk = [];
+    for i in range(32) {{
+        pk.push(block[i]);
+    }}
+    let u8[] mut m = [];
+    for x in aad {{
+        m.push(x);
+    }}
+    pad16(ref mut m);
+    for x in ct {{
+        m.push(x);
+    }}
+    pad16(ref mut m);
+    push_le64(ref mut m, aad.len());
+    push_le64(ref mut m, ct.len());
+    poly1305(pk, m)
+}}
+
+// 暗号化して、後ろに 16 バイトの印（改ざんを見つける）を付ける
+pub fn u8[] seal(ref u8[] key, ref u8[] nonce, ref u8[] aad, ref u8[] plain) {{
+    assert(key.len() == 32 && nonce.len() == 12);
+    let mut ct = chacha20(key, 1, nonce, plain);
+    let t = tag(key, nonce, aad, ct);
+    for x in t {{
+        ct.push(x);
+    }}
+    ct
+}}
+
+// 印を確かめてから復号する。鍵が違う・書き換えられていれば None
+pub fn Option<u8[]> open(ref u8[] key, ref u8[] nonce, ref u8[] aad, ref u8[] sealed) {{
+    assert(key.len() == 32 && nonce.len() == 12);
+    let n = sealed.len();
+    if n < 16 {{
+        return None;
+    }}
+    let u8[] mut ct = [];
+    for i in range(n - 16) {{
+        ct.push(sealed[i]);
+    }}
+    let t = tag(key, nonce, aad, ct);
+    // 比べるのにかかる時間を、どこで違うかで変えない
+    let u8 mut diff = 0;
+    for i in range(16) {{
+        diff = diff | (t[i] ^ sealed[n - 16 + i]);
+    }}
+    if diff != 0 {{
+        return None;
+    }}
+    Some(chacha20(key, 1, nonce, ct))
+}}
+""");
+    }
+    if name == "csv" {
+        return Some("""
+// 標準ライブラリ std.csv: CSV（RFC 4180）の読み書き。`use std.csv;` と書いて使う
+//   let rows = csv.parse("name,age\\r\\n\\"山田, 太郎\\",30\\r\\n")?;   // str[][]: [[name, age], [山田, 太郎, 30]]
+//   let s = csv.format(ref rows);                                  // "name,age\\r\\n\\"山田, 太郎\\",30\\r\\n"
+// .jw だけで書いている。区切りは `,`（parse_sep・format_sep で変えられる）、行の終わりは CRLF か LF。値はどれも文字列（数や型には直さない）。
+
+/// CSV を読む。`"` で囲んだ値の中には `,`・改行・`""`（`"` 1 つ）を書ける。
+/// 終わりの改行のあとに空の行は作らない。囲んでいない値の中の `"`・閉じた `"` のあとの余計な文字・閉じていない `"` は Err（何行目かを書く）
+pub fn Result<str[][], str> parse(str s) {{ parse_sep(s, ',') }}
+
+/// 区切りを sep にして読む（`'\\t'` なら TSV）。sep が `"`・改行なら Err。エラーの文は parse と同じ（`,` と書く）
+pub fn Result<str[][], str> parse_sep(str s, char sep) {{
+    if sep == '"' || sep == '\\n' || sep == '\\r' {{ return Err("CSV の区切りに `\\"` と改行は使えません"); }}
+    let cs = s.chars();
+    let str[][] mut rows = [];
+    let str[] mut row = [];
+    let mut field = "";
+    let mut i = 0;
+    let mut line = 1;
+    // 今の値を読み始めたところか（行の始めの空の値と、何もない行の終わりを見分ける）
+    let mut fresh = true;
+    while i < cs.len() {{
+        let c = cs[i];
+        if fresh && c == '"' {{
+            // 囲んだ値
+            let start = line;
+            i += 1;
+            let mut closed = false;
+            while i < cs.len() {{
+                let q = cs[i];
+                if q == '"' {{
+                    if i + 1 < cs.len() && cs[i + 1] == '"' {{
+                        field += "\\"";
+                        i += 2;
+                    }} else {{
+                        closed = true;
+                        i += 1;
+                        break;
+                    }}
+                }} else {{
+                    if q == '\\n' {{ line += 1; }}
+                    field += q.to_str();
+                    i += 1;
+                }}
+            }}
+            if !closed {{ return Err("CSV の {{start}} 行目の `\\"` が閉じていません"); }}
+            if i < cs.len() && cs[i] != sep && cs[i] != '\\n' && cs[i] != '\\r' {{
+                return Err("CSV の {{line}} 行目: 閉じた `\\"` のあとに `,` か改行がありません");
+            }}
+            fresh = false;
+        }} else if c == sep {{
+            row.push(field);
+            field = "";
+            fresh = true;
+            i += 1;
+        }} else if c == '\\r' || c == '\\n' {{
+            if c == '\\r' && i + 1 < cs.len() && cs[i + 1] == '\\n' {{ i += 1; }}
+            row.push(field);
+            field = "";
+            rows.push(row);
+            row = [];
+            fresh = true;
+            line += 1;
+            i += 1;
+        }} else if c == '"' {{
+            return Err("CSV の {{line}} 行目: 囲んでいない値の中に `\\"` があります（`\\"` で囲んで `\\"\\"` と書いてください）");
+        }} else {{
+            field += c.to_str();
+            fresh = false;
+            i += 1;
+        }}
+    }}
+    // 終わりに改行がない最後の行
+    if !fresh || row.len() > 0 {{
+        row.push(field);
+        rows.push(row);
+    }}
+    Ok(rows)
+}}
+
+/// CSV にする。`,`・`"`・改行を含む値は `"` で囲み、`"` は `""` にする。行の終わりはどれも CRLF
+pub fn str format(ref str[][] rows) {{
+    let mut out = "";
+    for row in rows {{ out += join_row(ref row, ','); out += "\\r\\n"; }}
+    out
+}}
+
+/// 区切りを sep にして書く（sep を含む値も `"` で囲む）。sep が `"`・改行なら Err
+pub fn Result<str, str> format_sep(ref str[][] rows, char sep) {{
+    if sep == '"' || sep == '\\n' || sep == '\\r' {{ return Err("CSV の区切りに `\\"` と改行は使えません"); }}
+    let mut out = "";
+    for row in rows {{ out += join_row(ref row, sep); out += "\\r\\n"; }}
+    Ok(out)
+}}
+
+/// 1 行を書く（改行はつけない）
+pub fn str write_row(ref str[] row) {{ join_row(ref row, ',') }}
+
+fn str join_row(ref str[] row, char sep) {{
+    let mut out = "";
+    for (i, f) in row {{
+        if i > 0 {{ out += sep.to_str(); }}
+        out += quote_sep(f, sep);
+    }}
+    out
+}}
+
+/// 値 1 つを CSV の形にする（要るときだけ `"` で囲む）
+pub fn str quote(str v) {{ quote_sep(v, ',') }}
+
+fn str quote_sep(str v, char sep) {{
+    if v.contains(sep.to_str()) || v.contains("\\"") || v.contains("\\n") || v.contains("\\r") {{
+        "\\"" + v.replace("\\"", "\\"\\"") + "\\""
+    }} else {{
+        v
+    }}
+}}
+
+/// 1 行目を見出しとして、各行を「見出し → 値」の辞書にする（足りない欄は ""、多い欄は捨てる）
+pub fn Result<(str[str])[], str> parse_records(str text) {{
+    let rows = parse(text)?;
+    let (str[str])[] mut out = [];
+    if rows.len() == 0 {{ return Ok(out); }}
+    let head = rows[0].map((h) -> h);
+    for (i, r) in rows {{
+        if i == 0 {{ continue; }}
+        let str[str] mut m = [];
+        for (j, h) in head {{
+            m[h] = if j < r.len() {{ r[j] }} else {{ "" }};
+        }}
+        out.push(m);
+    }}
+    Ok(out)
+}}
+""");
+    }
+    if name == "date" {
+        return Some("""
+// 標準ライブラリ std.date: 日付と時刻（いつも UTC。グレゴリオ暦を過去にも延ばす）。`use std.date;` と書いて使う
+//   let d = date.now();                                     // DateTime（今の UTC）
+//   print(d.format());                                      // "2026-10-31T10:37:52.123Z"
+//   let t = date.parse("2026-10-31T19:37:52+09:00")?;       // 時差は UTC に直す
+//   let next = date.from_unix_ms(t.unix_ms() + 86400000);   // 1 日（86400000 ミリ秒）あと
+//   print(next.weekday());                                  // 1（月）〜 7（日）
+//   print(d.format_local()?);                               // "2026-10-31T19:37:52+09:00"（OS のタイムゾーンで）
+// .jw で書いている（地域の時刻のずれだけ OS に聞く）。年は 0〜9999。うるう秒は扱わない（秒は 0〜59）。タイムゾーンの名前（Asia/Tokyo など）からは引けない。
+
+use std.time;
+
+/// UTC の日時
+pub struct DateTime {{
+    i64 year;
+    i64 month;
+    i64 day;
+    i64 hour;
+    i64 minute;
+    i64 second;
+    // ミリ秒（0〜999）
+    i64 ms;
+
+    /// 1970-01-01T00:00:00Z からのミリ秒（前なら負）
+    fn i64 unix_ms() {{
+        let days = days_from_civil(year, month, day);
+        (((days * 24 + hour) * 60 + minute) * 60 + second) * 1000 + ms
+    }}
+
+    /// 曜日。ISO 8601 の番号で 1（月）〜 7（日）
+    fn i64 weekday() {{
+        // 1970-01-01 は木曜（4）
+        floor_mod(days_from_civil(year, month, day) + 3, 7) + 1
+    }}
+
+    /// 曜日の名前（`月` 〜 `日`）
+    fn str weekday_name() {{ ["月", "火", "水", "木", "金", "土", "日"][weekday() - 1] }}
+
+    /// n 日あと（負なら前）
+    fn DateTime add_days(i64 n) {{ from_unix_ms(unix_ms() + n * DAY_MS) }}
+
+    /// n ミリ秒あと（負なら前）
+    fn DateTime add_ms(i64 n) {{ from_unix_ms(unix_ms() + n) }}
+
+    /// その年の何日目か（1 月 1 日が 1）
+    fn i64 day_of_year() {{ days_from_civil(year, month, day) - days_from_civil(year, 1, 1) + 1 }}
+
+    /// ISO 8601（RFC 3339）の形。ミリ秒が 0 なら書かない（"2026-10-31T10:37:52Z"）
+    fn str format() {{
+        let mut s = format_date() + "T" + two(hour) + ":" + two(minute) + ":" + two(second);
+        if ms != 0 {{ s += "." + pad(ms, 3); }}
+        s + "Z"
+    }}
+
+    /// 日付だけ（"2026-10-31"）
+    fn str format_date() {{ pad(year, 4) + "-" + two(month) + "-" + two(day) }}
+
+    /// 時差 offset_ms（ミリ秒。東が正。日本なら 9 * 3600000）の地域で見た年月日と時刻。
+    /// 結果の year〜ms はその地域の時計の値（UTC ではない）なので、unix_ms() や format() には使わないこと。
+    /// offset_ms が分の倍数で -23:59〜+23:59 に入らないか、0〜9999 年を出るなら実行時エラー
+    fn DateTime wall(i64 offset_ms) {{
+        assert(offset_ms % 60000 == 0 && offset_ms > -DAY_MS && offset_ms < DAY_MS);
+        from_unix_ms(unix_ms() + offset_ms)
+    }}
+
+    /// 時差 offset_ms の地域で見た ISO 8601 の形（"2026-10-31T19:37:52+09:00"。ミリ秒が 0 でなければ ".123" を付ける）
+    fn str format_at(i64 offset_ms) {{
+        let w = wall(offset_ms);
+        let mut s = w.format_date() + "T" + two(w.hour) + ":" + two(w.minute) + ":" + two(w.second);
+        if w.ms != 0 {{ s += "." + pad(w.ms, 3); }}
+        let a = if offset_ms < 0 {{ -offset_ms }} else {{ offset_ms }};
+        let sign = if offset_ms < 0 {{ "-" }} else {{ "+" }};
+        s + sign + two(a / 3600000) + ":" + two(a / 60000 % 60)
+    }}
+
+    /// OS に設定したタイムゾーン（地域の時刻）で見た形。その時点の時差を OS に聞く（夏時間も）。分からなければ Err
+    fn Result<str, str> format_local() {{
+        let off = time.local_offset_ms(unix_ms())?;
+        Ok(format_at(off))
+    }}
+}}
+
+/// 1 日のミリ秒
+const DAY_MS = 86400000;
+
+/// 今の UTC
+pub fn DateTime now() {{ from_unix_ms(time.unix_ms()) }}
+
+/// 1970-01-01T00:00:00Z からのミリ秒から作る。0〜9999 年に入らなければ実行時エラー
+pub fn DateTime from_unix_ms(i64 t) {{
+    assert(t >= MIN_MS && t <= MAX_MS);
+    let days = floor_div(t, DAY_MS);
+    let rest = t - days * DAY_MS;
+    // civil_from_days（Howard Hinnant の方法。0 年 3 月 1 日を始まりにして数える）
+    let z = days + 719468;
+    let era = floor_div(z, 146097);
+    let doe = z - era * 146097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 {{ mp + 3 }} else {{ mp - 9 }};
+    let y = yoe + era * 400 + (if m <= 2 {{ 1 }} else {{ 0 }});
+    DateTime {{ year: y, month: m, day: d, hour: rest / 3600000, minute: rest / 60000 % 60, second: rest / 1000 % 60, ms: rest % 1000 }}
+}}
+
+/// 年月日と時刻から作る。どれかが範囲の外（2 月 30 日など）なら Err
+pub fn Result<DateTime, str> make(i64 year, i64 month, i64 day, i64 hour, i64 minute, i64 second, i64 ms) {{
+    if year < 0 || year > 9999 {{ return Err("年は 0〜9999 です: {{year}}"); }}
+    if month < 1 || month > 12 {{ return Err("月は 1〜12 です: {{month}}"); }}
+    if day < 1 || day > days_in_month(year, month) {{ return Err("{{year}} 年 {{month}} 月に {{day}} 日はありません"); }}
+    if hour < 0 || hour > 23 || minute < 0 || minute > 59 || second < 0 || second > 59 {{ return Err("時刻が正しくありません: " + two(hour) + ":" + two(minute) + ":" + two(second)); }}
+    if ms < 0 || ms > 999 {{ return Err("ミリ秒は 0〜999 です: {{ms}}"); }}
+    Ok(DateTime {{ year: year, month: month, day: day, hour: hour, minute: minute, second: second, ms: ms }})
+}}
+
+/// うるう年か
+pub fn bool is_leap(i64 year) {{ (year % 4 == 0 && year % 100 != 0) || year % 400 == 0 }}
+
+/// その月の日の数。month が 1〜12 でなければ実行時エラー
+pub fn i64 days_in_month(i64 year, i64 month) {{
+    assert(month >= 1 && month <= 12);
+    if month == 2 {{ return if is_leap(year) {{ 29 }} else {{ 28 }}; }}
+    if month == 4 || month == 6 || month == 9 || month == 11 {{ 30 }} else {{ 31 }}
+}}
+
+/// ISO 8601（RFC 3339）の日付か日時を読む。読める形:
+///   "2026-10-31"（その日の 0 時 UTC）・"2026-10-31T10:37:52Z"・"2026-10-31T10:37:52.5+09:00"（t と z の小文字、T の代わりの空白もよい）
+/// 秒の小数は 9 桁まで読み、ミリ秒より細かい分は切り捨てる。時差があれば UTC に直す。ほかの形・ない日付なら Err
+pub fn Result<DateTime, str> parse(str s) {{
+    let cs = s.chars().map((one) -> one.to_str());
+    let bad = "日時の形が読めません（2026-10-31T10:37:52Z のように書いてください）: " + s;
+    if cs.len() < 10 || cs[4] != "-" || cs[7] != "-" {{ return Err(bad); }}
+    let year = digits(ref cs, 0, 4);
+    let month = digits(ref cs, 5, 2);
+    let day = digits(ref cs, 8, 2);
+    if year < 0 || month < 0 || day < 0 {{ return Err(bad); }}
+    if cs.len() == 10 {{ return make(year, month, day, 0, 0, 0, 0); }}
+    let sep = cs[10];
+    if sep != "T" && sep != "t" && sep != " " {{ return Err(bad); }}
+    if cs.len() < 20 || cs[13] != ":" || cs[16] != ":" {{ return Err(bad); }}
+    let hour = digits(ref cs, 11, 2);
+    let minute = digits(ref cs, 14, 2);
+    let second = digits(ref cs, 17, 2);
+    if hour < 0 || minute < 0 || second < 0 {{ return Err(bad); }}
+    let mut i = 19;
+    let mut ms = 0;
+    if cs[i] == "." {{
+        i += 1;
+        let from = i;
+        while i < cs.len() && digits(ref cs, i, 1) >= 0 {{
+            if i - from < 3 {{ ms = ms * 10 + digits(ref cs, i, 1); }}
+            i += 1;
+        }}
+        let n = i - from;
+        if n == 0 || n > 9 {{ return Err(bad); }}
+        if n == 1 {{ ms *= 100; }} else if n == 2 {{ ms *= 10; }}
+    }}
+    if i >= cs.len() {{ return Err(bad); }}
+    let mut offset = 0;
+    if cs[i] == "Z" || cs[i] == "z" {{
+        if i + 1 != cs.len() {{ return Err(bad); }}
+    }} else if cs[i] == "+" || cs[i] == "-" {{
+        if i + 6 != cs.len() || cs[i + 3] != ":" {{ return Err(bad); }}
+        let oh = digits(ref cs, i + 1, 2);
+        let om = digits(ref cs, i + 4, 2);
+        if oh < 0 || om < 0 || oh > 23 || om > 59 {{ return Err(bad); }}
+        offset = (oh * 60 + om) * 60000;
+        if cs[i] == "-" {{ offset = -offset; }}
+    }} else {{
+        return Err(bad);
+    }}
+    let local = make(year, month, day, hour, minute, second, ms)?;
+    let t = local.unix_ms() - offset;
+    if t < MIN_MS || t > MAX_MS {{ return Err("UTC に直すと 0〜9999 年に入りません: " + s); }}
+    Ok(from_unix_ms(t))
+}}
+
+// 0000-01-01T00:00:00.000Z と 9999-12-31T23:59:59.999Z
+const MIN_MS = -62167219200000;
+const MAX_MS = 253402300799999;
+
+/// 1970-01-01 からの日の数（days_from_civil。Howard Hinnant の方法）
+fn i64 days_from_civil(i64 y0, i64 m, i64 d) {{
+    let y = if m <= 2 {{ y0 - 1 }} else {{ y0 }};
+    let era = floor_div(y, 400);
+    let yoe = y - era * 400;
+    let mp = if m > 2 {{ m - 3 }} else {{ m + 9 }};
+    let doy = (153 * mp + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146097 + doe - 719468
+}}
+
+fn i64 floor_div(i64 a, i64 b) {{
+    let q = a / b;
+    if (a % b != 0) && ((a < 0) != (b < 0)) {{ q - 1 }} else {{ q }}
+}}
+
+fn i64 floor_mod(i64 a, i64 b) {{ a - floor_div(a, b) * b }}
+
+/// cs[from..from+n] が数字だけならその数、でなければ -1
+fn i64 digits(ref str[] cs, i64 from, i64 n) {{
+    if from + n > cs.len() {{ return -1; }}
+    let mut v = 0;
+    for i in range(from, from + n) {{
+        match "0123456789".find(cs[i]) {{
+            case Some(k) -> v = v * 10 + k;
+            case None -> return -1;
+        }}
+    }}
+    v
+}}
+
+fn str two(i64 n) {{ pad(n, 2) }}
+
+fn str pad(i64 n, i64 width) {{
+    let mut s = "{{n}}";
+    while s.len() < width {{ s = "0" + s; }}
+    s
+}}
+""");
+    }
+    if name == "deque" {
+        return Some("""
+// std.deque: 両端キュー。`use std.deque;` で `let deque.Deque<i64> mut q = deque.Deque.new(); q.push_back(1);` のように使う。
+// 前と後ろの 2 本のリストで持つ（front は逆順）。片側が空になったら、もう片側から移す（ならせば 1 回あたり定数の手間）。
+
+/// 両端から入れて取り出せる列
+pub struct Deque<T> {{
+    T[] front;
+    T[] back;
+
+    /// 空の列
+    static fn Deque<T> new() {{ Deque {{ front: [], back: [] }} }}
+
+    fn i64 len() {{ front.len() + back.len() }}
+
+    fn bool is_empty() {{ front.len() + back.len() == 0 }}
+
+    /// 後ろに入れる
+    fn mut push_back(T v) {{ back.push(v); }}
+
+    /// 前に入れる
+    fn mut push_front(T v) {{ front.push(v); }}
+
+    /// 前から取り出す（空なら None）
+    fn mut Option<T> pop_front() {{
+        if front.len() == 0 {{ move_half(true); }}
+        front.pop()
+    }}
+
+    /// 後ろから取り出す（空なら None）
+    fn mut Option<T> pop_back() {{
+        if back.len() == 0 {{ move_half(false); }}
+        back.pop()
+    }}
+
+    /// 空になった側へ、反対側の半分（1 つなら 1 つ）を順番を保って移す
+    fn mut move_half(bool to_front) {{
+        let from = if to_front {{ back.len() }} else {{ front.len() }};
+        // 移さずに残す数（反対側の端に近いほう）
+        let keep = from / 2;
+        let T[] mut rest = [];
+        if to_front {{
+            // back の前の (from - keep) 個を front へ（front は逆順なので、後ろから積む）
+            move_n(ref mut back, ref mut rest, keep);
+            move_n(ref mut back, ref mut front, from - keep);
+            move_n(ref mut rest, ref mut back, keep);
+        }} else {{
+            move_n(ref mut front, ref mut rest, keep);
+            move_n(ref mut front, ref mut back, from - keep);
+            move_n(ref mut rest, ref mut front, keep);
+        }}
+    }}
+}}
+
+/// a の後ろから n 個を取り出して、順に b の後ろへ積む
+fn move_n<T>(ref mut T[] a, ref mut T[] b, i64 n) {{
+    let mut i = 0;
+    while i < n {{
+        match a.pop() {{
+            case Some(v) -> b.push(v);
+            case None -> return;
+        }}
+        i += 1;
+    }}
+}}
+""");
+    }
+    if name == "env" {
+        return Some("""
+// 標準ライブラリ std.env: 環境変数。`use std.env;` と書いて `env.get("HOME")` のように使う
+
+/// 環境変数の値（なければ None。名前が空・`=` や NUL を含む・値が UTF-8 でないときも None）
+pub fn Option<str> get(str name) {{ __env_get(name) }}
+""");
+    }
+    if name == "fs" {
+        return Some("""
+// 標準ライブラリ std.fs: ファイル。`use std.fs;` と書いて使う
+//
+// File は資源（ムーブだけできる。ほかのスレッドへは渡せない）。持ち主がいなくなると黙って閉じるので、
+// 書いた内容が残ったか確かめたいときは `fs.close(f)` の結果を見る。
+//   let mut f = fs.create("out.txt")?;
+//   f.write_text("こんにちは\\n")?;
+//   fs.close(f)?;
+// メソッドは `read(n)`（最大 n バイト。終わりなら空のリスト）・`read_text()`（残り全部。UTF-8 でなければ Err）・
+// `write(bytes)`（u8[] をムーブして全部書く）・`write_text(s)`。どれも Result で、持ち主が mut であること。
+
+pub resource File;
+
+/// 読むために開く
+pub fn Result<File, str> open(str path) {{ __fs_open(path, 0) }}
+
+/// 書くために開く（なければ作る。あれば空にする）
+pub fn Result<File, str> create(str path) {{ __fs_open(path, 1) }}
+
+/// 後ろに足すために開く（なければ作る）
+pub fn Result<File, str> append(str path) {{ __fs_open(path, 2) }}
+
+/// 閉じる。失敗しても File はもう使えない（Err は書いた内容が残っていないかもしれないという知らせ）
+pub fn Result<(), str> close(File f) {{ __res_close(f) }}
+
+/// ファイルかディレクトリがあるか
+pub fn bool exists(str path) {{ __fs_exists(path) }}
+
+/// ディレクトリの中の名前（`.` と `..` は除く。名前の順）
+pub fn Result<str[], str> list_dir(str path) {{ __fs_list(path) }}
+
+/// ディレクトリを作る（親はあること。もうあれば Err）
+pub fn Result<(), str> make_dir(str path) {{ __fs_make_dir(path) }}
+
+/// ディレクトリを親から順に作る（もうあれば何もしない）
+pub fn Result<(), str> make_dirs(str path) {{
+    if is_dir(path) {{ return Ok(()); }}
+    let up = parent(path);
+    if up != "" && !is_dir(up) {{ make_dirs(up)?; }}
+    make_dir(path)
+}}
+
+/// ファイルか、空のディレクトリを消す
+pub fn Result<(), str> remove(str path) {{ __fs_remove(path) }}
+
+/// 名前を変える。to があれば置き換える
+pub fn Result<(), str> rename(str from, str to) {{ __fs_rename(from, to) }}
+
+/// ファイルの後ろに text を足す（なければ作る）
+pub fn Result<(), str> append_text(str path, str text) {{ __fs_append(path, text) }}
+
+/// ファイル・ディレクトリの情報
+pub struct Info {{
+    // 中身の大きさ（バイト。ファイルでなければ 0）
+    i64 size;
+    bool is_file;
+    bool is_dir;
+    // path そのものがシンボリックリンク（Windows ではリパースポイント）か。ほかの欄はたどった先のもの
+    bool is_link;
+    // 更新時刻（1970-01-01 UTC からのミリ秒。Windows は秒の単位）
+    i64 modified_ms;
+}}
+
+/// 情報を読む（なければ Err。リンクの先がなければ is_file も is_dir も false）
+pub fn Result<Info, str> stat(str path) {{
+    let v = __fs_stat(path)?;
+    Ok(Info {{ size: v[1], is_file: v[0] == 0, is_dir: v[0] == 1, is_link: v[3] == 1, modified_ms: v[2] }})
+}}
+
+/// ファイルか（なければ false）
+pub fn bool is_file(str path) {{
+    match stat(path) {{
+        case Ok(i) -> i.is_file;
+        case Err(e) -> false;
+    }}
+}}
+
+/// ディレクトリか（なければ false）
+pub fn bool is_dir(str path) {{
+    match stat(path) {{
+        case Ok(i) -> i.is_dir;
+        case Err(e) -> false;
+    }}
+}}
+
+/// ファイルを写す。to があれば上書きする（安全な上書きではない。途中で失敗すると to は途中までになる）
+pub fn Result<(), str> copy(str from, str to) {{
+    if from == to {{ return Err("写す元と先が同じです: " + from); }}
+    if !is_file(from) {{ return Err("写す元がファイルではありません: " + from); }}
+    let mut src = open(from)?;
+    let mut dst = create(to)?;
+    loop {{
+        let chunk = src.read(1048576)?;
+        if chunk.len() == 0 {{ break; }}
+        dst.write(chunk)?;
+    }}
+    close(src)?;
+    close(dst)
+}}
+
+/// ファイルか、ディレクトリを中身ごと消す。リンクはたどらず、リンクそのものを消す（なければ Err）
+pub fn Result<(), str> remove_all(str path) {{
+    let info = stat(path)?;
+    if info.is_dir && !info.is_link {{
+        for name in list_dir(path)? {{ remove_all(path + "/" + name)?; }}
+    }}
+    remove(path)
+}}
+
+/// 安全な上書き: `path + ".tmp"` に全部書いて閉じてから path へ名前を変える。
+/// 途中で失敗しても path は元のまま（読む側には古い中身か新しい中身のどちらかが見える）。電源断まで耐えるとは約束しない
+pub fn Result<(), str> write_atomic(str path, u8[] data) {{
+    let tmp = path + ".tmp";
+    let mut f = create(tmp)?;
+    match f.write(data) {{
+        case Ok(_) -> {{}}
+        case Err(e) -> {{
+            close(f);
+            remove(tmp);
+            return Err(e);
+        }}
+    }}
+    match close(f) {{
+        case Ok(_) -> {{}}
+        case Err(e) -> {{
+            remove(tmp);
+            return Err(e);
+        }}
+    }}
+    match rename(tmp, path) {{
+        case Ok(_) -> return Ok(());
+        case Err(e) -> {{
+            remove(tmp);
+            return Err(e);
+        }}
+    }}
+}}
+
+/// write_atomic の文字列版
+pub fn Result<(), str> write_text_atomic(str path, str s) {{ write_atomic(path, s.bytes()) }}
+
+/// path の下にあるファイルすべてのパス（`join(path, ...)` の形。ディレクトリの中は名前の順に深さ優先。リンクのディレクトリには入らない）
+pub fn Result<str[], str> walk(str path) {{
+    let str[] mut out = [];
+    walk_into(path, ref mut out)?;
+    Ok(out)
+}}
+
+fn Result<(), str> walk_into(str dir, ref mut str[] out) {{
+    for name in list_dir(dir)? {{
+        let p = join(dir, name);
+        let info = stat(p)?;
+        if info.is_dir && !info.is_link {{
+            walk_into(p, out)?;
+        }} else if info.is_file {{
+            out.push(p);
+        }}
+    }}
+    Ok(())
+}}
+
+// ---------------------------------------------------------------- パス（文字列だけで決める。ファイルは見ない）
+
+/// a と b をつなぐ（b が `/` で始まれば b のまま。a が空なら b）
+pub fn str join(str a, str b) {{
+    if a == "" || b.starts_with("/") {{ return b; }}
+    if a.ends_with("/") || a.ends_with("\\\\") {{ return a + b; }}
+    a + "/" + b
+}}
+
+/// 最後の区切り（`/` か `\\`）の位置。なければ -1
+fn i64 last_sep(str p) {{
+    let cs = p.chars();
+    let mut i = cs.len() - 1;
+    while i >= 0 {{
+        if cs[i] == '/' || cs[i] == '\\\\' {{ return i; }}
+        i--;
+    }}
+    -1
+}}
+
+/// 親のディレクトリ（`a/b/c.txt` → `a/b`、`c.txt` → ``、`/c` → `/`）
+pub fn str parent(str path) {{
+    let i = last_sep(path);
+    if i < 0 {{ return ""; }}
+    if i == 0 {{ return path.slice(0, 1); }}
+    path.slice(0, i)
+}}
+
+/// 最後の名前（`a/b/c.txt` → `c.txt`）
+pub fn str file_name(str path) {{ path.slice(last_sep(path) + 1, path.len()) }}
+
+/// 拡張子（`c.tar.gz` → `gz`。点で始まる名前 `.env` や点のない名前は ``）
+pub fn str ext(str path) {{
+    let name = file_name(path);
+    let cs = name.chars();
+    let mut i = cs.len() - 1;
+    while i > 0 {{
+        if cs[i] == '.' {{ return name.slice(i + 1, name.len()); }}
+        i--;
+    }}
+    ""
+}}
+
+/// 拡張子を除いた名前（`a/c.tar.gz` → `c.tar`）
+pub fn str stem(str path) {{
+    let name = file_name(path);
+    let e = ext(path);
+    if e == "" {{ return name; }}
+    name.slice(0, name.len() - e.len() - 1)
+}}
+""");
+    }
+    if name == "gzip" {
+        return Some("""
+// 標準ライブラリ std.gzip: gzip（RFC 1952。中身は deflate、RFC 1951）の展開と圧縮。`use std.gzip;` と書いて使う
+//   let packed = gzip.compress(ref data);
+//   let back = gzip.decompress(ref packed, 1000000)?;    // 展開して 1000000 バイトを超えるなら Err
+//   print(gzip.crc32(ref data));
+// .jw だけで書いている。展開は deflate の 3 種類のブロックを全部読み、CRC32 と長さを確かめる（続けてつないだ gzip も読む）。
+// 圧縮は固定のハフマン符号のブロック 1 つで、同じ並びは後ろ 32768 バイトまでから探す。縮まないデータは圧縮しないブロックにする。
+
+/// 長さの符号（257〜285）の基になる長さと、足すビットの数
+fn i64[] len_base() {{ [3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31, 35, 43, 51, 59, 67, 83, 99, 115, 131, 163, 195, 227, 258] }}
+fn i64[] len_extra() {{ [0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0] }}
+/// 距離の符号（0〜29）の基になる距離と、足すビットの数
+fn i64[] dist_base() {{
+    [1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193, 257, 385, 513, 769, 1025, 1537, 2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577]
+}}
+fn i64[] dist_extra() {{ [0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13] }}
+
+/// CRC32（gzip と同じ。多項式 0xEDB88320）
+pub fn i64 crc32(ref u8[] data) {{
+    let i64[] mut table = [];
+    for n in range(256) {{
+        let mut c = n;
+        for k in range(8) {{ c = if c & 1 == 1 {{ 3988292384 ^ (c >> 1) }} else {{ c >> 1 }}; }}
+        table.push(c);
+    }}
+    let mut c = 4294967295;
+    for b in data {{ c = table[(c ^ (b as i64)) & 255] ^ (c >> 8); }}
+    c ^ 4294967295
+}}
+
+// ---------------------------------------------------------------- 展開
+
+/// 正規のハフマン符号（長さごとの数と、符号の順に並べた記号）
+struct Huffman {{
+    i64[] count;
+    i64[] symbol;
+}}
+
+/// 記号ごとの符号の長さからハフマン符号を作る（長さの組み合わせがありえなければ Err）
+fn Result<Huffman, str> huffman(ref i64[] lengths) {{
+    let i64[] mut count = [];
+    for i in range(16) {{ count.push(0); }}
+    for n in lengths {{ count[n] += 1; }}
+    // 長さ 1 から順に、使える符号の数を超えていないか
+    let mut left = 1;
+    for n in range(1, 16) {{
+        left = left * 2 - count[n];
+        if left < 0 {{ return Err("ハフマン符号の長さの組み合わせが正しくありません"); }}
+    }}
+    let i64[] mut offs = [0, 0];
+    for n in range(1, 15) {{ offs.push(offs[n] + count[n]); }}
+    let i64[] mut symbol = [];
+    for i in range(lengths.len()) {{ symbol.push(0); }}
+    for (s, n) in lengths {{
+        if n != 0 {{
+            symbol[offs[n]] = s;
+            offs[n] += 1;
+        }}
+    }}
+    count[0] = 0;
+    Ok(Huffman {{ count: count, symbol: symbol }})
+}}
+
+struct Inflater {{
+    u8[] src;
+    i64 pos;
+    i64 bitbuf;
+    i64 bitcnt;
+    i64 limit;
+
+    /// n ビット読む（下位のビットから）
+    fn mut Result<i64, str> take(i64 n) {{
+        while bitcnt < n {{
+            if pos >= src.len() {{ return Err("gzip のデータが途中で切れています"); }}
+            bitbuf = bitbuf | ((src[pos] as i64) << bitcnt);
+            pos += 1;
+            bitcnt += 8;
+        }}
+        let v = bitbuf & ((1 << n) - 1);
+        bitbuf = bitbuf >> n;
+        bitcnt -= n;
+        Ok(v)
+    }}
+
+    /// 読みかけのバイトの残りのビットを捨てる
+    fn mut align() {{
+        bitbuf = 0;
+        bitcnt = 0;
+    }}
+
+    /// 記号を 1 つ読む（1 ビットずつ符号を伸ばして探す）
+    fn mut Result<i64, str> decode(ref Huffman h) {{
+        let mut code = 0;
+        let mut first = 0;
+        let mut index = 0;
+        for n in range(1, 16) {{
+            code = code | take(1)?;
+            let c = h.count[n];
+            if code - c < first {{ return Ok(h.symbol[index + code - first]); }}
+            index += c;
+            first = (first + c) << 1;
+            code = code << 1;
+        }}
+        Err("ハフマン符号が読めません")
+    }}
+
+    fn mut Result<(), str> emit(ref mut u8[] out, u8 b) {{
+        if out.len() >= limit {{ return Err("展開した大きさが上限（{{limit}} バイト）を超えます"); }}
+        out.push(b);
+        Ok(())
+    }}
+
+    /// 圧縮していないブロック
+    fn mut Result<(), str> stored(ref mut u8[] out) {{
+        align();
+        if pos + 4 > src.len() {{ return Err("gzip のデータが途中で切れています"); }}
+        let n = (src[pos] as i64) | ((src[pos + 1] as i64) << 8);
+        let check = (src[pos + 2] as i64) | ((src[pos + 3] as i64) << 8);
+        if n ^ check != 65535 {{ return Err("圧縮していないブロックの長さが正しくありません"); }}
+        pos += 4;
+        if pos + n > src.len() {{ return Err("gzip のデータが途中で切れています"); }}
+        for i in range(pos, pos + n) {{ emit(out, src[i])?; }}
+        pos += n;
+        Ok(())
+    }}
+
+    /// ハフマン符号のブロックの中身
+    fn mut Result<(), str> codes(ref mut u8[] out, ref Huffman lit, ref Huffman dist) {{
+        let lb = len_base();
+        let le = len_extra();
+        let db = dist_base();
+        let de = dist_extra();
+        loop {{
+            let s = decode(lit)?;
+            if s < 256 {{
+                emit(out, s as u8)?;
+            }} else if s == 256 {{
+                return Ok(());
+            }} else {{
+                let k = s - 257;
+                if k >= 29 {{ return Err("長さの符号が正しくありません"); }}
+                let n = lb[k] + take(le[k])?;
+                let d = decode(dist)?;
+                if d >= 30 {{ return Err("距離の符号が正しくありません"); }}
+                let back = db[d] + take(de[d])?;
+                if back > out.len() {{ return Err("距離が出力の始まりより前を指しています"); }}
+                for i in range(n) {{
+                    let b = out[out.len() - back];
+                    emit(out, b)?;
+                }}
+            }}
+        }}
+    }}
+
+    /// 固定のハフマン符号のブロック
+    fn mut Result<(), str> fixed(ref mut u8[] out) {{
+        let i64[] mut ls = [];
+        for i in range(288) {{ ls.push(if i < 144 {{ 8 }} else if i < 256 {{ 9 }} else if i < 280 {{ 7 }} else {{ 8 }}); }}
+        let i64[] mut ds = [];
+        for i in range(30) {{ ds.push(5); }}
+        let lit = huffman(ref ls)?;
+        let dist = huffman(ref ds)?;
+        codes(out, ref lit, ref dist)
+    }}
+
+    /// 符号をブロックの頭に書いてあるハフマン符号のブロック
+    fn mut Result<(), str> dynamic(ref mut u8[] out) {{
+        let nlen = take(5)? + 257;
+        let ndist = take(5)? + 1;
+        let ncode = take(4)? + 4;
+        if nlen > 286 || ndist > 30 {{ return Err("符号の数が多すぎます"); }}
+        let order = [16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15];
+        let i64[] mut cl = [];
+        for i in range(19) {{ cl.push(0); }}
+        for i in range(ncode) {{ cl[order[i]] = take(3)?; }}
+        let lencode = huffman(ref cl)?;
+        let i64[] mut lengths = [];
+        while lengths.len() < nlen + ndist {{
+            let s = decode(ref lencode)?;
+            if s < 16 {{
+                lengths.push(s);
+            }} else {{
+                let mut v = 0;
+                let mut times = 0;
+                if s == 16 {{
+                    if lengths.len() == 0 {{ return Err("繰り返す長さがありません"); }}
+                    v = lengths[lengths.len() - 1];
+                    times = 3 + take(2)?;
+                }} else if s == 17 {{
+                    times = 3 + take(3)?;
+                }} else {{
+                    times = 11 + take(7)?;
+                }}
+                if lengths.len() + times > nlen + ndist {{ return Err("符号の長さが多すぎます"); }}
+                for i in range(times) {{ lengths.push(v); }}
+            }}
+        }}
+        if lengths[256] == 0 {{ return Err("ブロックの終わりの符号がありません"); }}
+        let i64[] mut ls = [];
+        for i in range(nlen) {{ ls.push(lengths[i]); }}
+        let i64[] mut ds = [];
+        for i in range(nlen, nlen + ndist) {{ ds.push(lengths[i]); }}
+        let lit = huffman(ref ls)?;
+        let dist = huffman(ref ds)?;
+        codes(out, ref lit, ref dist)
+    }}
+
+    /// deflate のデータを最後のブロックまで読む
+    fn mut Result<(), str> inflate(ref mut u8[] out) {{
+        loop {{
+            let last = take(1)?;
+            let kind = take(2)?;
+            if kind == 0 {{
+                stored(out)?;
+            }} else if kind == 1 {{
+                fixed(out)?;
+            }} else if kind == 2 {{
+                dynamic(out)?;
+            }} else {{
+                return Err("ブロックの種類が正しくありません");
+            }}
+            if last == 1 {{ break; }}
+        }}
+        align();
+        Ok(())
+    }}
+
+    fn mut Result<i64, str> byte() {{
+        if pos >= src.len() {{ return Err("gzip のデータが途中で切れています"); }}
+        pos += 1;
+        Ok(src[pos - 1] as i64)
+    }}
+
+    fn mut Result<i64, str> le32() {{
+        let mut v = 0;
+        for i in range(4) {{ v = v | (byte()? << (8 * i)); }}
+        Ok(v)
+    }}
+
+    /// 名前・注釈（0 で終わる）を読み飛ばす
+    fn mut Result<(), str> skip_zstr() {{
+        while byte()? != 0 {{}}
+        Ok(())
+    }}
+
+    /// gzip の 1 つ分（頭・中身・CRC32 と長さ）
+    fn mut Result<(), str> member(ref mut u8[] out) {{
+        if byte()? != 31 || byte()? != 139 {{ return Err("gzip のデータではありません"); }}
+        if byte()? != 8 {{ return Err("deflate でない圧縮の方式です"); }}
+        let flags = byte()?;
+        if flags & 224 != 0 {{ return Err("gzip の頭の印が正しくありません"); }}
+        pos += 6; // 時刻・圧縮の度合い・OS
+        if flags & 4 != 0 {{
+            let n = byte()? | (byte()? << 8);
+            pos += n;
+        }}
+        if flags & 8 != 0 {{ skip_zstr()?; }}
+        if flags & 16 != 0 {{ skip_zstr()?; }}
+        if flags & 2 != 0 {{ pos += 2; }}
+        if pos > src.len() {{ return Err("gzip のデータが途中で切れています"); }}
+        let start = out.len();
+        inflate(out)?;
+        let want_crc = le32()?;
+        let want_len = le32()?;
+        let u8[] mut part = [];
+        for i in range(start, out.len()) {{ part.push(out[i]); }}
+        if crc32(ref part) != want_crc {{ return Err("CRC32 が合いません（データが壊れています）"); }}
+        if (out.len() - start) & 4294967295 != want_len {{ return Err("展開した長さが合いません"); }}
+        Ok(())
+    }}
+}}
+
+/// gzip のデータを展開する。limit は展開した大きさの上限（バイト。0 以上）。続けてつないだ gzip は順につなげて返す
+pub fn Result<u8[], str> decompress(ref u8[] data, i64 limit) {{
+    assert(limit >= 0);
+    let u8[] mut src = [];
+    for b in data {{ src.push(b); }}
+    let mut z = Inflater {{ src: src, pos: 0, bitbuf: 0, bitcnt: 0, limit: limit }};
+    let u8[] mut out = [];
+    z.member(ref mut out)?;
+    while z.pos < z.src.len() {{ z.member(ref mut out)?; }}
+    Ok(out)
+}}
+
+// ---------------------------------------------------------------- 圧縮
+
+struct BitWriter {{
+    i64 bitbuf;
+    i64 bitcnt;
+
+    /// v の下位 n ビットを、下位のビットから書く
+    fn mut put(ref mut u8[] out, i64 v, i64 n) {{
+        bitbuf = bitbuf | (v << bitcnt);
+        bitcnt += n;
+        while bitcnt >= 8 {{
+            out.push((bitbuf & 255) as u8);
+            bitbuf = bitbuf >> 8;
+            bitcnt -= 8;
+        }}
+    }}
+
+    /// ハフマン符号は上位のビットから書く
+    fn mut put_code(ref mut u8[] out, i64 code, i64 n) {{
+        let mut r = 0;
+        for i in range(n) {{ r = (r << 1) | ((code >> i) & 1); }}
+        put(out, r, n);
+    }}
+
+    /// 固定のハフマン符号で、文字か長さの記号を書く
+    fn mut symbol(ref mut u8[] out, i64 s) {{
+        if s < 144 {{ put_code(out, 48 + s, 8); }}
+        else if s < 256 {{ put_code(out, 400 + s - 144, 9); }}
+        else if s < 280 {{ put_code(out, s - 256, 7); }}
+        else {{ put_code(out, 192 + s - 280, 8); }}
+    }}
+
+    fn mut flush(ref mut u8[] out) {{
+        if bitcnt > 0 {{ out.push((bitbuf & 255) as u8); }}
+        bitbuf = 0;
+        bitcnt = 0;
+    }}
+}}
+
+/// 3 バイトの並びの手がかり（0〜65535）
+fn i64 hash3(ref u8[] d, i64 i) {{
+    (((d[i] as i64) << 10) ^ ((d[i + 1] as i64) << 5) ^ (d[i + 2] as i64)) & 65535
+}}
+
+/// gzip にする（固定のハフマン符号のブロック 1 つ。縮まなければ圧縮しないブロック）
+pub fn u8[] compress(ref u8[] data) {{
+    let u8[] mut out = [31, 139, 8, 0, 0, 0, 0, 0, 0, 255];
+    let mut w = BitWriter {{ bitbuf: 0, bitcnt: 0 }};
+    w.put(ref mut out, 1, 1); // 最後のブロック
+    w.put(ref mut out, 1, 2); // 固定のハフマン符号
+    let lb = len_base();
+    let le = len_extra();
+    let db = dist_base();
+    let de = dist_extra();
+    let i64[] mut head = [];
+    for i in range(65536) {{ head.push(-1); }}
+    let i64[] mut prev = [];
+    let n = data.len();
+    let mut i = 0;
+    while i < n {{
+        let mut best = 0;
+        let mut best_back = 0;
+        if i + 2 < n {{
+            let h = hash3(data, i);
+            let mut j = head[h];
+            let mut tries = 0;
+            while j >= 0 && i - j <= 32768 && tries < 64 {{
+                let mut k = 0;
+                while k < 258 && i + k < n && data[j + k] == data[i + k] {{ k += 1; }}
+                if k > best {{
+                    best = k;
+                    best_back = i - j;
+                    if k == 258 {{ break; }}
+                }}
+                j = prev[j];
+                tries += 1;
+            }}
+        }}
+        let step = if best >= 3 {{ best }} else {{ 1 }};
+        if best >= 3 {{
+            let mut c = 28;
+            while lb[c] > best {{ c -= 1; }}
+            w.symbol(ref mut out, 257 + c);
+            w.put(ref mut out, best - lb[c], le[c]);
+            let mut d = 29;
+            while db[d] > best_back {{ d -= 1; }}
+            w.put_code(ref mut out, d, 5);
+            w.put(ref mut out, best_back - db[d], de[d]);
+        }} else {{
+            w.symbol(ref mut out, data[i] as i64);
+        }}
+        // 通ったところを全部、手がかりの表に入れる
+        for p in range(i, i + step) {{
+            if p + 2 < n {{
+                let h = hash3(data, p);
+                prev.push(head[h]);
+                head[h] = p;
+            }} else {{
+                prev.push(-1);
+            }}
+        }}
+        i += step;
+    }}
+    w.symbol(ref mut out, 256);
+    w.flush(ref mut out);
+    // 縮まないデータ（圧縮ずみなど）は、圧縮しないブロックに並べ直す（1 ブロックは 65535 バイトまで）
+    if out.len() > n + 10 + 5 * (n / 65535 + 1) {{
+        out = [31, 139, 8, 0, 0, 0, 0, 0, 0, 255];
+        let mut at = 0;
+        loop {{
+            let size = if n - at > 65535 {{ 65535 }} else {{ n - at }};
+            out.push(if at + size == n {{ 1 }} else {{ 0 }});
+            for v in [size & 255, size >> 8, (size ^ 65535) & 255, (size ^ 65535) >> 8] {{ out.push(v as u8); }}
+            for k in range(at, at + size) {{ out.push(data[k]); }}
+            at += size;
+            if at == n {{ break; }}
+        }}
+    }}
+    let c = crc32(data);
+    for k in range(4) {{ out.push(((c >> (8 * k)) & 255) as u8); }}
+    for k in range(4) {{ out.push(((n >> (8 * k)) & 255) as u8); }}
+    out
+}}
+""");
+    }
+    if name == "hash" {
+        return Some("""
+// 標準ライブラリ std.hash: 暗号のハッシュ。`use std.hash;` と書いて使う
+//   let d = hash.sha256(ref data);                       // u8[]（32 バイト）
+//   print(hash.hex(ref d));                              // 64 文字の 16 進
+//   let mac = hash.hmac_sha256(ref key, ref msg);
+//   if hash.equal(ref mac, ref got) {{ ... }}              // かかる時間が中身によらない比べ方
+//   let k = hash.pbkdf2_sha256(ref pw, ref salt, 100000);
+// .jw だけで書いている。SHA-256（FIPS 180-4）・HMAC（RFC 2104）・PBKDF2（RFC 8018）。
+
+fn i64[] sha_k() {{
+    [1116352408, 1899447441, 3049323471, 3921009573, 961987163, 1508970993, 2453635748, 2870763221,
+     3624381080, 310598401, 607225278, 1426881987, 1925078388, 2162078206, 2614888103, 3248222580,
+     3835390401, 4022224774, 264347078, 604807628, 770255983, 1249150122, 1555081692, 1996064986,
+     2554220882, 2821834349, 2952996808, 3210313671, 3336571891, 3584528711, 113926993, 338241895,
+     666307205, 773529912, 1294757372, 1396182291, 1695183700, 1986661051, 2177026350, 2456956037,
+     2730485921, 2820302411, 3259730800, 3345764771, 3516065817, 3600352804, 4094571909, 275423344,
+     430227734, 506948616, 659060556, 883997877, 958139571, 1322822218, 1537002063, 1747873779,
+     1955562222, 2024104815, 2227730452, 2361852424, 2428436474, 2756734187, 3204031479, 3329325298]
+}}
+
+fn i64[] sha_init() {{ [1779033703, 3144134277, 1013904242, 2773480762, 1359893119, 2600822924, 528734635, 1541459225] }}
+
+fn i64 rotr(i64 x, i64 n) {{ ((x >> n) | (x << (32 - n))) & 4294967295 }}
+
+/// 64 バイトのブロックを 1 つ混ぜる
+fn sha_block(ref mut i64[] h, ref u8[] data, i64 at, ref i64[] k) {{
+    let i64[] mut w = [];
+    for t in range(16) {{
+        let p = at + t * 4;
+        w.push(((data[p] as i64) << 24) | ((data[p + 1] as i64) << 16) | ((data[p + 2] as i64) << 8) | (data[p + 3] as i64));
+    }}
+    for t in range(16, 64) {{
+        let x = w[t - 15];
+        let y = w[t - 2];
+        let s0 = rotr(x, 7) ^ rotr(x, 18) ^ (x >> 3);
+        let s1 = rotr(y, 17) ^ rotr(y, 19) ^ (y >> 10);
+        w.push((w[t - 16] + s0 + w[t - 7] + s1) & 4294967295);
+    }}
+    let mut a = h[0];
+    let mut b = h[1];
+    let mut c = h[2];
+    let mut d = h[3];
+    let mut e = h[4];
+    let mut f = h[5];
+    let mut g = h[6];
+    let mut hh = h[7];
+    for t in range(64) {{
+        let s1 = rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25);
+        let ch = (e & f) ^ ((e ^ 4294967295) & g);
+        let t1 = (hh + s1 + ch + k[t] + w[t]) & 4294967295;
+        let s0 = rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22);
+        let maj = (a & b) ^ (a & c) ^ (b & c);
+        let t2 = (s0 + maj) & 4294967295;
+        hh = g;
+        g = f;
+        f = e;
+        e = (d + t1) & 4294967295;
+        d = c;
+        c = b;
+        b = a;
+        a = (t1 + t2) & 4294967295;
+    }}
+    h[0] = (h[0] + a) & 4294967295;
+    h[1] = (h[1] + b) & 4294967295;
+    h[2] = (h[2] + c) & 4294967295;
+    h[3] = (h[3] + d) & 4294967295;
+    h[4] = (h[4] + e) & 4294967295;
+    h[5] = (h[5] + f) & 4294967295;
+    h[6] = (h[6] + g) & 4294967295;
+    h[7] = (h[7] + hh) & 4294967295;
+}}
+
+/// 状態 h から、前に done バイト混ぜたあとの data を混ぜて、32 バイトの値にする
+fn u8[] sha_finish(ref i64[] start, i64 done, ref u8[] data) {{
+    let k = sha_k();
+    let mut h = start.map((x) -> x);
+    let u8[] mut m = data.map((x) -> x);
+    let bits = (done + data.len()) * 8;
+    m.push(128);
+    while m.len() % 64 != 56 {{ m.push(0); }}
+    for i in range(8) {{ m.push(((bits >> (56 - i * 8)) & 255) as u8); }}
+    let mut at = 0;
+    while at < m.len() {{
+        sha_block(ref mut h, ref m, at, ref k);
+        at += 64;
+    }}
+    let u8[] mut out = [];
+    for x in h {{
+        out.push(((x >> 24) & 255) as u8);
+        out.push(((x >> 16) & 255) as u8);
+        out.push(((x >> 8) & 255) as u8);
+        out.push((x & 255) as u8);
+    }}
+    out
+}}
+
+/// SHA-256（32 バイト）
+pub fn u8[] sha256(ref u8[] data) {{
+    let init = sha_init();
+    sha_finish(ref init, 0, data)
+}}
+
+/// HMAC-SHA-256 の鍵（内側と外側の 64 バイトを混ぜた状態を持つ）
+struct HmacKey {{
+    i64[] inner;
+    i64[] outer;
+
+    fn u8[] sign(ref u8[] msg) {{
+        let ih = sha_finish(ref inner, 64, msg);
+        sha_finish(ref outer, 64, ref ih)
+    }}
+}}
+
+fn HmacKey hmac_key(ref u8[] key) {{
+    let k = sha_k();
+    let u8[] mut kb = if key.len() > 64 {{ sha256(key) }} else {{ key.map((x) -> x) }};
+    while kb.len() < 64 {{ kb.push(0); }}
+    let u8[] mut ip = [];
+    let u8[] mut op = [];
+    for x in kb {{
+        ip.push(x ^ 54);
+        op.push(x ^ 92);
+    }}
+    let mut inner = sha_init();
+    sha_block(ref mut inner, ref ip, 0, ref k);
+    let mut outer = sha_init();
+    sha_block(ref mut outer, ref op, 0, ref k);
+    HmacKey {{ inner: inner, outer: outer }}
+}}
+
+/// HMAC-SHA-256（32 バイト。key は何バイトでもよい）
+pub fn u8[] hmac_sha256(ref u8[] key, ref u8[] msg) {{
+    let hk = hmac_key(key);
+    hk.sign(msg)
+}}
+
+/// PBKDF2-HMAC-SHA-256 で 32 バイト（RFC 8018。iters は 1 以上。パスワードから鍵を作る・パスワードを保存する形にする）
+pub fn u8[] pbkdf2_sha256(ref u8[] password, ref u8[] salt, i64 iters) {{
+    assert(iters >= 1);
+    let key = hmac_key(password);
+    let u8[] mut s = salt.map((x) -> x);
+    for x in [0, 0, 0, 1] {{ s.push(x as u8); }}
+    let mut u = key.sign(ref s);
+    let mut out = u.map((x) -> x);
+    for k in range(1, iters) {{
+        u = key.sign(ref u);
+        for i in range(32) {{ out[i] = out[i] ^ u[i]; }}
+    }}
+    out
+}}
+
+/// 小文字の 16 進の文字列にする
+pub fn str hex(ref u8[] b) {{
+    let digits = "0123456789abcdef".chars().map((one) -> one.to_str());
+    let mut s = "";
+    for x in b {{
+        let v = x as i64;
+        s += digits[v >> 4] + digits[v & 15];
+    }}
+    s
+}}
+
+fn i64 nibble(i64 c) {{
+    if c >= 48 && c <= 57 {{ return c - 48; }}
+    if c >= 97 && c <= 102 {{ return c - 87; }}
+    if c >= 65 && c <= 70 {{ return c - 55; }}
+    -1
+}}
+
+/// 16 進の文字列（大文字・小文字どちらでも）をバイトに戻す。長さが奇数か、16 進でない文字があれば None
+pub fn Option<u8[]> unhex(str s) {{
+    let b = s.bytes();
+    if b.len() % 2 != 0 {{ return None; }}
+    let u8[] mut out = [];
+    let mut i = 0;
+    while i < b.len() {{
+        let hi = nibble(b[i] as i64);
+        let lo = nibble(b[i + 1] as i64);
+        if hi < 0 || lo < 0 {{ return None; }}
+        out.push((hi * 16 + lo) as u8);
+        i += 2;
+    }}
+    Some(out)
+}}
+
+/// 同じ中身か（長さが同じなら、どこで違っても同じだけ時間をかける。MAC などの秘密の値を比べるとき用）
+pub fn bool equal(ref u8[] a, ref u8[] b) {{
+    if a.len() != b.len() {{ return false; }}
+    let mut d = 0;
+    for (i, x) in a {{ d = d | ((x ^ b[i]) as i64); }}
+    d == 0
+}}
+""");
+    }
+    if name == "heap" {
+        return Some("""
+// std.heap: 優先度つきキュー。`use std.heap;` で `let heap.Heap<str> mut h = heap.Heap.new(); h.push(3, "c");` のように使う。
+// 優先度（i64）の小さいものから取り出す（大きいものからにするなら、優先度に - をつけて入れる）。
+// 同じ優先度どうしの順番は決まっていない（ただし、同じ入れ方なら毎回同じ順になる）。
+
+/// 優先度の小さいものから出てくる列（2 分ヒープ）
+pub struct Heap<T> {{
+    i64[] keys;
+    T[] vals;
+
+    /// 空の列
+    static fn Heap<T> new() {{ Heap {{ keys: [], vals: [] }} }}
+
+    fn i64 len() {{ keys.len() }}
+
+    fn bool is_empty() {{ keys.len() == 0 }}
+
+    /// 優先度 key で v を入れる
+    fn mut push(i64 key, T v) {{
+        keys.push(key);
+        vals.push(v);
+        let mut i = keys.len() - 1;
+        while i > 0 {{
+            let p = (i - 1) / 2;
+            if keys[p] <= keys[i] {{ break; }}
+            keys.swap(i, p);
+            vals.swap(i, p);
+            i = p;
+        }}
+    }}
+
+    /// いちばん小さい優先度（空なら None）
+    fn Option<i64> peek_key() {{
+        if keys.len() == 0 {{ None }} else {{ Some(keys[0]) }}
+    }}
+
+    /// いちばん優先度の小さいものを取り出す（空なら None）
+    fn mut Option<T> pop() {{
+        let n = keys.len();
+        if n == 0 {{ return None; }}
+        keys.swap(0, n - 1);
+        vals.swap(0, n - 1);
+        keys.pop();
+        let out = vals.pop();
+        let m = n - 1;
+        let mut i = 0;
+        loop {{
+            let l = i * 2 + 1;
+            if l >= m {{ break; }}
+            let mut c = l;
+            if l + 1 < m && keys[l + 1] < keys[l] {{ c = l + 1; }}
+            if keys[i] <= keys[c] {{ break; }}
+            keys.swap(i, c);
+            vals.swap(i, c);
+            i = c;
+        }}
+        out
+    }}
+}}
+""");
+    }
+    if name == "http" {
+        return Some("""
+// 標準ライブラリ std.http: HTTP/1.1 のクライアントとサーバー（サーバーは後ろの「サーバー」の節）。`use std.http;` と書いて使う
+//   let r = http.get("http://example.com/")?;
+//   print(r.status, r.headers["content-type"], r.text()?);
+// http:// と https://（std.tls。証明書と名前を確かめる）。std.net・std.tls の上に .jw だけで書いている。
+// 1 回ごとにつなぎ、`Connection: close` で相手が閉じるまで読む。chunked の本文は読み解き、gzip の本文は展開する。
+// リダイレクト（301・302・303・307・308）は 10 回までたどる。
+
+use std.net;
+use std.tls;
+use std.url;
+use std.text;
+use std.gzip;
+use std.time;
+
+/// たどるリダイレクトの数の上限
+const MAX_REDIRECTS = 10;
+/// gzip を展開した本文の大きさの上限（バイト）
+const MAX_BODY = 268435456;
+
+pub struct Response {{
+    i64 status;
+    // リダイレクトをたどったあとの URL（たどらなければ頼んだ URL）
+    str url;
+    // 名前は小文字にする（同じ名前が二つ以上あれば ", " でつなぐ）
+    str[str] headers;
+    u8[] body;
+
+    /// 本文を文字列にする（UTF-8 でなければ Err）
+    fn Result<str, str> text() {{
+        match text.from_utf8(ref body) {{
+            case Some(s) -> Ok(s);
+            case None -> Err("本文が UTF-8 ではありません");
+        }}
+    }}
+}}
+
+/// GET する
+pub fn Result<Response, str> get(str target) {{ request("GET", target, "", "") }}
+
+/// POST する（content_type は `application/json` など）
+pub fn Result<Response, str> post(str target, str content_type, str body) {{ request("POST", target, content_type, body) }}
+
+/// メソッドを選んで頼む（GET・POST・PUT・PATCH・DELETE・OPTIONS）。body が空でなければ content_type をつけて送る。
+/// follow が false なら、リダイレクトをたどらずに最初の答えを返す（Location は headers["location"]）
+pub fn Result<Response, str> send(str method, str target, str content_type, str body, bool follow) {{
+    let ok = method == "GET" || method == "POST" || method == "PUT" || method == "PATCH" || method == "DELETE" || method == "OPTIONS";
+    if !ok {{ return Err("使えないメソッドです（GET・POST・PUT・PATCH・DELETE・OPTIONS）: " + method); }}
+    if !follow {{
+        if content_type.contains("\\r") || content_type.contains("\\n") {{ return Err("content_type に改行があります"); }}
+        return once(method, target, content_type, body);
+    }}
+    request(method, target, content_type, body)
+}}
+
+fn Result<url.Url, str> parse_url(str s) {{
+    let u = url.parse(s)?;
+    if u.scheme != "http" && u.scheme != "https" {{ return Err("http:// か https:// で始まる URL ではありません: " + s); }}
+    Ok(u)
+}}
+
+/// リダイレクトをたどる。303 と、POST への 301・302 は、本文なしの GET にする（ブラウザと同じ）
+fn Result<Response, str> request(str method, str target, str content_type, str body) {{
+    if content_type.contains("\\r") || content_type.contains("\\n") {{ return Err("content_type に改行があります"); }}
+    let mut m = method;
+    let mut t = target;
+    let mut ct = content_type;
+    let mut b = body;
+    for hop in range(MAX_REDIRECTS + 1) {{
+        let r = once(m, t, ct, b)?;
+        let s = r.status;
+        let moved = s == 301 || s == 302 || s == 303 || s == 307 || s == 308;
+        if !moved {{ return Ok(r); }}
+        let loc = match r.headers.get("location") {{
+            case Some(l) -> l;
+            case None -> return Ok(r);
+        }};
+        t = join_url(t, loc)?;
+        if s == 303 || ((s == 301 || s == 302) && m == "POST") {{
+            m = "GET";
+            ct = "";
+            b = "";
+        }}
+    }}
+    Err("リダイレクトが多すぎます（{{MAX_REDIRECTS}} 回を超えました）: " + target)
+}}
+
+/// リダイレクトの行き先（Location）を、今の URL をもとに URL にする
+fn Result<str, str> join_url(str base, str loc) {{
+    if loc.contains("://") {{ return Ok(loc); }}
+    let u = parse_url(base)?;
+    if loc.starts_with("//") {{ return Ok(u.scheme + ":" + loc); }}
+    let name = if u.host.contains(":") {{ "[" + u.host + "]" }} else {{ u.host }};
+    let plain_port = if u.scheme == "https" {{ 443 }} else {{ 80 }};
+    let origin = if u.port == plain_port {{ u.scheme + "://" + name }} else {{ u.scheme + "://" + name + ":{{u.port}}" }};
+    if loc.starts_with("/") {{ return Ok(origin + loc); }}
+    // 相対の行き先は、今の path の最後の `/` までにつなぐ
+    let cs = u.path.chars().map((one) -> one.to_str());
+    let mut cut = 0;
+    for (i, c) in cs {{ if c == "/" {{ cut = i + 1; }} }}
+    let dir = if cut == 0 {{ "/" }} else {{ u.path.slice(0, cut) }};
+    Ok(origin + dir + loc)
+}}
+
+/// 1 回だけ頼む
+fn Result<Response, str> once(str method, str target, str content_type, str body) {{
+    let u = parse_url(target)?;
+    let name = if u.host.contains(":") {{ "[" + u.host + "]" }} else {{ u.host }};
+    let plain_port = if u.scheme == "https" {{ 443 }} else {{ 80 }};
+    let host = if u.port == plain_port {{ name }} else {{ name + ":{{u.port}}" }};
+    let mut req = "{{method}} {{u.target()}} HTTP/1.1\\r\\nHost: {{host}}\\r\\nConnection: close\\r\\nUser-Agent: jabberwock\\r\\nAccept-Encoding: gzip\\r\\n";
+    if method == "POST" || body.byte_len() > 0 {{ req += "Content-Type: {{content_type}}\\r\\nContent-Length: {{body.byte_len()}}\\r\\n"; }} else if method == "PUT" || method == "PATCH" {{ req += "Content-Length: 0\\r\\n"; }}
+    req += "\\r\\n" + body;
+    let u8[] mut all = [];
+    if u.scheme == "https" {{
+        let mut c = tls.connect(u.host, u.port)?;
+        c.write_text(req)?;
+        loop {{
+            let got = c.read(65536)?;
+            if got.len() == 0 {{ break; }}
+            for x in got {{ all.push(x); }}
+        }}
+        tls.close(c)?;
+    }} else {{
+        let mut c = net.connect(u.host, u.port)?;
+        c.write_text(req)?;
+        loop {{
+            let got = c.read(65536)?;
+            if got.len() == 0 {{ break; }}
+            for x in got {{ all.push(x); }}
+        }}
+        net.close(c)?;
+    }}
+    parse_response(ref all, target)
+}}
+
+/// `\\r\\n\\r\\n` の位置（なければ -1）
+fn i64 header_end(ref u8[] b) {{
+    let mut i = 0;
+    while i + 3 < b.len() {{
+        if b[i] == 13 && b[i + 1] == 10 && b[i + 2] == 13 && b[i + 3] == 10 {{ return i; }}
+        i += 1;
+    }}
+    -1
+}}
+
+fn u8[] part(ref u8[] b, i64 from, i64 to) {{
+    let u8[] mut out = [];
+    for i in range(from, to) {{ out.push(b[i]); }}
+    out
+}}
+
+/// 16 進の数（読めなければ -1）
+fn i64 hex(str s) {{
+    let digits = "0123456789abcdef";
+    let t = s.trim().to_lower();
+    if t == "" || t.len() > 15 {{ return -1; }}
+    let mut n = 0;
+    for ch in t.chars().map((one) -> one.to_str()) {{
+        match digits.find(ch) {{
+            case Some(d) -> n = n * 16 + d;
+            case None -> return -1;
+        }}
+    }}
+    n
+}}
+
+/// chunked の本文を読み解く
+fn Result<u8[], str> unchunk(ref u8[] b) {{
+    let u8[] mut out = [];
+    let mut i = 0;
+    loop {{
+        // 大きさの行（`;` のあとの拡張は読み飛ばす）
+        let mut j = i;
+        while j + 1 < b.len() && !(b[j] == 13 && b[j + 1] == 10) {{ j += 1; }}
+        if j + 1 >= b.len() {{ return Err("chunked の本文が途中で切れています"); }}
+        let raw = part(ref b, i, j);
+        let line = match text.from_utf8(ref raw) {{
+            case Some(s) -> s;
+            case None -> return Err("chunked の大きさが読めません");
+        }};
+        let size_text = match line.find(";") {{
+            case Some(k) -> line.slice(0, k);
+            case None -> line;
+        }};
+        let size = hex(size_text);
+        if size < 0 {{ return Err("chunked の大きさが読めません"); }}
+        i = j + 2;
+        if size == 0 {{ return Ok(out); }}
+        if i + size + 2 > b.len() {{ return Err("chunked の本文が途中で切れています"); }}
+        for k in range(i, i + size) {{ out.push(b[k]); }}
+        i += size + 2;
+    }}
+}}
+
+fn Result<Response, str> parse_response(ref u8[] all, str target) {{
+    let end = header_end(all);
+    if end < 0 {{ return Err("HTTP の応答が読めません（ヘッダーの終わりがない）"); }}
+    let raw = part(ref all, 0, end);
+    let head = match text.from_utf8(ref raw) {{
+        case Some(s) -> s;
+        case None -> return Err("HTTP の応答のヘッダーが読めません");
+    }};
+    let lines = head.split("\\r\\n");
+    let first = lines[0].split(" ");
+    if first.len() < 2 || !first[0].starts_with("HTTP/1.") {{ return Err("HTTP の応答ではありません: " + lines[0]); }}
+    let status = match first[1].to_int() {{
+        case Some(s) -> s;
+        case None -> return Err("状態の番号が読めません: " + lines[0]);
+    }};
+    let str[str] mut headers = [];
+    for (i, line) in lines {{
+        if i == 0 {{ continue; }}
+        match line.find(":") {{
+            case Some(k) -> {{
+                let name = line.slice(0, k).trim().to_lower();
+                let value = line.slice(k + 1, line.len()).trim();
+                match headers.get(name) {{
+                    case Some(old) -> headers[name] = old + ", " + value;
+                    case None -> headers[name] = value;
+                }}
+            }}
+            case None -> return Err("ヘッダーの行が読めません: " + line);
+        }}
+    }}
+    let mut body = part(ref all, end + 4, all.len());
+    let chunked = match headers.get("transfer-encoding") {{
+        case Some(v) -> v.to_lower().contains("chunked");
+        case None -> false;
+    }};
+    if chunked {{
+        body = unchunk(ref body)?;
+    }} else {{
+        match headers.get("content-length") {{
+            case Some(v) -> {{
+                match v.to_int() {{
+                    case Some(n) -> {{
+                        if n < 0 || n > body.len() {{ return Err("本文が途中で切れています"); }}
+                        if n < body.len() {{ body = part(ref body, 0, n); }}
+                    }}
+                    case None -> return Err("content-length が読めません: " + v);
+                }}
+            }}
+            case None -> {{}}
+        }}
+    }}
+    let gzipped = match headers.get("content-encoding") {{
+        case Some(v) -> v.to_lower().trim() == "gzip";
+        case None -> false;
+    }};
+    if gzipped && body.len() > 0 {{
+        body = gzip.decompress(ref body, MAX_BODY)?;
+        headers.remove("content-encoding");
+        headers.remove("content-length");
+    }}
+    Ok(Response {{ status: status, url: target, headers: headers, body: body }})
+}}
+
+// ---------------------------------------------------------------- サーバー（HTTP/1.1。1 度に 1 つずつ）
+//   let mut srv = http.listen("127.0.0.1", 8080)?;
+//   loop {{
+//       let mut req = srv.next()?;                       // 受け取った要求（読めない要求には、ここで 400 などを返して次を待つ）
+//       req.respond(200, "text/plain; charset=utf-8", "こんにちは {{req.path}}")?;
+//   }}
+// 1 つの要求ごとに `Connection: close` で答え、Request がなくなるとつながりを閉じる。TLS（https）はまだない。
+
+/// ヘッダーの大きさの上限（バイト）
+const MAX_REQUEST_HEAD = 65536;
+/// 要求の本文の大きさの上限（バイト）
+const MAX_REQUEST_BODY = 16777216;
+/// 1 つの要求を読み終えるまでの時間の上限（ミリ秒）
+const REQUEST_DEADLINE_MS = 30000;
+
+/// 待ち受け
+pub struct Server {{
+    net.TcpListener l;
+
+    /// 待ち受けている番号（listen で 0 を指定したときに使う）
+    fn i64 port() {{ l.port() }}
+
+    /// 次の要求を受け取るまで待つ。読めない要求（形が違う・大きすぎる・時間切れ）にはここで答えて、次を待つ。
+    /// Err は待ち受けそのものが失敗したときだけ
+    fn mut Result<Request, str> next() {{
+        loop {{
+            let c = l.accept()?;
+            let mut req = Request {{ method: "", target: "", path: "", query: [], headers: [], body: [], conn: c, done: false }};
+            match read_request(ref mut req) {{
+                case Ok(_) -> return Ok(req);
+                case Err(f) -> {{
+                    if f.status > 0 {{
+                        let u8[] msg = f.why.bytes();
+                        let hs = ["content-type": "text/plain; charset=utf-8"];
+                        match write_response(ref mut req.conn, f.status, ref hs, ref msg, false) {{ case Ok(_) -> {{}} case Err(e) -> {{}} }}
+                    }}
+                }}
+            }}
+        }}
+    }}
+}}
+
+/// host の port で待ち受ける（port が 0 なら OS が空いている番号を選ぶ。番号は `port()`）
+pub fn Result<Server, str> listen(str host, i64 port) {{
+    let l = net.listen(host, port)?;
+    Ok(Server {{ l: l }})
+}}
+
+/// 待ち受けをやめる
+pub fn stop(Server s) {{ drop(s); }}
+
+/// 受け取った要求。答えるのは 1 回だけ
+pub struct Request {{
+    // "GET"・"POST" など（送られたまま。大文字と小文字は区別する）
+    str method;
+    // 要求の行の 2 つ目（"/a%20b?x=1" など。戻す前の形）
+    str target;
+    // target の ? の前を %XX から戻したもの（"/a b"。".." や "/" が入りうるので、ファイルの名前に使うときは確かめること）
+    str path;
+    // ? のあとを & と = で分け、%XX と + を戻したもの（同じ名前が二つ以上あれば後のもの）
+    str[str] query;
+    // 名前は小文字にする（同じ名前が二つ以上あれば ", " でつなぐ）
+    str[str] headers;
+    u8[] body;
+    net.TcpStream conn;
+    bool done;
+
+    /// 本文を文字列にする（UTF-8 でなければ Err）
+    fn Result<str, str> text() {{
+        match text.from_utf8(ref body) {{
+            case Some(s) -> Ok(s);
+            case None -> Err("本文が UTF-8 ではありません");
+        }}
+    }}
+
+    /// 文字列の本文で答える
+    fn mut Result<(), str> respond(i64 status, str content_type, str content) {{
+        let u8[] mut b = content.bytes();
+        respond_bytes(status, ["content-type": content_type], b)
+    }}
+
+    /// ヘッダーと本文を決めて答える（content-length・connection・transfer-encoding は決めない。こちらで付ける）
+    fn mut Result<(), str> respond_bytes(i64 status, str[str] hs, u8[] content) {{
+        if done {{ return Err("この要求にはもう答えました"); }}
+        if status < 100 || status > 599 {{ return Err("状態の番号は 100 から 599 までです: {{status}}"); }}
+        for (k, v) in hs {{
+            if !is_token(k) {{ return Err("ヘッダーの名前が正しくありません: " + k); }}
+            let lk = k.to_lower();
+            if lk == "content-length" || lk == "connection" || lk == "transfer-encoding" {{ return Err("このヘッダーはこちらで付けます: " + k); }}
+            if v.contains("\\r") || v.contains("\\n") || v.contains("\\0") {{ return Err("ヘッダーの値に改行か NUL 文字があります: " + k); }}
+        }}
+        done = true;
+        write_response(ref mut conn, status, ref hs, ref content, method == "HEAD")
+    }}
+}}
+
+/// 読めなかった理由（status が 0 なら答えずに閉じる）
+struct Failure {{
+    i64 status;
+    str why;
+}}
+
+fn Failure fail(i64 status, str why) {{ Failure {{ status: status, why: why }} }}
+
+/// 要求を読んで req の中身を埋める
+fn Result<(), Failure> read_request(ref mut Request req) {{
+    let start = time.now();
+    let u8[] mut buf = [];
+    let mut end = -1;
+    while end < 0 {{
+        if buf.len() > MAX_REQUEST_HEAD {{ return Err(fail(431, "ヘッダーが大きすぎます")); }}
+        // 残りの時間だけ待つ（少しずつ送ってくる相手にも、全体で上限を守る）
+        let left = REQUEST_DEADLINE_MS - start.elapsed_ms();
+        if left <= 0 {{ return Err(fail(0, "時間切れです")); }}
+        match req.conn.set_timeout(left) {{
+            case Ok(_) -> {{}}
+            case Err(e) -> return Err(fail(0, e));
+        }}
+        let got = match req.conn.read(65536) {{
+            case Ok(g) -> g;
+            case Err(e) -> return Err(fail(0, e));
+        }};
+        if got.len() == 0 {{ return Err(fail(0, "相手が閉じました")); }}
+        for x in got {{ buf.push(x); }}
+        end = header_end(ref buf);
+    }}
+    if end > MAX_REQUEST_HEAD {{ return Err(fail(431, "ヘッダーが大きすぎます")); }}
+    let raw = part(ref buf, 0, end);
+    let head = match text.from_utf8(ref raw) {{
+        case Some(s) -> s;
+        case None -> return Err(fail(400, "ヘッダーが UTF-8 ではありません"));
+    }};
+    let lines = head.split("\\r\\n");
+    let first = lines[0].split(" ");
+    if first.len() != 3 || first[0] == "" || !is_token(first[0]) {{ return Err(fail(400, "要求の行が読めません")); }}
+    if first[2] != "HTTP/1.1" && first[2] != "HTTP/1.0" {{ return Err(fail(505, "HTTP/1.1 と HTTP/1.0 だけです")); }}
+    let target = first[1];
+    if !target.starts_with("/") && !(target == "*" && first[0] == "OPTIONS") {{ return Err(fail(400, "要求の先が読めません")); }}
+    let str[str] mut headers = [];
+    for (i, line) in lines {{
+        if i == 0 {{ continue; }}
+        match line.find(":") {{
+            case Some(k) -> {{
+                let name = line.slice(0, k);
+                if !is_token(name) {{ return Err(fail(400, "ヘッダーの行が読めません")); }}
+                let lname = name.to_lower();
+                let value = line.slice(k + 1, line.len()).trim();
+                match headers.get(lname) {{
+                    case Some(old) -> headers[lname] = old + ", " + value;
+                    case None -> headers[lname] = value;
+                }}
+            }}
+            case None -> return Err(fail(400, "ヘッダーの行が読めません"));
+        }}
+    }}
+    if first[2] == "HTTP/1.1" && !headers.contains("host") {{ return Err(fail(400, "Host のヘッダーがありません")); }}
+    // 本文。chunked は受け付けない（長さを先に知らせてもらう）
+    if headers.contains("transfer-encoding") {{ return Err(fail(411, "Content-Length が要ります（chunked には対応していません）")); }}
+    let mut len = 0;
+    match headers.get("content-length") {{
+        case Some(v) -> {{
+            if !text.is_digits(v) || v.len() > 15 {{ return Err(fail(400, "Content-Length が読めません")); }}
+            len = v.to_int().unwrap_or(-1);
+            if len < 0 {{ return Err(fail(400, "Content-Length が読めません")); }}
+        }}
+        case None -> {{}}
+    }}
+    if len > MAX_REQUEST_BODY {{ return Err(fail(413, "本文が大きすぎます")); }}
+    if len > 0 && headers.get("expect").unwrap_or("").to_lower() == "100-continue" {{
+        match req.conn.write_text("HTTP/1.1 100 Continue\\r\\n\\r\\n") {{
+            case Ok(_) -> {{}}
+            case Err(e) -> return Err(fail(0, e));
+        }}
+    }}
+    while buf.len() - (end + 4) < len {{
+        // 残りの時間だけ待つ（少しずつ送ってくる相手にも、全体で上限を守る）
+        let left = REQUEST_DEADLINE_MS - start.elapsed_ms();
+        if left <= 0 {{ return Err(fail(0, "時間切れです")); }}
+        match req.conn.set_timeout(left) {{
+            case Ok(_) -> {{}}
+            case Err(e) -> return Err(fail(0, e));
+        }}
+        let got = match req.conn.read(65536) {{
+            case Ok(g) -> g;
+            case Err(e) -> return Err(fail(0, e));
+        }};
+        if got.len() == 0 {{ return Err(fail(0, "相手が閉じました")); }}
+        for x in got {{ buf.push(x); }}
+    }}
+    let body = part(ref buf, end + 4, end + 4 + len);
+    let q = match target.find("?") {{ case Some(j) -> j; case None -> target.len(); }};
+    let raw_path = target.slice(0, q);
+    let raw_query = if q < target.len() {{ target.slice(q + 1, target.len()) }} else {{ "" }};
+    let path = match url.decode(raw_path, false) {{
+        case Ok(p) -> p;
+        case Err(e) -> return Err(fail(400, "要求の先が読めません"));
+    }};
+    let str[str] mut query = [];
+    if raw_query != "" {{
+        for kv in raw_query.split("&") {{
+            if kv == "" {{ continue; }}
+            let eq = match kv.find("=") {{ case Some(j) -> j; case None -> kv.len(); }};
+            let k = kv.slice(0, eq);
+            let v = if eq < kv.len() {{ kv.slice(eq + 1, kv.len()) }} else {{ "" }};
+            let dk = match url.decode(k, true) {{ case Ok(s) -> s; case Err(e) -> return Err(fail(400, "問い合わせの部分が読めません")); }};
+            let dv = match url.decode(v, true) {{ case Ok(s) -> s; case Err(e) -> return Err(fail(400, "問い合わせの部分が読めません")); }};
+            query[dk] = dv;
+        }}
+    }}
+    req.method = first[0];
+    req.target = target;
+    req.path = path;
+    req.query = query;
+    req.headers = headers;
+    req.body = body;
+    Ok(())
+}}
+
+/// 応答を書く（head が真なら本文は送らない。content-length は本文の長さのまま）
+fn Result<(), str> write_response(ref mut net.TcpStream c, i64 status, ref str[str] hs, ref u8[] content, bool head) {{
+    let mut s = "HTTP/1.1 {{status}} {{reason(status)}}\\r\\n";
+    for (k, v) in hs {{ s += k + ": " + v + "\\r\\n"; }}
+    s += "Content-Length: {{content.len()}}\\r\\nConnection: close\\r\\n\\r\\n";
+    let u8[] mut out = s.bytes();
+    if !head {{
+        for x in content {{ out.push(x); }}
+    }}
+    c.write(out)
+}}
+
+/// HTTP のトークン（ヘッダーの名前・メソッド）に使える文字だけか
+fn bool is_token(str s) {{
+    if s == "" {{ return false; }}
+    for b in s.bytes() {{
+        let n = b as i64;
+        let ok = (n >= 48 && n <= 57) || (n >= 65 && n <= 90) || (n >= 97 && n <= 122) || "!#$%&'*+-.^_`|~".contains(chr(n));
+        if !ok {{ return false; }}
+    }}
+    true
+}}
+
+fn str reason(i64 status) {{
+    match status {{
+        case 100 -> "Continue";
+        case 200 -> "OK";
+        case 201 -> "Created";
+        case 204 -> "No Content";
+        case 301 -> "Moved Permanently";
+        case 302 -> "Found";
+        case 303 -> "See Other";
+        case 304 -> "Not Modified";
+        case 307 -> "Temporary Redirect";
+        case 308 -> "Permanent Redirect";
+        case 400 -> "Bad Request";
+        case 401 -> "Unauthorized";
+        case 403 -> "Forbidden";
+        case 404 -> "Not Found";
+        case 405 -> "Method Not Allowed";
+        case 408 -> "Request Timeout";
+        case 409 -> "Conflict";
+        case 411 -> "Length Required";
+        case 413 -> "Content Too Large";
+        case 415 -> "Unsupported Media Type";
+        case 431 -> "Request Header Fields Too Large";
+        case 500 -> "Internal Server Error";
+        case 501 -> "Not Implemented";
+        case 503 -> "Service Unavailable";
+        case 505 -> "HTTP Version Not Supported";
+        default -> "Status";
+    }}
+}}
+""");
+    }
+    if name == "io" {
+        return Some("""
+// 標準ライブラリ std.io: 標準入力を待ち時間つきで読む。`use std.io;` と書いて使う
+//   match io.read_line_for(50) {{              // 50 ミリ秒まで待つ
+//       case Ok(Some(line)) -> ...;          // 1 行（終わりの改行は取る）
+//       case Ok(None) -> ...;                // 入力の終わり
+//       case Err(e) -> ...;                  // 時間切れ（"時間切れです"）。読みかけの行は次に回す
+//   }}
+// read_line と同じ入れ物から読むので、まぜて使ってよい。ほかの出来事（ブラウザのエンジンなど）を待ちながら、
+// 親のプロセスからの行も受け取るときに使う。読む前に print の出力を書き出す（read_line と同じ）。
+// Windows の端末から読むときは、キーのほかの出来事（マウスなど）でも待つのをやめて読みに行くので、ms より長く待つことがある。
+
+/// ms ミリ秒（0 なら待たずに、今ある分だけ）まで待って 1 行読む。ms が負なら実行時エラー
+pub fn Result<Option<str>, str> read_line_for(i64 ms) {{
+    match __read_line_for(ms) {{
+        case Some(l) -> Ok(Some(l));
+        case None -> if __stdin_ended() {{ Ok(None) }} else {{ Err("時間切れです") }};
+    }}
+}}
+""");
+    }
+    if name == "json" {
+        return Some("""
+// 標準ライブラリ std.json: JSON の読み書き。`use std.json;` と書いて使う
+//   let v = json.parse("{{\\"name\\": \\"太郎\\", \\"tags\\": [1, 2]}}")?;
+//   print(v.get("name").as_str(), v.get("tags").at(1).as_num());   // Some(太郎) Some(2.0)
+//   print(json.stringify(ref v));                                  // {{"name":"太郎","tags":[1,2]}}
+// 数はいつも f64（整数は 2^53 まで正確）。オブジェクトのキーの順は書いた順（同じキーは後ろの値で置き換える）。
+
+pub enum Json {{
+    Null;
+    Bool(bool b);
+    Num(f64 n);
+    Str(str s);
+    // 中身は own（借りて match したときに中を読めるように）
+    Arr(own Json[] items);
+    Obj(own Json[str] fields);
+
+    /// 写し（中身もまるごと）
+    fn Json clone() {{
+        match this {{
+            case Null -> Json.Null;
+            case Bool(b) -> Json.Bool(b);
+            case Num(n) -> Json.Num(n);
+            case Str(s) -> Json.Str(s);
+            case Arr(items) -> {{
+                let Json[] mut out = [];
+                for x in items {{ out.push(x.clone()); }}
+                Json.Arr(own out)
+            }}
+            case Obj(fields) -> {{
+                let Json[str] mut out = [];
+                for (k, x) in fields {{ out[k] = x.clone(); }}
+                Json.Obj(own out)
+            }}
+        }}
+    }}
+
+    /// オブジェクトの key の値の写し（オブジェクトでない・key がないなら Null）
+    fn Json get(str key) {{
+        match this {{
+            case Obj(fields) -> {{
+                for (k, x) in fields {{
+                    if k == key {{ return x.clone(); }}
+                }}
+                Json.Null
+            }}
+            default -> Json.Null;
+        }}
+    }}
+
+    /// 配列の i 番目の写し（配列でない・範囲の外なら Null）
+    fn Json at(i64 i) {{
+        match this {{
+            case Arr(items) -> {{
+                if i < 0 || i >= items.len() {{ return Json.Null; }}
+                items[i].clone()
+            }}
+            default -> Json.Null;
+        }}
+    }}
+
+    /// 配列の長さ・オブジェクトの組の数（ほかは 0）
+    fn i64 len() {{
+        match this {{
+            case Arr(items) -> items.len();
+            case Obj(fields) -> fields.len();
+            default -> 0;
+        }}
+    }}
+
+    /// オブジェクトのキー（書いた順。オブジェクトでなければ空）
+    fn str[] keys() {{
+        match this {{
+            case Obj(fields) -> fields.keys();
+            default -> [];
+        }}
+    }}
+
+    fn bool is_null() {{
+        match this {{
+            case Null -> true;
+            default -> false;
+        }}
+    }}
+
+    fn Option<bool> as_bool() {{
+        match this {{
+            case Bool(b) -> Some(b);
+            default -> None;
+        }}
+    }}
+
+    fn Option<f64> as_num() {{
+        match this {{
+            case Num(n) -> Some(n);
+            default -> None;
+        }}
+    }}
+
+    fn Option<str> as_str() {{
+        match this {{
+            case Str(s) -> Some(s);
+            default -> None;
+        }}
+    }}
+}}
+
+// ---------------------------------------------------------------- 読む
+
+/// 入れ子の深さの上限（深すぎる入力で呼び出しがあふれないように）
+const MAX_DEPTH = 512;
+
+struct Parser {{
+    str[] cs;
+    i64 pos;
+    i64 depth;
+
+    fn str peek() {{ if pos < cs.len() {{ cs[pos] }} else {{ "" }} }}
+
+    fn str err(str why) {{ "JSON が読めません（{{pos + 1}} 文字目）: " + why }}
+
+    fn mut ws() {{
+        while pos < cs.len() && (cs[pos] == " " || cs[pos] == "\\t" || cs[pos] == "\\n" || cs[pos] == "\\r") {{ pos += 1; }}
+    }}
+
+    fn mut Result<(), str> word(str w) {{
+        for c in w.chars().map((one) -> one.to_str()) {{
+            if peek() != c {{ return Err(err("`{{w}}` のつもりの書き方が違います")); }}
+            pos += 1;
+        }}
+        Ok(())
+    }}
+
+    fn mut Result<Json, str> value() {{
+        let c = peek();
+        if c == "" {{ return Err(err("値がありません")); }}
+        if c == "{{{{" || c == "[" {{
+            if depth >= MAX_DEPTH {{ return Err(err("入れ子が深すぎます")); }}
+            depth += 1;
+            let r = if c == "{{{{" {{ object() }} else {{ array() }};
+            depth -= 1;
+            return r;
+        }}
+        if c == "\\"" {{ return Ok(Json.Str(string()?)); }}
+        if c == "t" {{
+            word("true")?;
+            return Ok(Json.Bool(true));
+        }}
+        if c == "f" {{
+            word("false")?;
+            return Ok(Json.Bool(false));
+        }}
+        if c == "n" {{
+            word("null")?;
+            return Ok(Json.Null);
+        }}
+        if c == "-" || "0123456789".contains(c) {{ return number(); }}
+        Err(err("`{{c}}` は値の始まりになりません"))
+    }}
+
+    fn mut Result<Json, str> object() {{
+        pos += 1;
+        let Json[str] mut fields = [];
+        ws();
+        if peek() == "}}}}" {{
+            pos += 1;
+            return Ok(Json.Obj(own fields));
+        }}
+        loop {{
+            ws();
+            if peek() != "\\"" {{ return Err(err("キーは文字列で書きます")); }}
+            let k = string()?;
+            ws();
+            if peek() != ":" {{ return Err(err("キーのあとに `:` がありません")); }}
+            pos += 1;
+            ws();
+            let v = value()?;
+            fields[k] = v;
+            ws();
+            if peek() == "," {{
+                pos += 1;
+                continue;
+            }}
+            if peek() == "}}}}" {{
+                pos += 1;
+                return Ok(Json.Obj(own fields));
+            }}
+            return Err(err("`,` か `}}}}` が必要です"));
+        }}
+    }}
+
+    fn mut Result<Json, str> array() {{
+        pos += 1;
+        let Json[] mut items = [];
+        ws();
+        if peek() == "]" {{
+            pos += 1;
+            return Ok(Json.Arr(own items));
+        }}
+        loop {{
+            ws();
+            items.push(value()?);
+            ws();
+            if peek() == "," {{
+                pos += 1;
+                continue;
+            }}
+            if peek() == "]" {{
+                pos += 1;
+                return Ok(Json.Arr(own items));
+            }}
+            return Err(err("`,` か `]` が必要です"));
+        }}
+    }}
+
+    fn mut Result<i64, str> hex4() {{
+        let digits = "0123456789abcdef";
+        let mut n = 0;
+        for i in range(4) {{
+            match digits.find(peek().to_lower()) {{
+                case Some(d) -> {{
+                    if peek() == "" {{ return Err(err("\\\\u のあとに 16 進の数字が 4 つ必要です")); }}
+                    n = n * 16 + d;
+                }}
+                case None -> return Err(err("\\\\u のあとに 16 進の数字が 4 つ必要です"));
+            }}
+            pos += 1;
+        }}
+        Ok(n)
+    }}
+
+    fn mut Result<str, str> string() {{
+        pos += 1;
+        let mut out = "";
+        loop {{
+            let c = peek();
+            if c == "" {{ return Err(err("文字列が閉じていません")); }}
+            pos += 1;
+            if c == "\\"" {{ return Ok(out); }}
+            if c != "\\\\" {{
+                if c.code() < 32 {{ return Err(err("文字列の中に制御文字があります（\\\\n などと書きます）")); }}
+                out += c;
+                continue;
+            }}
+            let e = peek();
+            pos += 1;
+            if e == "\\"" {{ out += "\\""; }}
+            else if e == "\\\\" {{ out += "\\\\"; }}
+            else if e == "/" {{ out += "/"; }}
+            else if e == "b" {{ out += chr(8); }}
+            else if e == "f" {{ out += chr(12); }}
+            else if e == "n" {{ out += "\\n"; }}
+            else if e == "r" {{ out += "\\r"; }}
+            else if e == "t" {{ out += "\\t"; }}
+            else if e == "u" {{
+                let mut u = hex4()?;
+                if u >= 56320 && u <= 57343 {{ return Err(err("対になっていないサロゲートです")); }}
+                if u >= 55296 && u <= 56319 {{
+                    if peek() != "\\\\" {{ return Err(err("対になっていないサロゲートです")); }}
+                    pos += 1;
+                    if peek() != "u" {{ return Err(err("対になっていないサロゲートです")); }}
+                    pos += 1;
+                    let low = hex4()?;
+                    if low < 56320 || low > 57343 {{ return Err(err("対になっていないサロゲートです")); }}
+                    u = 65536 + (u - 55296) * 1024 + (low - 56320);
+                }}
+                out += chr(u);
+            }} else {{
+                return Err(err("使えないエスケープ `\\\\{{e}}` です"));
+            }}
+        }}
+    }}
+
+    fn mut digits() {{
+        while "0123456789".contains(peek()) && peek() != "" {{ pos += 1; }}
+    }}
+
+    fn mut Result<Json, str> number() {{
+        let start = pos;
+        if peek() == "-" {{ pos += 1; }}
+        if peek() == "0" {{
+            pos += 1;
+        }} else if "123456789".contains(peek()) && peek() != "" {{
+            digits();
+        }} else {{
+            return Err(err("数の書き方が違います"));
+        }}
+        if peek() == "." {{
+            pos += 1;
+            if !"0123456789".contains(peek()) || peek() == "" {{ return Err(err("小数点のあとに数字が必要です")); }}
+            digits();
+        }}
+        if peek() == "e" || peek() == "E" {{
+            pos += 1;
+            if peek() == "+" || peek() == "-" {{ pos += 1; }}
+            if !"0123456789".contains(peek()) || peek() == "" {{ return Err(err("指数の数字が必要です")); }}
+            digits();
+        }}
+        let mut t = "";
+        for i in range(start, pos) {{ t += cs[i]; }}
+        match t.to_float() {{
+            case Some(n) -> Ok(Json.Num(n));
+            case None -> Err(err("数が読めません"));
+        }}
+    }}
+}}
+
+/// JSON の文字列を読む（前後の空白はよい。余分なものがあれば Err）
+pub fn Result<Json, str> parse(str s) {{
+    let mut p = Parser {{ cs: s.chars().map((one) -> one.to_str()), pos: 0, depth: 0 }};
+    p.ws();
+    let v = p.value()?;
+    p.ws();
+    if p.pos < p.cs.len() {{ return Err(p.err("値のあとに余分な文字があります")); }}
+    Ok(v)
+}}
+
+// ---------------------------------------------------------------- 書く
+
+fn str hex4_of(i64 n) {{
+    let digits = "0123456789abcdef";
+    let mut out = "";
+    let mut k = 4096;
+    while k > 0 {{
+        let d = n / k % 16;
+        out += digits.slice(d, d + 1);
+        k = k / 16;
+    }}
+    out
+}}
+
+/// 文字列を JSON の文字列にする（`"` で囲む）
+pub fn str quote(str s) {{
+    let mut out = "\\"";
+    for c in s.chars().map((one) -> one.to_str()) {{
+        if c == "\\"" {{ out += "\\\\\\""; }}
+        else if c == "\\\\" {{ out += "\\\\\\\\"; }}
+        else if c == "\\n" {{ out += "\\\\n"; }}
+        else if c == "\\r" {{ out += "\\\\r"; }}
+        else if c == "\\t" {{ out += "\\\\t"; }}
+        else if c.code() < 32 {{ out += "\\\\u" + hex4_of(c.code()); }}
+        else {{ out += c; }}
+    }}
+    out + "\\""
+}}
+
+fn str num_text(f64 n) {{
+    // NaN と inf は JSON にないので null
+    if n != n || n - n != 0.0 {{ return "null"; }}
+    if n.abs() < 9007199254740992.0 && ((n as i64) as f64) == n {{ return "{{n as i64}}"; }}
+    "{{n}}"
+}}
+
+/// JSON の文字列にする（空白を入れない）
+pub fn str stringify(ref Json v) {{
+    match ref *v {{
+        case Null -> "null";
+        case Bool(b) -> if b {{ "true" }} else {{ "false" }};
+        case Num(n) -> num_text(n);
+        case Str(s) -> quote(s);
+        case Arr(items) -> {{
+            let str[] mut parts = [];
+            for x in items {{ parts.push(stringify(x)); }}
+            "[" + parts.join(",") + "]"
+        }}
+        case Obj(fields) -> {{
+            let str[] mut parts = [];
+            for (k, x) in fields {{ parts.push(quote(k) + ":" + stringify(x)); }}
+            "{{{{" + parts.join(",") + "}}}}"
+        }}
+    }}
+}}
+""");
+    }
+    if name == "lists" {
+        return Some("""
+// std.lists: リストの便利な関数。`use std.lists;` で `lists.sum(xs)` のように使う。
+
+/// 合計
+pub fn i64 sum(ref i64[] a) {{
+    let mut t = 0;
+    for x in a {{ t += x; }}
+    t
+}}
+
+/// 小数の合計
+pub fn f64 sum_f64(ref f64[] a) {{
+    let mut t = 0.0;
+    for x in a {{ t += x; }}
+    t
+}}
+
+/// いちばん小さい要素（空なら None）
+pub fn Option<i64> min(ref i64[] a) {{
+    if a.len() == 0 {{ return None; }}
+    let mut m = a[0];
+    for x in a {{ if x < m {{ m = x; }} }}
+    Some(m)
+}}
+
+/// いちばん大きい要素（空なら None）
+pub fn Option<i64> max(ref i64[] a) {{
+    if a.len() == 0 {{ return None; }}
+    let mut m = a[0];
+    for x in a {{ if x > m {{ m = x; }} }}
+    Some(m)
+}}
+
+/// from から to の手前までの整数のリスト
+pub fn i64[] range_of(i64 from, i64 to) {{
+    let i64[] mut out = [];
+    for i in range(from, to) {{ out.push(i); }}
+    out
+}}
+
+/// a の from から to の手前までを写したリスト（範囲は 0〜len に切り詰める）
+pub fn i64[] slice(ref i64[] a, i64 from, i64 to) {{
+    let i64[] mut out = [];
+    let mut i = from.max(0);
+    let end = to.min(a.len());
+    while i < end {{
+        out.push(a[i]);
+        i += 1;
+    }}
+    out
+}}
+
+/// 文字列のリストの部分（`slice` の str 版）
+pub fn str[] slice_str(ref str[] a, i64 from, i64 to) {{
+    let str[] mut out = [];
+    let mut i = from.max(0);
+    let end = to.min(a.len());
+    while i < end {{
+        out.push(a[i]);
+        i += 1;
+    }}
+    out
+}}
+
+/// b の要素をすべて a の後ろに足す（b は空になる）
+pub fn extend<T>(ref mut T[] a, ref mut T[] b) {{
+    b.reverse();
+    while b.len() > 0 {{
+        match b.pop() {{
+            case Some(x) -> a.push(x);
+            case None -> {{}}
+        }}
+    }}
+}}
+
+/// f が真になる要素があるか
+pub fn bool any(ref i64[] a, fn bool(i64) f) {{
+    for x in a {{ if f(x) {{ return true; }} }}
+    false
+}}
+
+/// すべての要素で f が真か（空なら真）
+pub fn bool all(ref i64[] a, fn bool(i64) f) {{
+    for x in a {{ if !f(x) {{ return false; }} }}
+    true
+}}
+
+/// 並んだリスト a で x を二分探索する。あればその位置、なければ Err(入れるべき位置)
+pub fn Result<i64, i64> binary_search(ref i64[] a, i64 x) {{
+    let mut lo = 0;
+    let mut hi = a.len();
+    while lo < hi {{
+        let mid = lo + (hi - lo) / 2;
+        if a[mid] == x {{ return Ok(mid); }}
+        if a[mid] < x {{ lo = mid + 1; }} else {{ hi = mid; }}
+    }}
+    Err(lo)
+}}
+""");
+    }
+    if name == "log" {
+        return Some("""
+// std.log: 標準エラーへのログ。`use std.log;` で次のように使う
+//   let mut lg = log.Logger.new();       // Info 以上を、時刻つきで出す
+//   lg.info("始めます");                  // 2026-11-11T12:00:00.000Z INFO 始めます
+//   lg.set_level(log.Level.Debug);
+// 時刻は UTC（std.date の format）。テストなどで時刻を出したくなければ set_time(false)。
+use std.date;
+
+/// ログの重さ（Debug < Info < Warn < Error）
+pub enum Level {{ Debug; Info; Warn; Error; }}
+
+fn i64 rank(ref Level l) {{
+    match l {{
+        case Debug -> 0;
+        case Info -> 1;
+        case Warn -> 2;
+        case Error -> 3;
+    }}
+}}
+
+fn str label(ref Level l) {{
+    match l {{
+        case Debug -> "DEBUG";
+        case Info -> "INFO";
+        case Warn -> "WARN";
+        case Error -> "ERROR";
+    }}
+}}
+
+/// どこまで出すかと、時刻をつけるかを持つ
+pub struct Logger {{
+    i64 min;
+    bool time;
+
+    /// Info 以上を時刻つきで出す
+    static fn Logger new() {{ Logger {{ min: 1, time: true }} }}
+
+    /// l より軽いものは出さない
+    fn mut set_level(Level l) {{ min = rank(l); }}
+
+    /// 行の頭に時刻をつけるか
+    fn mut set_time(bool on) {{ time = on; }}
+
+    /// l の重さで msg を 1 行出す（軽すぎれば出さない）
+    fn write(Level l, str msg) {{
+        if rank(l) < min {{ return; }}
+        if time {{
+            eprint(date.now().format(), label(l), msg);
+        }} else {{
+            eprint(label(l), msg);
+        }}
+    }}
+
+    fn debug(str msg) {{ write(Level.Debug, msg); }}
+    fn info(str msg) {{ write(Level.Info, msg); }}
+    fn warn(str msg) {{ write(Level.Warn, msg); }}
+    fn error(str msg) {{ write(Level.Error, msg); }}
+}}
+""");
+    }
+    if name == "math" {
+        return Some("""
+// 標準ライブラリ std.math: 数の計算の補助。`use std.math;` と書いて `math.gcd(12, 18)` のように使う
+
+/// 最大公約数（どちらも 0 なら 0）。結果は 0 以上（i64 の最小の値だけは abs が一周するのでそのまま）
+pub fn i64 gcd(i64 a, i64 b) {{
+    let mut x = a.abs();
+    let mut y = b.abs();
+    while y != 0 {{
+        let t = x % y;
+        x = y;
+        y = t;
+    }}
+    x
+}}
+
+/// 最小公倍数（どちらかが 0 なら 0）。型の幅を超えると一周する
+pub fn i64 lcm(i64 a, i64 b) {{
+    if a == 0 || b == 0 {{ return 0; }}
+    (a / gcd(a, b) * b).abs()
+}}
+
+/// base の exp 乗（exp は 0 以上。負なら実行時エラー）。型の幅を超えると一周する
+pub fn i64 pow(i64 base, i64 exp) {{
+    assert(exp >= 0);
+    let mut result = 1;
+    let mut b = base;
+    let mut e = exp;
+    while e > 0 {{
+        if e % 2 == 1 {{ result = result * b; }}
+        b = b * b;
+        e = e / 2;
+    }}
+    result
+}}
+
+/// x を lo 以上 hi 以下に収める（lo が hi より大きければ実行時エラー）
+pub fn i64 clamp(i64 x, i64 lo, i64 hi) {{
+    assert(lo <= hi);
+    x.max(lo).min(hi)
+}}
+
+/// 円周率
+pub fn f64 pi() {{ 3.141592653589793 }}
+
+/// 0 の方へ切り捨てた整数の値（小数のまま）。NaN・inf と、2^52 以上（もう整数）はそのまま
+fn f64 trunc(f64 x) {{
+    if !(x.abs() < 4503599627370496.0) {{ return x; }}
+    (x as i64) as f64
+}}
+
+/// x 以下でいちばん大きい整数（小数のまま）
+pub fn f64 floor(f64 x) {{
+    let t = trunc(x);
+    if t > x {{ t - 1.0 }} else {{ t }}
+}}
+
+/// x 以上でいちばん小さい整数（小数のまま）
+pub fn f64 ceil(f64 x) {{
+    let t = trunc(x);
+    if t < x {{ t + 1.0 }} else {{ t }}
+}}
+
+/// いちばん近い整数（小数のまま）。ちょうど半分なら 0 から遠い方（`round(2.5)` は 3.0、`round(-2.5)` は -3.0）
+pub fn f64 round(f64 x) {{
+    let t = trunc(x);
+    if (x - t).abs() < 0.5 {{ return t; }}
+    if x < 0.0 {{ t - 1.0 }} else {{ t + 1.0 }}
+}}
+""");
+    }
+    if name == "net" {
+        return Some("""
+// 標準ライブラリ std.net: TCP（同期だけ）。`use std.net;` と書いて使う。Linux・macOS・Windows（Winsock）
+//
+// TcpStream と TcpListener は資源（ムーブだけできる。ほかのスレッドへは渡せない）。持ち主がいなくなると黙って閉じる。
+//   let mut c = net.connect("localhost", 8080)?;
+//   c.write_text("hello\\n")?;
+//   let got = c.read(4096)?;      // 最大 4096 バイト。相手が閉じたら空のリスト
+//   net.close(c)?;
+// TcpStream のメソッド: `read(n)`・`write(bytes)`・`write_text(s)`・`set_timeout(ms)`（受け取り・送りの待ち時間。0 なら待ち続ける。
+// 時間切れは Err("時間切れです")）。TcpListener のメソッド: `accept()`・`port()`。
+//
+// UDP は UdpSocket（資源）。1 回の send_to・recv_from が 1 つのまとまり（データグラム。届く・順番は保証されない）。
+//   let mut u = net.bind_udp("127.0.0.1", 0)?;       // port が 0 なら OS が選ぶ。番号は `u.port()`
+//   u.send_to("ping".bytes(), "127.0.0.1", 9000)?;    // 1 回で 65507 バイトまで
+//   let d = net.recv_from(ref mut u, 2048)?;                 // d.data・d.host（数字の形）・d.port。n より長い分は捨てる
+// UdpSocket のメソッド: `send_to(bytes, host, port)`・`set_timeout(ms)`・`port()`。
+
+pub resource TcpStream;
+pub resource TcpListener;
+pub resource UdpSocket;
+
+/// 受け取った 1 つのまとまりと、その送り元
+pub struct Datagram {{
+    u8[] data;
+    str host;
+    i64 port;
+}}
+
+/// host（名前か番号）の port につなぐ
+pub fn Result<TcpStream, str> connect(str host, i64 port) {{ __net_connect(host, port) }}
+
+/// host の port で待ち受ける（port が 0 なら OS が空いている番号を選ぶ。番号は `port()`）
+pub fn Result<TcpListener, str> listen(str host, i64 port) {{ __net_listen(host, port) }}
+
+/// 閉じる。失敗してももう使えない
+pub fn Result<(), str> close(TcpStream s) {{ __res_close(s) }}
+
+/// 待ち受けをやめる
+pub fn Result<(), str> stop(TcpListener l) {{ __res_close(l) }}
+
+/// host の port で UDP を受ける（host が "0.0.0.0" ならどこからでも。port が 0 なら OS が選ぶ）
+pub fn Result<UdpSocket, str> bind_udp(str host, i64 port) {{ __net_udp_bind(host, port) }}
+
+/// 1 つのまとまりを受け取るまで待つ（set_timeout で時間を決められる）。n バイトより長い分は捨てる
+pub fn Result<Datagram, str> recv_from(ref mut UdpSocket s, i64 n) {{
+    let raw = s.recv_raw(n)?;
+    // 形: [名前の長さ(2)][名前（数字の形なので ASCII）][番号(2)][中身]
+    let hl = (raw[0] as i64) * 256 + (raw[1] as i64);
+    let mut host = "";
+    for i in range(2, 2 + hl) {{ host += chr(raw[i] as i64); }}
+    let port = (raw[2 + hl] as i64) * 256 + (raw[3 + hl] as i64);
+    let u8[] mut data = [];
+    for i in range(4 + hl, raw.len()) {{ data.push(raw[i]); }}
+    Ok(Datagram {{ data: data, host: host, port: port }})
+}}
+
+/// UDP をやめる
+pub fn Result<(), str> unbind(UdpSocket s) {{ __res_close(s) }}
+""");
+    }
+    if name == "pg" {
+        return Some("""
+// 標準ライブラリ std.pg: PostgreSQL のクライアント（同期だけ）。`use std.pg;` と書いて使う
+//   let mut db = pg.connect(pg.Config {{ host: "localhost", port: 5432, user: "app", password: "secret", database: "mydb", tls: false }})?;
+//   let r = db.query("SELECT id, name FROM t WHERE id = $1", ["1"])?;
+//   for row in r.rows {{ print(row[0], row[1]); }}          // 値は Option<str>（NULL なら None）
+//   let n = db.exec("UPDATE t SET name = $1 WHERE id = $2", ["a", "1"])?;   // 変わった行の数
+//   db.exec_opt("INSERT INTO t VALUES ($1, $2)", [Some("2"), None])?;   // NULL を入れるときは Option<str> の並びで
+//   pg.close(db)?;
+// std.net の上に .jw だけで書いている（フロントエンド・バックエンドの手順の版 3.0）。
+// パラメータは `$1` などで SQL とは別に送る（拡張問い合わせ。SQL に埋め込まない）。値はどれも文字列（テキスト形式）で送り、受け取る。
+// ログインは SCRAM-SHA-256（サーバーの署名も確かめる）・md5・パスワードなし（trust）・パスワードをそのまま送る方式（TLS のときだけ）。
+// tls: true なら TLS にしてからログインする（std.tls。証明書と host の名前を確かめる）。サーバーが TLS を断れば Err で、平文に戻る道はない。
+// tls: false なら平文（同じ機械か、信頼できるネットワークの中で使う）。
+
+use std.net;
+use std.tls;
+use std.text;
+use std.hash;
+use std.base64;
+
+/// つなぐ先
+pub struct Config {{
+    str host;
+    i64 port;
+    str user;
+    str password;
+    str database;
+    // TLS でつなぐか
+    bool tls;
+}}
+
+/// 平文か TLS のつながり
+enum Stream {{
+    Plain(own net.TcpStream s);
+    Secure(own tls.TlsStream s);
+}}
+
+/// 問い合わせの結果
+pub struct Rows {{
+    // 列の名前（SELECT でなければ空）
+    str[] columns;
+    // 行ごとの値（NULL は None）
+    Option<str>[][] rows;
+    // 変わった行の数（INSERT・UPDATE・DELETE・SELECT などの数。数のない命令なら 0）
+    i64 affected;
+
+    /// row 行目の、名前が col の列の値（その列がなければ None）
+    fn Option<str> get(i64 row, str col) {{
+        for (i, c) in columns {{
+            if c == col {{ return rows[row][i]; }}
+        }}
+        None
+    }}
+}}
+
+/// サーバーとのつながり（持ち主がいなくなると黙って閉じる）
+pub struct Conn {{
+    Stream sock;
+    // 受け取って、まだ読んでいない分
+    u8[] inbuf;
+    i64 pos;
+
+    /// 問い合わせる（params は `$1`・`$2`… に入る値）
+    fn mut Result<Rows, str> query(str sql, str[] params) {{
+        let Option<str>[] ps = params.map((v) -> Some(v));
+        query_opt(sql, ps)
+    }}
+
+    /// 問い合わせる（params の None は NULL として送る）
+    fn mut Result<Rows, str> query_opt(str sql, Option<str>[] params) {{
+        if sql.contains("\\0") {{ return Err("SQL に NUL 文字があります"); }}
+        if params.len() > 65535 {{ return Err("パラメータが多すぎます（65535 個まで）"); }}
+        let u8[] mut out = [];
+        // Parse（名前のない文。パラメータの型はサーバーが決める）
+        let u8[] mut p = [];
+        put_cstr(ref mut p, "");
+        put_cstr(ref mut p, sql);
+        put_i16(ref mut p, 0);
+        put_msg(ref mut out, 80, ref p);
+        // Bind（名前のない入り口。値も結果もテキスト形式）
+        let u8[] mut b = [];
+        put_cstr(ref mut b, "");
+        put_cstr(ref mut b, "");
+        put_i16(ref mut b, 0);
+        put_i16(ref mut b, params.len());
+        for v in params {{
+            match v {{
+                case Some(t) -> {{
+                    let bs = t.bytes();
+                    put_i32(ref mut b, bs.len());
+                    for x in bs {{ b.push(x); }}
+                }}
+                case None -> put_i32(ref mut b, -1);
+            }}
+        }}
+        put_i16(ref mut b, 0);
+        put_msg(ref mut out, 66, ref b);
+        // Describe（入り口の列）・Execute（全部の行）・Sync
+        let u8[] mut d = [80];
+        put_cstr(ref mut d, "");
+        put_msg(ref mut out, 68, ref d);
+        let u8[] mut e = [];
+        put_cstr(ref mut e, "");
+        put_i32(ref mut e, 0);
+        put_msg(ref mut out, 69, ref e);
+        let u8[] empty = [];
+        put_msg(ref mut out, 83, ref empty);
+        write(out)?;
+
+        let str[] mut columns = [];
+        let Option<str>[][] mut rows = [];
+        let mut affected = 0;
+        let mut failure = "";
+        loop {{
+            let mut r = next()?;
+            if r.kind == 84 {{
+                // RowDescription
+                let n = r.i16()?;
+                for i in range(n) {{
+                    columns.push(r.cstr()?);
+                    r.skip(18)?;
+                }}
+            }} else if r.kind == 68 {{
+                // DataRow
+                let n = r.i16()?;
+                let Option<str>[] mut row = [];
+                for i in range(n) {{
+                    let len = r.i32()?;
+                    if len < 0 {{
+                        row.push(None);
+                    }} else {{
+                        let raw = r.take(len)?;
+                        match text.from_utf8(ref raw) {{
+                            case Some(s) -> row.push(Some(s));
+                            case None -> {{
+                                // 残りの知らせは読み切る（つながりを次も使えるように）
+                                if failure == "" {{ failure = "PostgreSQL の値が UTF-8 ではありません"; }}
+                                row.push(None);
+                            }}
+                        }}
+                    }}
+                }}
+                rows.push(row);
+            }} else if r.kind == 67 {{
+                // CommandComplete（"INSERT 0 3"・"UPDATE 2"・"SELECT 5" など。最後の語が数）
+                let tag = r.cstr()?;
+                let words = tag.split(" ");
+                match words[words.len() - 1].to_int() {{
+                    case Some(k) -> affected = k;
+                    case None -> {{}}
+                }}
+            }} else if r.kind == 69 {{
+                if failure == "" {{ failure = error_text(ref r.b); }}
+            }} else if r.kind == 90 {{
+                // ReadyForQuery: 次の問い合わせを受け付ける
+                break;
+            }} else if r.kind == 49 || r.kind == 50 || r.kind == 110 || r.kind == 73 || r.kind == 78 || r.kind == 83 || r.kind == 65 || r.kind == 115 {{
+                // ParseComplete・BindComplete・NoData・EmptyQuery・Notice・ParameterStatus・Notification・PortalSuspended
+            }} else {{
+                return Err("PostgreSQL から思っていない知らせが来ました（種類 {{r.kind}}）");
+            }}
+        }}
+        if failure != "" {{ return Err(failure); }}
+        Ok(Rows {{ columns: columns, rows: rows, affected: affected }})
+    }}
+
+    /// 行を返さない命令を送る。変わった行の数を返す
+    fn mut Result<i64, str> exec(str sql, str[] params) {{
+        let r = query(sql, params)?;
+        Ok(r.affected)
+    }}
+
+    /// 行を返さない命令を送る（params の None は NULL）。変わった行の数を返す
+    fn mut Result<i64, str> exec_opt(str sql, Option<str>[] params) {{
+        let r = query_opt(sql, params)?;
+        Ok(r.affected)
+    }}
+
+    /// 知らせを 1 つ受け取る（種類の 1 バイトと、長さのあとの中身）
+    fn mut Result<Reader, str> next() {{
+        fill(5)?;
+        let kind = inbuf[pos] as i64;
+        let len = ((inbuf[pos + 1] as i64) << 24) | ((inbuf[pos + 2] as i64) << 16) | ((inbuf[pos + 3] as i64) << 8) | (inbuf[pos + 4] as i64);
+        if len < 4 || len > MAX_MESSAGE {{ return Err("PostgreSQL からの知らせの長さが正しくありません"); }}
+        fill(1 + len)?;
+        let u8[] mut body = [];
+        for i in range(pos + 5, pos + 1 + len) {{ body.push(inbuf[i]); }}
+        pos += 1 + len;
+        Ok(Reader {{ kind: kind, b: body, pos: 0 }})
+    }}
+
+    /// 読んでいない分が n バイト以上になるまで受け取る
+    fn mut Result<(), str> fill(i64 n) {{
+        if pos > 0 && pos == inbuf.len() {{
+            inbuf = [];
+            pos = 0;
+        }}
+        while inbuf.len() - pos < n {{
+            let got = read(65536)?;
+            if got.len() == 0 {{ return Err("PostgreSQL のサーバーが接続を閉じました"); }}
+            for x in got {{ inbuf.push(x); }}
+        }}
+        Ok(())
+    }}
+
+    /// 知らせを送る
+    fn mut Result<(), str> send(i64 kind, ref u8[] body) {{
+        let u8[] mut out = [];
+        put_msg(ref mut out, kind, body);
+        write(out)
+    }}
+
+    fn mut Result<u8[], str> read(i64 n) {{
+        match ref mut sock {{
+            case Plain(t) -> t.read(n);
+            case Secure(t) -> t.read(n);
+        }}
+    }}
+
+    fn mut Result<(), str> write(u8[] bs) {{
+        match ref mut sock {{
+            case Plain(t) -> t.write(bs);
+            case Secure(t) -> t.write(bs);
+        }}
+    }}
+
+    fn bool secure() {{
+        match ref sock {{
+            case Plain(t) -> false;
+            case Secure(t) -> true;
+        }}
+    }}
+}}
+
+/// 1 つの知らせの大きさの上限（バイト）
+const MAX_MESSAGE = 1073741824;
+
+/// 受け取った知らせ（種類と中身）。中身を前から読む
+struct Reader {{
+    i64 kind;
+    u8[] b;
+    i64 pos;
+
+    fn mut Result<i64, str> i16() {{
+        if pos + 2 > b.len() {{ return Err(short()); }}
+        let v = ((b[pos] as i64) << 8) | (b[pos + 1] as i64);
+        pos += 2;
+        Ok(if v >= 32768 {{ v - 65536 }} else {{ v }})
+    }}
+
+    fn mut Result<i64, str> i32() {{
+        if pos + 4 > b.len() {{ return Err(short()); }}
+        let v = ((b[pos] as i64) << 24) | ((b[pos + 1] as i64) << 16) | ((b[pos + 2] as i64) << 8) | (b[pos + 3] as i64);
+        pos += 4;
+        Ok(if v >= 2147483648 {{ v - 4294967296 }} else {{ v }})
+    }}
+
+    fn mut Result<u8[], str> take(i64 n) {{
+        if n < 0 || pos + n > b.len() {{ return Err(short()); }}
+        let u8[] mut out = [];
+        for i in range(pos, pos + n) {{ out.push(b[i]); }}
+        pos += n;
+        Ok(out)
+    }}
+
+    fn mut Result<(), str> skip(i64 n) {{
+        if pos + n > b.len() {{ return Err(short()); }}
+        pos += n;
+        Ok(())
+    }}
+
+    /// 0 で終わる文字列
+    fn mut Result<str, str> cstr() {{
+        let mut end = pos;
+        while end < b.len() && b[end] != 0 {{ end += 1; }}
+        if end >= b.len() {{ return Err(short()); }}
+        let raw = take(end - pos)?;
+        pos += 1;
+        match text.from_utf8(ref raw) {{
+            case Some(s) -> Ok(s);
+            case None -> Err("PostgreSQL からの文字列が UTF-8 ではありません");
+        }}
+    }}
+
+    /// 残り全部
+    fn mut u8[] rest() {{
+        let u8[] mut out = [];
+        for i in range(pos, b.len()) {{ out.push(b[i]); }}
+        pos = b.len();
+        out
+    }}
+
+    fn str short() {{ "PostgreSQL からの知らせが途中で切れています" }}
+}}
+
+fn put_i16(ref mut u8[] out, i64 v) {{
+    out.push(((v >> 8) & 255) as u8);
+    out.push((v & 255) as u8);
+}}
+
+fn put_i32(ref mut u8[] out, i64 v) {{
+    out.push(((v >> 24) & 255) as u8);
+    out.push(((v >> 16) & 255) as u8);
+    out.push(((v >> 8) & 255) as u8);
+    out.push((v & 255) as u8);
+}}
+
+fn put_cstr(ref mut u8[] out, str s) {{
+    for x in s.bytes() {{ out.push(x); }}
+    out.push(0);
+}}
+
+/// 種類の 1 バイト・長さ・中身
+fn put_msg(ref mut u8[] out, i64 kind, ref u8[] body) {{
+    out.push(kind as u8);
+    put_i32(out, body.len() + 4);
+    for x in body {{ out.push(x); }}
+}}
+
+/// ErrorResponse の中身を文にする（重さ・SQLSTATE・本文）
+fn str error_text(ref u8[] body) {{
+    let mut r = Reader {{ kind: 69, b: body.map((x) -> x), pos: 0 }};
+    let mut severity = "";
+    let mut code = "";
+    let mut message = "";
+    let mut detail = "";
+    loop {{
+        if r.pos >= r.b.len() || r.b[r.pos] == 0 {{ break; }}
+        let f = r.b[r.pos] as i64;
+        r.pos += 1;
+        let mut v = "";
+        match r.cstr() {{
+            case Ok(s) -> v = s;
+            case Err(e) -> break;
+        }}
+        if f == 86 || (f == 83 && severity == "") {{ severity = v; }}
+        if f == 67 {{ code = v; }}
+        if f == 77 {{ message = v; }}
+        if f == 68 {{ detail = v; }}
+    }}
+    let mut s = "PostgreSQL のエラー（{{severity}} {{code}}）: {{message}}";
+    if detail != "" {{ s += "（" + detail + "）"; }}
+    s
+}}
+
+/// サーバーにつなぎ、ログインする
+pub fn Result<Conn, str> connect(Config cfg) {{
+    for s in [cfg.host, cfg.user, cfg.password, cfg.database] {{
+        if s.contains("\\0") {{ return Err("接続の設定に NUL 文字があります"); }}
+    }}
+    if cfg.user == "" {{ return Err("ユーザー名が空です"); }}
+    let mut plain = net.connect(cfg.host, cfg.port)?;
+    let st = if cfg.tls {{
+        // SSLRequest（長さ 8・番号 80877103）。返事は 1 バイト: S なら TLS にする、N なら断られた
+        let u8[] mut req = [];
+        put_i32(ref mut req, 8);
+        put_i32(ref mut req, 80877103);
+        plain.write(req)?;
+        let ans = plain.read(1)?;
+        if ans.len() == 0 {{ return Err("PostgreSQL のサーバーが接続を閉じました"); }}
+        if ans[0] != 83 {{ return Err("PostgreSQL のサーバーが TLS を使えません（tls: true なので平文ではつなぎません）"); }}
+        Stream.Secure(own tls.upgrade(plain, cfg.host)?)
+    }} else {{
+        Stream.Plain(own plain)
+    }};
+    let mut c = Conn {{ sock: st, inbuf: [], pos: 0 }};
+    // StartupMessage（種類の 1 バイトはない。版 3.0）
+    let u8[] mut body = [];
+    put_i32(ref mut body, 196608);
+    put_cstr(ref mut body, "user");
+    put_cstr(ref mut body, cfg.user);
+    if cfg.database != "" {{
+        put_cstr(ref mut body, "database");
+        put_cstr(ref mut body, cfg.database);
+    }}
+    put_cstr(ref mut body, "client_encoding");
+    put_cstr(ref mut body, "UTF8");
+    body.push(0);
+    let u8[] mut out = [];
+    put_i32(ref mut out, body.len() + 4);
+    for x in body {{ out.push(x); }}
+    c.write(out)?;
+    login(ref mut c, ref cfg)?;
+    Ok(c)
+}}
+
+/// 閉じる（Terminate を送ってから閉じる。送れなければ Err だが、どちらでも閉じる）
+pub fn Result<(), str> close(Conn conn) {{
+    let mut c = conn;
+    let u8[] empty = [];
+    let sent = c.send(88, ref empty);
+    drop(c);
+    sent
+}}
+
+/// 認証から ReadyForQuery まで
+fn Result<(), str> login(ref mut Conn c, ref Config cfg) {{
+    let mut scram = Scram {{ client_first_bare: "", server_first: "", salted: [], auth_message: "" }};
+    let mut authed = false;
+    loop {{
+        let mut r = c.next()?;
+        if r.kind == 69 {{ return Err(error_text(ref r.b)); }}
+        if r.kind == 90 {{
+            if !authed {{ return Err("PostgreSQL のログインが終わっていません"); }}
+            return Ok(());
+        }}
+        if r.kind != 82 {{ continue; }} // ParameterStatus・BackendKeyData・Notice
+        let code = r.i32()?;
+        if code == 0 {{
+            if scram.client_first_bare != "" && scram.auth_message == "" {{ return Err("PostgreSQL のサーバーが SCRAM を最後まで済ませていません"); }}
+            authed = true;
+        }} else if code == 3 {{
+            if !c.secure() {{ return Err("PostgreSQL のサーバーがパスワードをそのまま送るよう求めています（TLS なしでは送りません。tls: true にするか、md5 か scram-sha-256 にしてください）"); }}
+            let u8[] mut p = [];
+            put_cstr(ref mut p, cfg.password);
+            c.send(112, ref p)?;
+        }} else if code == 5 {{
+            // md5: "md5" + md5(md5(password + user) + salt)
+            let salt = r.take(4)?;
+            let pu = (cfg.password + cfg.user).bytes();
+            let d1 = md5(ref pu);
+            let u8[] mut x = hash.hex(ref d1).bytes();
+            for b in salt {{ x.push(b); }}
+            let d2 = md5(ref x);
+            let u8[] mut p = [];
+            put_cstr(ref mut p, "md5" + hash.hex(ref d2));
+            c.send(112, ref p)?;
+        }} else if code == 10 {{
+            // SASL: 使える方式の名前の並び
+            let mut found = false;
+            loop {{
+                let name = r.cstr()?;
+                if name == "" {{ break; }}
+                if name == "SCRAM-SHA-256" {{ found = true; }}
+            }}
+            if !found {{ return Err("PostgreSQL のサーバーが SCRAM-SHA-256 を使えません"); }}
+            let rnd = __random_bytes(18);
+            let nonce = base64.encode(ref rnd);
+            scram.client_first_bare = "n=,r=" + nonce;
+            let first = "n,," + scram.client_first_bare;
+            let u8[] mut p = [];
+            put_cstr(ref mut p, "SCRAM-SHA-256");
+            let fb = first.bytes();
+            put_i32(ref mut p, fb.len());
+            for b in fb {{ p.push(b); }}
+            c.send(112, ref p)?;
+        }} else if code == 11 {{
+            if scram.client_first_bare == "" {{ return Err("PostgreSQL のサーバーが思っていない SCRAM の知らせを送りました"); }}
+            let raw = r.rest();
+            let sf = match text.from_utf8(ref raw) {{
+                case Some(s) -> s;
+                case None -> return Err("SCRAM の知らせが読めません");
+            }};
+            let fin = scram.client_final(sf, cfg.password)?;
+            let u8[] mut p = fin.bytes();
+            c.send(112, ref p)?;
+        }} else if code == 12 {{
+            let raw = r.rest();
+            let sfin = match text.from_utf8(ref raw) {{
+                case Some(s) -> s;
+                case None -> return Err("SCRAM の知らせが読めません");
+            }};
+            scram.check_server(sfin)?;
+        }} else {{
+            return Err("この認証の方式（{{code}}）には対応していません");
+        }}
+    }}
+}}
+
+// ---------------------------------------------------------------- SCRAM-SHA-256（RFC 5802・RFC 7677）
+
+struct Scram {{
+    str client_first_bare;
+    str server_first;
+    u8[] salted;
+    str auth_message;
+
+    /// サーバーの最初の知らせ（r=…,s=…,i=…）から、証明つきの最後の知らせを作る
+    fn mut Result<str, str> client_final(str sf, str password) {{
+        let mut nonce = "";
+        let mut salt_b64 = "";
+        let mut iters = 0;
+        for part in sf.split(",") {{
+            if part.starts_with("r=") {{ nonce = part.slice(2, part.len()); }}
+            if part.starts_with("s=") {{ salt_b64 = part.slice(2, part.len()); }}
+            if part.starts_with("i=") {{
+                match part.slice(2, part.len()).to_int() {{
+                    case Some(k) -> iters = k;
+                    case None -> {{}}
+                }}
+            }}
+        }}
+        let mine = client_first_bare.slice(5, client_first_bare.len());
+        if !nonce.starts_with(mine) || nonce.len() <= mine.len() {{ return Err("SCRAM の nonce が合いません"); }}
+        if iters < 1 || iters > 10000000 {{ return Err("SCRAM の繰り返しの数が正しくありません"); }}
+        let salt = base64.decode(salt_b64)?;
+        server_first = sf;
+        let pw = password.bytes();
+        salted = hash.pbkdf2_sha256(ref pw, ref salt, iters);
+        let without_proof = "c=biws,r=" + nonce;
+        auth_message = client_first_bare + "," + sf + "," + without_proof;
+        let ck = "Client Key".bytes();
+        let client_key = hash.hmac_sha256(ref salted, ref ck);
+        let stored = hash.sha256(ref client_key);
+        let am = auth_message.bytes();
+        let sig = hash.hmac_sha256(ref stored, ref am);
+        let u8[] mut proof = [];
+        for (i, k) in client_key {{ proof.push(k ^ sig[i]); }}
+        Ok(without_proof + ",p=" + base64.encode(ref proof))
+    }}
+
+    /// サーバーの最後の知らせ（v=…）で、サーバーがパスワードを知っていることを確かめる
+    fn Result<(), str> check_server(str sfin) {{
+        if auth_message == "" {{ return Err("PostgreSQL のサーバーが思っていない SCRAM の知らせを送りました"); }}
+        if sfin.starts_with("e=") {{ return Err("PostgreSQL の SCRAM の認証に失敗しました: " + sfin.slice(2, sfin.len())); }}
+        let sk = "Server Key".bytes();
+        let server_key = hash.hmac_sha256(ref salted, ref sk);
+        let am = auth_message.bytes();
+        let sig = hash.hmac_sha256(ref server_key, ref am);
+        let want = base64.encode(ref sig);
+        let mut got = "";
+        for part in sfin.split(",") {{
+            if part.starts_with("v=") {{ got = part.slice(2, part.len()); }}
+        }}
+        if got != want {{ return Err("PostgreSQL のサーバーの署名が合いません（相手が本物のサーバーではないかもしれません）"); }}
+        Ok(())
+    }}
+}}
+
+// ---------------------------------------------------------------- MD5（md5 の認証だけに使う）
+
+fn i64[] md5_s() {{
+    [7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20,
+     4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21]
+}}
+
+fn i64[] md5_k() {{
+    [3614090360, 3905402710, 606105819, 3250441966, 4118548399, 1200080426, 2821735955, 4249261313,
+     1770035416, 2336552879, 4294925233, 2304563134, 1804603682, 4254626195, 2792965006, 1236535329,
+     4129170786, 3225465664, 643717713, 3921069994, 3593408605, 38016083, 3634488961, 3889429448,
+     568446438, 3275163606, 4107603335, 1163531501, 2850285829, 4243563512, 1735328473, 2368359562,
+     4294588738, 2272392833, 1839030562, 4259657740, 2763975236, 1272893353, 4139469664, 3200236656,
+     681279174, 3936430074, 3572445317, 76029189, 3654602809, 3873151461, 530742520, 3299628645,
+     4096336452, 1126891415, 2878612391, 4237533241, 1700485571, 2399980690, 4293915773, 2240044497,
+     1873313359, 4264355552, 2734768916, 1309151649, 4149444226, 3174756917, 718787259, 3951481745]
+}}
+
+fn i64 rotl(i64 x, i64 n) {{ ((x << n) | (x >> (32 - n))) & 4294967295 }}
+
+/// MD5
+fn u8[] md5(ref u8[] data) {{
+    let s = md5_s();
+    let k = md5_k();
+    let u8[] mut m = data.map((x) -> x);
+    let bits = data.len() * 8;
+    m.push(128);
+    while m.len() % 64 != 56 {{ m.push(0); }}
+    for i in range(8) {{ m.push(((bits >> (i * 8)) & 255) as u8); }}
+    let i64[] mut h = [1732584193, 4023233417, 2562383102, 271733878];
+    let mut at = 0;
+    while at < m.len() {{
+        let i64[] mut w = [];
+        for t in range(16) {{
+            let p = at + t * 4;
+            w.push((m[p] as i64) | ((m[p + 1] as i64) << 8) | ((m[p + 2] as i64) << 16) | ((m[p + 3] as i64) << 24));
+        }}
+        let mut a = h[0];
+        let mut b = h[1];
+        let mut c = h[2];
+        let mut d = h[3];
+        for i in range(64) {{
+            let mut f = 0;
+            let mut g = 0;
+            if i < 16 {{
+                f = (b & c) | ((b ^ 4294967295) & d);
+                g = i;
+            }} else if i < 32 {{
+                f = (d & b) | ((d ^ 4294967295) & c);
+                g = (5 * i + 1) % 16;
+            }} else if i < 48 {{
+                f = b ^ c ^ d;
+                g = (3 * i + 5) % 16;
+            }} else {{
+                f = c ^ (b | (d ^ 4294967295));
+                g = (7 * i) % 16;
+            }}
+            let t = d;
+            d = c;
+            c = b;
+            b = (b + rotl((a + f + k[i] + w[g]) & 4294967295, s[i])) & 4294967295;
+            a = t;
+        }}
+        h[0] = (h[0] + a) & 4294967295;
+        h[1] = (h[1] + b) & 4294967295;
+        h[2] = (h[2] + c) & 4294967295;
+        h[3] = (h[3] + d) & 4294967295;
+        at += 64;
+    }}
+    let u8[] mut out = [];
+    for x in h {{
+        for i in range(4) {{ out.push(((x >> (i * 8)) & 255) as u8); }}
+    }}
+    out
+}}
+""");
+    }
+    if name == "process" {
+        return Some("""
+// 標準ライブラリ std.process: 子のプロセスを待たずに起こし、標準入力・標準出力をパイプでつなぐ。`use std.process;` と書いて使う
+//   let mut c = process.start("vault", ["--child"])?;   // cmd は PATH からも探す。標準エラーは親のものをそのまま使う
+//   c.write_text("open\\n")?;
+//   c.set_timeout(50)?;                                  // 読む待ち時間（ミリ秒。0 なら待ち続ける）。時間切れは Err("時間切れです")
+//   let got = c.read(4096)?;                             // 最大 4096 バイト。子が出力を閉じたら空のリスト
+//   c.close_input();                                     // 子には入力の終わりに見える
+//   let code = c.wait()?;                                // 終わるまで待つ（シグナルで止まったら -1）
+// Child のメソッド: `read(n)`・`write(bytes)`・`write_text(s)`・`set_timeout(ms)`・`close_input()`・`exited()`（待たずに、終わったか）・
+// `wait()`・`kill()`。Child は資源（ムーブだけ。ほかのスレッドへは渡せない）。持ち主がいなくなるとパイプを閉じる（子は止めない）。
+// 子へ渡すのは標準入力・標準出力・標準エラーだけ（開いているファイルやソケットは渡さない）。
+// 子にだけ環境変数を渡すには `process.start_env(cmd, argv, ["LANG": "C"])`（自分の環境を変える env.set はない。スレッドがあると安全でないため）。
+
+pub resource Child;
+
+/// cmd を argv（cmd の後ろに渡す引数）で起こす。起こせなければ Err
+pub fn Result<Child, str> start(str cmd, str[] argv) {{ __process_start(cmd, argv) }}
+
+/// start と同じだが、子のプロセスにだけ環境変数 env（名前 → 値）を足して・置き換えて渡す。自分の環境は変えない。
+/// 名前が空か = を含めば Err（Windows では名前の大文字小文字を区別しない）
+pub fn Result<Child, str> start_env(str cmd, str[] argv, ref str[str] env) {{
+    let str[] mut kv = [];
+    for (k, v) in env {{
+        if k == "" || k.contains("=") {{
+            return Err("環境変数の名前が正しくありません: " + k);
+        }}
+        kv.push(k + "=" + v);
+    }}
+    __process_start_env(cmd, argv, kv)
+}}
+""");
+    }
+    if name == "rand" {
+        return Some("""
+// std.rand: 乱数（暗号には使えない）。`use std.rand;` で `let mut r = rand.Rng.seeded(42);` `r.below(6)` のように使う。
+// 中身は splitmix64（64 ビットの状態を足して混ぜる）。同じ種なら、どの実行のしかたでも同じ並びになる。
+
+pub struct Rng {{
+    u64 state;
+
+    /// 種 seed から作る（同じ種なら同じ並び）
+    static fn Rng seeded(u64 seed) {{ Rng {{ state: seed }} }}
+
+    /// 今の時刻を種にして作る（実行ごとに違う並び）
+    static fn Rng from_time() {{ Rng {{ state: unix_ms() as u64 ^ ((now_ns() as u64) << 20) }} }}
+
+    /// 次の 64 ビットの数
+    fn mut u64 next() {{
+        state = state + 0x9e3779b97f4a7c15;
+        let mut z = state;
+        z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9;
+        z = (z ^ (z >> 27)) * 0x94d049bb133111eb;
+        z ^ (z >> 31)
+    }}
+
+    /// 0 以上 n 未満の整数（どの値も同じ確からしさ。n は 1 以上）
+    fn mut i64 below(i64 n) {{
+        assert(n > 0);
+        let m = n as u64;
+        // 余りが偏らないよう、端の数は捨てて引き直す
+        let limit = (0 - m) % m;
+        loop {{
+            let r = next();
+            if r >= limit {{ return (r % m) as i64; }}
+        }}
+    }}
+
+    /// lo 以上 hi 未満の整数（hi は lo より大きい）
+    fn mut i64 range(i64 lo, i64 hi) {{
+        assert(hi > lo);
+        let span = (hi as u64) - (lo as u64);
+        let limit = (0 - span) % span;
+        loop {{
+            let r = next();
+            if r >= limit {{ return ((lo as u64) + r % span) as i64; }}
+        }}
+    }}
+
+    /// 0.0 以上 1.0 未満の小数
+    fn mut f64 float() {{
+        (next() >> 11) as f64 / 9007199254740992.0
+    }}
+
+    /// 確率 p で true
+    fn mut bool chance(f64 p) {{
+        float() < p
+    }}
+
+    /// リストの並びをばらばらにする（どの並びも同じ確からしさ）
+    fn mut shuffle<T>(ref mut T[] a) {{
+        let mut n = a.len();
+        let mut rest = a.drain();
+        while n > 0 {{
+            a.push(rest.remove(below(n)));
+            n -= 1;
+        }}
+    }}
+}}
+""");
+    }
+    if name == "random" {
+        return Some("""
+// 標準ライブラリ std.random: OS の乱数（暗号に使える）。`use std.random;` と書いて使う
+//   let key = random.bytes(32);          // u8[]
+//   let n = random.int(1, 7);            // 1〜6（hi は含まない）
+// Linux・macOS は getentropy、Windows は BCryptGenRandom。取り出せなければ実行時エラー。種を決めて同じ並びを出す乱数はまだない。
+
+/// n バイト（n が負なら実行時エラー）
+pub fn u8[] bytes(i64 n) {{ __random_bytes(n) }}
+
+/// lo 以上 hi 未満の整数（どの値も同じ確からしさ）。hi <= lo か、hi - lo が i64 に収まらなければ実行時エラー
+pub fn i64 int(i64 lo, i64 hi) {{
+    assert(lo < hi);
+    let span = hi - lo;
+    let half = 4611686018427387904; // 2^62
+    if span > half {{
+        // 当たる確率は 1/2 より大きい
+        loop {{
+            let v = draw63();
+            if v < span {{ return lo + v; }}
+        }}
+    }}
+    // 2^62 の中で span の倍数に収まる範囲だけ使う（偏りをなくす）
+    let limit = half - half % span;
+    loop {{
+        let v = draw63() & (half - 1);
+        if v < limit {{ return lo + v % span; }}
+    }}
+}}
+
+/// 0 以上 2^63 未満
+fn i64 draw63() {{
+    let b = __random_bytes(8);
+    let mut v = (b[0] as i64) & 127;
+    for i in range(1, 8) {{ v = (v << 8) | (b[i] as i64); }}
+    v
+}}
+""");
+    }
+    if name == "regex" {
+        return Some("""
+// 標準ライブラリ std.regex: 正規表現。`use std.regex;` と書いて使う
+//   let re = regex.compile("(\\\\d+)-(\\\\d+)")?;
+//   print(re.is_match("tel 03-1234"));                     // true
+//   match re.find("tel 03-1234") {{ case Some(m) -> print(m.start, m.text, m.group(1)); case None -> {{}} }}   // 4 03-1234 Some(03)
+//   print(re.replace_all("1-2 3-4", "$2-$1"));             // "2-1 4-3"
+// .jw だけで書いている。後戻りをしない方式（Pike の VM）で、時間はいつも 文字列の長さ × パターンの大きさ に比べた程度（ひどく遅くなるパターンはない）。
+// 位置は文字単位（str の slice・find と同じ）。後方参照と先読みはない（後戻りなしでは作れないため）。
+
+/// 繰り返しの回数 {{m,n}} の上限
+const MAX_REPEAT = 1000;
+/// 組み立てた命令の数の上限
+const MAX_PROGRAM = 20000;
+
+// 命令の種類
+const OP_CHAR = 0;
+const OP_ANY = 1;
+const OP_CLASS = 2;
+const OP_SPLIT = 3;
+const OP_JMP = 4;
+const OP_SAVE = 5;
+const OP_BOL = 6;
+const OP_EOL = 7;
+const OP_WORDB = 8;
+const OP_NWORDB = 9;
+const OP_MATCH = 10;
+
+// 構文の木の種類
+const N_EMPTY = 0;
+const N_CHAR = 1;
+const N_ANY = 2;
+const N_CLASS = 3;
+const N_CAT = 4;
+const N_ALT = 5;
+const N_GROUP = 6;
+const N_REPEAT = 7;
+const N_BOL = 8;
+const N_EOL = 9;
+const N_WORDB = 10;
+const N_NWORDB = 11;
+
+/// 組み立てた正規表現
+pub struct Regex {{
+    // 書いたパターン
+    str pattern;
+    // かっこの組の数（(?:...) は数えない）
+    i64 groups;
+    Inst[] prog;
+    Class[] classes;
+    // 読むあいだだけ使う（パターンの文字・読んでいる位置・構文の木）
+    str[] src;
+    i64 ppos;
+    Node[] nodes;
+
+    /// s のどこかに合うか
+    fn bool is_match(str s) {{
+        let cs = s.chars().map((one) -> one.to_str());
+        let codes = cs.map((c) -> c.code());
+        match run(ref codes, 0) {{
+            case Some(c) -> true;
+            case None -> false;
+        }}
+    }}
+
+    /// 最初に合うところ（いちばん左。同じ位置なら、選択肢は左を、繰り返しは長い方（`*?` などは短い方）を選ぶ）
+    fn Option<Match> find(str s) {{
+        let cs = s.chars().map((one) -> one.to_str());
+        let codes = cs.map((c) -> c.code());
+        match run(ref codes, 0) {{
+            case Some(caps) -> Some(make_match(s, ref caps));
+            case None -> None;
+        }}
+    }}
+
+    /// 重ならずに合うところを左から全部
+    fn Match[] find_all(str s) {{
+        let cs = s.chars().map((one) -> one.to_str());
+        let codes = cs.map((c) -> c.code());
+        let Match[] mut out = [];
+        let mut from = 0;
+        while from <= codes.len() {{
+            match run(ref codes, from) {{
+                case Some(caps) -> {{
+                    let st = caps[0];
+                    let en = caps[1];
+                    out.push(make_match(s, ref caps));
+                    // 空に合ったら 1 文字進める（同じところで止まらないように）
+                    from = if en == st {{ en + 1 }} else {{ en }};
+                }}
+                case None -> break;
+            }}
+        }}
+        out
+    }}
+
+    /// 合うところを全部 rep に置き換える。rep の `$0`〜`$9` は合ったところとかっこの中（合わなかった組は空）、`$$` は `$`
+    fn str replace_all(str s, str rep) {{
+        let ms = find_all(s);
+        let rc = rep.chars().map((one) -> one.to_str());
+        let mut out = "";
+        let mut last = 0;
+        for m in ms {{
+            out += s.slice(last, m.start);
+            let mut i = 0;
+            while i < rc.len() {{
+                if rc[i] == "$" && i + 1 < rc.len() {{
+                    let d = rc[i + 1];
+                    if d == "$" {{
+                        out += "$";
+                        i += 2;
+                        continue;
+                    }}
+                    match "0123456789".find(d) {{
+                        case Some(k) -> {{
+                            if k < m.groups.len() {{
+                                match m.groups[k] {{
+                                    case Some(g) -> out += g;
+                                    case None -> {{}}
+                                }}
+                            }}
+                            i += 2;
+                            continue;
+                        }}
+                        case None -> {{}}
+                    }}
+                }}
+                out += rc[i];
+                i += 1;
+            }}
+            last = m.end;
+        }}
+        out + s.slice(last, s.len())
+    }}
+
+    /// 合うところで分ける（合うところは含めない。空に合うところでは分けない）
+    fn str[] split(str s) {{
+        let ms = find_all(s);
+        let str[] mut out = [];
+        let mut last = 0;
+        for m in ms {{
+            if m.end == m.start {{ continue; }}
+            out.push(s.slice(last, m.start));
+            last = m.end;
+        }}
+        out.push(s.slice(last, s.len()));
+        out
+    }}
+
+    fn Match make_match(str s, ref i64[] caps) {{
+        let Option<str>[] mut gs = [];
+        for k in range(groups + 1) {{
+            let a = caps[2 * k];
+            let b = caps[2 * k + 1];
+            if a >= 0 && b >= 0 {{ gs.push(Some(s.slice(a, b))); }} else {{ gs.push(None); }}
+        }}
+        Match {{ start: caps[0], end: caps[1], text: s.slice(caps[0], caps[1]), groups: gs }}
+    }}
+
+    /// from から後ろで、最初に合うところの組の位置（Pike の VM。スレッドを優先の順に並べ、合ったら優先の低いものを捨てる）
+    fn Option<i64[]> run(ref i64[] codes, i64 from) {{
+        let n = prog.len();
+        let i64[] mut mark = [];
+        for i in range(n) {{ mark.push(0); }}
+        let mut gen = 1;
+        let i64[] mut cpcs = [];
+        let i64[][] mut ccaps = [];
+        let i64[] mut best = [];
+        let mut found = false;
+        let mut pos = from;
+        add(ref mut cpcs, ref mut ccaps, ref mut mark, gen, 0, fresh(), pos, codes);
+        loop {{
+            gen += 1;
+            let i64[] mut npcs = [];
+            let i64[][] mut ncaps = [];
+            for (t, pc) in cpcs {{
+                let op = prog[pc].op;
+                if op == OP_MATCH {{
+                    found = true;
+                    best = ccaps[t].map((x) -> x);
+                    break;
+                }}
+                if pos < codes.len() && step(op, prog[pc].x, codes[pos]) {{
+                    let cp = ccaps[t].map((x) -> x);
+                    add(ref mut npcs, ref mut ncaps, ref mut mark, gen, pc + 1, cp, pos + 1, codes);
+                }}
+            }}
+            if pos >= codes.len() {{ break; }}
+            if !found {{ add(ref mut npcs, ref mut ncaps, ref mut mark, gen, 0, fresh(), pos + 1, codes); }}
+            if npcs.len() == 0 && found {{ break; }}
+            cpcs = npcs;
+            ccaps = ncaps;
+            pos += 1;
+        }}
+        if found {{ Some(best) }} else {{ None }}
+    }}
+
+    fn i64[] fresh() {{
+        let i64[] mut c = [];
+        for i in range(2 * (groups + 1)) {{ c.push(-1); }}
+        c
+    }}
+
+    /// 1 文字を読む命令が code に合うか
+    fn bool step(i64 op, i64 x, i64 code) {{
+        if op == OP_CHAR {{ return code == x; }}
+        if op == OP_ANY {{ return code != 10; }}
+        if op == OP_CLASS {{ return classes[x].has(code); }}
+        false
+    }}
+
+    /// pc から、文字を読まずに進める命令をたどってスレッドを足す（同じ位置で同じ pc は 1 度だけ）
+    fn add(ref mut i64[] pcs, ref mut i64[][] caps, ref mut i64[] mark, i64 gen, i64 pc, i64[] cp, i64 pos, ref i64[] codes) {{
+        if mark[pc] == gen {{ return; }}
+        mark[pc] = gen;
+        let op = prog[pc].op;
+        if op == OP_JMP {{
+            add(pcs, caps, mark, gen, prog[pc].x, cp, pos, codes);
+        }} else if op == OP_SPLIT {{
+            let other = cp.map((x) -> x);
+            add(pcs, caps, mark, gen, prog[pc].x, cp, pos, codes);
+            add(pcs, caps, mark, gen, prog[pc].y, other, pos, codes);
+        }} else if op == OP_SAVE {{
+            let mut c2 = cp;
+            c2[prog[pc].x] = pos;
+            add(pcs, caps, mark, gen, pc + 1, c2, pos, codes);
+        }} else if op == OP_BOL {{
+            if pos == 0 {{ add(pcs, caps, mark, gen, pc + 1, cp, pos, codes); }}
+        }} else if op == OP_EOL {{
+            if pos == codes.len() {{ add(pcs, caps, mark, gen, pc + 1, cp, pos, codes); }}
+        }} else if op == OP_WORDB || op == OP_NWORDB {{
+            let before = pos > 0 && is_word(codes[pos - 1]);
+            let after = pos < codes.len() && is_word(codes[pos]);
+            if (before != after) == (op == OP_WORDB) {{ add(pcs, caps, mark, gen, pc + 1, cp, pos, codes); }}
+        }} else {{
+            pcs.push(pc);
+            caps.push(cp);
+        }}
+    }}
+
+    // ---- パターンを読む（読むあいだだけ src・ppos・nodes を使う）
+
+    fn str error(str why) {{ "正規表現の {{ppos + 1}} 文字目: " + why }}
+
+    fn mut i64 put(i64 kind, i64 a, i64 b, i64 c, i64[] kids) {{
+        nodes.push(Node {{ kind: kind, a: a, b: b, c: c, kids: kids }});
+        nodes.len() - 1
+    }}
+
+    fn bool at(str s) {{ ppos < src.len() && src[ppos] == s }}
+
+    /// a|b|...
+    fn mut Result<i64, str> alt() {{
+        let i64[] mut kids = [cat()?];
+        while at("|") {{
+            ppos += 1;
+            kids.push(cat()?);
+        }}
+        if kids.len() == 1 {{ return Ok(kids[0]); }}
+        Ok(put(N_ALT, 0, 0, 0, kids))
+    }}
+
+    /// 並び（`|` か `)` か終わりまで）
+    fn mut Result<i64, str> cat() {{
+        let i64[] mut kids = [];
+        while ppos < src.len() && !at("|") && !at(")") {{
+            kids.push(repeat()?);
+        }}
+        if kids.len() == 0 {{ return Ok(put(N_EMPTY, 0, 0, 0, [])); }}
+        if kids.len() == 1 {{ return Ok(kids[0]); }}
+        Ok(put(N_CAT, 0, 0, 0, kids))
+    }}
+
+    /// 1 つの要素と、その後ろの繰り返し
+    fn mut Result<i64, str> repeat() {{
+        let e = atom()?;
+        if ppos >= src.len() {{ return Ok(e); }}
+        let mut lo = 0;
+        let mut hi = 0;
+        let c = src[ppos];
+        if c == "*" {{
+            lo = 0;
+            hi = -1;
+            ppos += 1;
+        }} else if c == "+" {{
+            lo = 1;
+            hi = -1;
+            ppos += 1;
+        }} else if c == "?" {{
+            lo = 0;
+            hi = 1;
+            ppos += 1;
+        }} else if c == "{{{{" {{
+            ppos += 1;
+            lo = number()?;
+            hi = lo;
+            if at(",") {{
+                ppos += 1;
+                hi = if at("}}}}") {{ -1 }} else {{ number()? }};
+            }}
+            if !at("}}}}") {{ return Err(error("`{{{{` の繰り返しの回数が閉じていません")); }}
+            ppos += 1;
+            if hi >= 0 && hi < lo {{ return Err(error("繰り返しの回数が {{lo}} から {{hi}} になっています")); }}
+            if lo > MAX_REPEAT || hi > MAX_REPEAT {{ return Err(error("繰り返しの回数は {{MAX_REPEAT}} までです")); }}
+        }} else {{
+            return Ok(e);
+        }}
+        let mut greedy = 1;
+        if at("?") {{
+            greedy = 0;
+            ppos += 1;
+        }}
+        if ppos < src.len() && (at("*") || at("+") || at("?") || at("{{{{")) {{ return Err(error("繰り返しが重なっています（かっこで囲んでください）")); }}
+        Ok(put(N_REPEAT, lo, hi, greedy, [e]))
+    }}
+
+    fn mut Result<i64, str> number() {{
+        let from = ppos;
+        let mut v = 0;
+        while ppos < src.len() {{
+            match "0123456789".find(src[ppos]) {{
+                case Some(d) -> {{
+                    if v > MAX_REPEAT {{ return Err(error("繰り返しの回数は {{MAX_REPEAT}} までです")); }}
+                    v = v * 10 + d;
+                    ppos += 1;
+                }}
+                case None -> break;
+            }}
+        }}
+        if ppos == from {{ return Err(error("`{{{{` のあとに回数がありません")); }}
+        Ok(v)
+    }}
+
+    fn mut Result<i64, str> atom() {{
+        let c = src[ppos];
+        if c == "(" {{
+            ppos += 1;
+            let mut idx = -1;
+            if at("?") {{
+                if ppos + 1 < src.len() && src[ppos + 1] == ":" {{
+                    ppos += 2;
+                }} else {{
+                    return Err(error("`(?` のあとは `:` だけが書けます（先読みなどはありません）"));
+                }}
+            }} else {{
+                groups += 1;
+                idx = groups;
+            }}
+            let inner = alt()?;
+            if !at(")") {{ return Err(error("`(` が閉じていません")); }}
+            ppos += 1;
+            return Ok(put(N_GROUP, idx, 0, 0, [inner]));
+        }}
+        if c == "[" {{ return class(); }}
+        if c == "*" || c == "+" || c == "?" || c == "{{{{" {{ return Err(error("`{{c}}` の前に繰り返すものがありません")); }}
+        ppos += 1;
+        if c == "." {{ return Ok(put(N_ANY, 0, 0, 0, [])); }}
+        if c == "^" {{ return Ok(put(N_BOL, 0, 0, 0, [])); }}
+        if c == "$" {{ return Ok(put(N_EOL, 0, 0, 0, [])); }}
+        if c == "\\\\" {{
+            if ppos >= src.len() {{ return Err(error("終わりに `\\\\` だけがあります")); }}
+            let e = src[ppos];
+            ppos += 1;
+            if e == "b" {{ return Ok(put(N_WORDB, 0, 0, 0, [])); }}
+            if e == "B" {{ return Ok(put(N_NWORDB, 0, 0, 0, [])); }}
+            if e == "d" || e == "w" || e == "s" || e == "D" || e == "W" || e == "S" {{
+                let i64[] mut lo = [];
+                let i64[] mut hi = [];
+                shorthand(e.to_lower(), ref mut lo, ref mut hi);
+                classes.push(Class {{ lo: lo, hi: hi, neg: e == "D" || e == "W" || e == "S" }});
+                return Ok(put(N_CLASS, classes.len() - 1, 0, 0, []));
+            }}
+            let code = escaped(e)?;
+            return Ok(put(N_CHAR, code, 0, 0, []));
+        }}
+        Ok(put(N_CHAR, c.code(), 0, 0, []))
+    }}
+
+    /// `\\` のあとの 1 文字の番号（\\n \\t \\r と記号）
+    fn Result<i64, str> escaped(str e) {{
+        if e == "n" {{ return Ok(10); }}
+        if e == "t" {{ return Ok(9); }}
+        if e == "r" {{ return Ok(13); }}
+        let k = e.code();
+        let alnum = (k >= 48 && k <= 57) || (k >= 65 && k <= 90) || (k >= 97 && k <= 122);
+        if alnum || k > 127 {{ return Err(error("`\\\\{{e}}` は使えません")); }}
+        Ok(k)
+    }}
+
+    /// [...]
+    fn mut Result<i64, str> class() {{
+        let start = ppos;
+        ppos += 1;
+        let mut neg = false;
+        if at("^") {{
+            neg = true;
+            ppos += 1;
+        }}
+        let i64[] mut lo = [];
+        let i64[] mut hi = [];
+        let mut first = true;
+        loop {{
+            if ppos >= src.len() {{
+                ppos = start;
+                return Err(error("`[` が閉じていません"));
+            }}
+            if at("]") && !first {{ break; }}
+            first = false;
+            let mut a = src[ppos].code();
+            ppos += 1;
+            if a == 92 {{
+                if ppos >= src.len() {{ continue; }}
+                let e = src[ppos];
+                ppos += 1;
+                if e == "d" || e == "w" || e == "s" {{
+                    shorthand(e, ref mut lo, ref mut hi);
+                    continue;
+                }}
+                if e == "D" || e == "W" || e == "S" {{ return Err(error("[...] の中に `\\\\{{e}}` は書けません")); }}
+                a = escaped(e)?;
+            }}
+            let mut b = a;
+            if at("-") && ppos + 1 < src.len() && src[ppos + 1] != "]" {{
+                ppos += 1;
+                b = src[ppos].code();
+                ppos += 1;
+                if b == 92 {{
+                    if ppos >= src.len() {{ continue; }}
+                    let e = src[ppos];
+                    ppos += 1;
+                    b = escaped(e)?;
+                }}
+                if b < a {{ return Err(error("範囲の始めが終わりより大きくなっています")); }}
+            }}
+            lo.push(a);
+            hi.push(b);
+        }}
+        ppos += 1;
+        classes.push(Class {{ lo: lo, hi: hi, neg: neg }});
+        Ok(put(N_CLASS, classes.len() - 1, 0, 0, []))
+    }}
+
+    // ---- 命令を組み立てる
+
+    fn mut Result<i64, str> emit(i64 op, i64 x, i64 y) {{
+        if prog.len() >= MAX_PROGRAM {{ return Err("正規表現が大きすぎます（繰り返しの回数を減らしてください）"); }}
+        prog.push(Inst {{ op: op, x: x, y: y }});
+        Ok(prog.len() - 1)
+    }}
+
+    fn mut Result<(), str> node(i64 id) {{
+        let kind = nodes[id].kind;
+        let a = nodes[id].a;
+        if kind == N_EMPTY {{
+            return Ok(());
+        }} else if kind == N_CHAR {{
+            emit(OP_CHAR, a, 0)?;
+        }} else if kind == N_ANY {{
+            emit(OP_ANY, 0, 0)?;
+        }} else if kind == N_CLASS {{
+            emit(OP_CLASS, a, 0)?;
+        }} else if kind == N_BOL {{
+            emit(OP_BOL, 0, 0)?;
+        }} else if kind == N_EOL {{
+            emit(OP_EOL, 0, 0)?;
+        }} else if kind == N_WORDB {{
+            emit(OP_WORDB, 0, 0)?;
+        }} else if kind == N_NWORDB {{
+            emit(OP_NWORDB, 0, 0)?;
+        }} else if kind == N_CAT {{
+            for k in nodes[id].kids {{ node(k)?; }}
+        }} else if kind == N_GROUP {{
+            let inner = nodes[id].kids[0];
+            if a >= 0 {{ emit(OP_SAVE, 2 * a, 0)?; }}
+            node(inner)?;
+            if a >= 0 {{ emit(OP_SAVE, 2 * a + 1, 0)?; }}
+        }} else if kind == N_ALT {{
+            let n = nodes[id].kids.len();
+            let i64[] mut jumps = [];
+            for i in range(n) {{
+                let k = nodes[id].kids[i];
+                if i + 1 < n {{
+                    let sp = emit(OP_SPLIT, 0, 0)?;
+                    prog[sp].x = prog.len();
+                    node(k)?;
+                    jumps.push(emit(OP_JMP, 0, 0)?);
+                    prog[sp].y = prog.len();
+                }} else {{
+                    node(k)?;
+                }}
+            }}
+            for j in jumps {{ prog[j].x = prog.len(); }}
+        }} else {{
+            // N_REPEAT: 少なくとも lo 回、多くて hi 回（-1 なら上限なし）
+            let lo = a;
+            let hi = nodes[id].b;
+            let greedy = nodes[id].c == 1;
+            let inner = nodes[id].kids[0];
+            for i in range(lo) {{ node(inner)?; }}
+            if hi < 0 {{
+                let sp = emit(OP_SPLIT, 0, 0)?;
+                node(inner)?;
+                emit(OP_JMP, sp, 0)?;
+                branch(sp, sp + 1, prog.len(), greedy);
+            }} else {{
+                let i64[] mut splits = [];
+                for i in range(hi - lo) {{
+                    let sp = emit(OP_SPLIT, 0, 0)?;
+                    splits.push(sp);
+                    node(inner)?;
+                }}
+                let end = prog.len();
+                for sp in splits {{ branch(sp, sp + 1, end, greedy); }}
+            }}
+        }}
+        Ok(())
+    }}
+
+    /// SPLIT の行き先を決める（greedy なら繰り返す方を先に試す）
+    fn mut branch(i64 sp, i64 body, i64 out, bool greedy) {{
+        if greedy {{
+            prog[sp].x = body;
+            prog[sp].y = out;
+        }} else {{
+            prog[sp].x = out;
+            prog[sp].y = body;
+        }}
+    }}
+}}
+
+/// 合ったところ
+pub struct Match {{
+    // 文字単位の位置（start から end の手前まで）
+    i64 start;
+    i64 end;
+    str text;
+    // [0] は合ったところ全体、[k] は k 番目のかっこの中（合わなかった組は None）
+    Option<str>[] groups;
+
+    /// k 番目のかっこの中（0 なら全体。そんな組がないか、合わなかったなら None）
+    fn Option<str> group(i64 k) {{
+        if k < 0 || k >= groups.len() {{ return None; }}
+        groups[k]
+    }}
+}}
+
+/// パターンを組み立てる。書ける形:
+///   文字・`.`（改行のほかの 1 文字）・`[abc]` `[a-z]` `[^...]`・`\\d` `\\w` `\\s`（ASCII の数字・英数字と _・空白）と `\\D` `\\W` `\\S`・
+///   `^` `$`（文字列の始めと終わり）・`\\b` `\\B`（単語の境目）・`(...)`（組）・`(?:...)`（数えない組）・`|`・
+///   `*` `+` `?` `{{m}}` `{{m,}}` `{{m,n}}`（後ろに `?` を付けると短い方を選ぶ）・`\\n` `\\t` `\\r`・`\\` と記号（その記号そのもの）。
+/// 形が違えば Err（どこかを書く）
+pub fn Result<Regex, str> compile(str pattern) {{
+    let mut re = Regex {{ pattern: pattern, groups: 0, prog: [], classes: [], src: pattern.chars().map((one) -> one.to_str()), ppos: 0, nodes: [] }};
+    let root = re.alt()?;
+    if re.ppos < re.src.len() {{
+        // alt は `)` で止まる
+        return Err(re.error("対応する `(` のない `)` があります"));
+    }}
+    re.emit(OP_SAVE, 0, 0)?;
+    re.node(root)?;
+    re.emit(OP_SAVE, 1, 0)?;
+    re.emit(OP_MATCH, 0, 0)?;
+    re.src = [];
+    re.nodes = [];
+    Ok(re)
+}}
+
+/// 記号をそのままの文字として扱うように `\\` を付ける（ユーザーの文字列をパターンに入れるとき）
+pub fn str escape(str s) {{
+    let mut out = "";
+    for c in s.chars().map((one) -> one.to_str()) {{
+        if "\\\\.^$|?*+()[]{{{{}}}}-".contains(c) {{ out += "\\\\"; }}
+        out += c;
+    }}
+    out
+}}
+
+struct Inst {{
+    i64 op;
+    i64 x;
+    i64 y;
+}}
+
+/// 文字の集まり（[...]・\\d など）。範囲 lo[i]〜hi[i] のどれかに入るか（neg なら入らないか）
+struct Class {{
+    i64[] lo;
+    i64[] hi;
+    bool neg;
+
+    fn bool has(i64 code) {{
+        let mut inside = false;
+        for (i, l) in lo {{
+            if code >= l && code <= hi[i] {{
+                inside = true;
+                break;
+            }}
+        }}
+        inside != neg
+    }}
+}}
+
+struct Node {{
+    i64 kind;
+    i64 a;
+    i64 b;
+    i64 c;
+    i64[] kids;
+}}
+
+
+/// \\d \\w \\s の範囲を足す
+fn shorthand(str e, ref mut i64[] lo, ref mut i64[] hi) {{
+    if e == "d" {{
+        lo.push(48);
+        hi.push(57);
+    }} else if e == "w" {{
+        lo.push(48);
+        hi.push(57);
+        lo.push(65);
+        hi.push(90);
+        lo.push(95);
+        hi.push(95);
+        lo.push(97);
+        hi.push(122);
+    }} else {{
+        // 空白・\\t・\\n・\\v・\\f・\\r
+        lo.push(32);
+        hi.push(32);
+        lo.push(9);
+        hi.push(13);
+    }}
+}}
+
+fn bool is_word(i64 c) {{ (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c == 95 }}
+
+""");
+    }
+    if name == "sets" {
+        return Some("""
+// std.sets: 集合。`use std.sets;` で `let mut s = sets.StrSet.new(); s.add("a");` のように使う。
+// 中身は辞書（値は true）なので、add / remove / has は速い。入れた順を覚える（items() はその順）。
+// 型ごとに IntSet（i64）・StrSet（str）・CharSet（char）がある（構造体などのキーは、辞書のキーに使えるようになってから）。
+
+/// i64 の集合（同じ値は 1 つだけ。入れた順を覚える）
+pub struct IntSet {{
+    bool[i64] m;
+
+    /// 空の集合
+    static fn IntSet new() {{ IntSet {{ m: [] }} }}
+
+    /// リストの値を入れた集合
+    static fn IntSet of(ref i64[] xs) {{
+        let mut s = IntSet {{ m: [] }};
+        for x in xs {{ s.m[x] = true; }}
+        s
+    }}
+
+    /// 入れる。新しく入ったら true（もうあれば false）
+    fn mut bool add(i64 x) {{
+        if m.contains(x) {{ return false; }}
+        m[x] = true;
+        true
+    }}
+
+    /// 除く。あったら true
+    fn mut bool remove(i64 x) {{ m.remove(x).is_some() }}
+
+    /// x があるか
+    fn bool has(i64 x) {{ m.contains(x) }}
+
+    fn i64 len() {{ m.len() }}
+
+    fn bool is_empty() {{ m.len() == 0 }}
+
+    /// 中の値のリスト（入れた順）
+    fn i64[] items() {{ m.keys() }}
+
+    /// どちらかにあるもの（この集合の順、続けて other だけにあるもの）
+    fn IntSet union(ref IntSet other) {{
+        let mut s = IntSet {{ m: [] }};
+        for x in m.keys() {{ s.m[x] = true; }}
+        for x in other.m.keys() {{ s.m[x] = true; }}
+        s
+    }}
+
+    /// 両方にあるもの（この集合の順）
+    fn IntSet intersect(ref IntSet other) {{
+        let mut s = IntSet {{ m: [] }};
+        for x in m.keys() {{
+            if other.m.contains(x) {{ s.m[x] = true; }}
+        }}
+        s
+    }}
+
+    /// この集合にあって other にないもの（この集合の順）
+    fn IntSet minus(ref IntSet other) {{
+        let mut s = IntSet {{ m: [] }};
+        for x in m.keys() {{
+            if !other.m.contains(x) {{ s.m[x] = true; }}
+        }}
+        s
+    }}
+
+    /// other の値をすべて含むか
+    fn bool contains_all(ref IntSet other) {{
+        for x in other.m.keys() {{
+            if !m.contains(x) {{ return false; }}
+        }}
+        true
+    }}
+}}
+
+/// str の集合（同じ値は 1 つだけ。入れた順を覚える）
+pub struct StrSet {{
+    bool[str] m;
+
+    /// 空の集合
+    static fn StrSet new() {{ StrSet {{ m: [] }} }}
+
+    /// リストの値を入れた集合
+    static fn StrSet of(ref str[] xs) {{
+        let mut s = StrSet {{ m: [] }};
+        for x in xs {{ s.m[x] = true; }}
+        s
+    }}
+
+    /// 入れる。新しく入ったら true（もうあれば false）
+    fn mut bool add(str x) {{
+        if m.contains(x) {{ return false; }}
+        m[x] = true;
+        true
+    }}
+
+    /// 除く。あったら true
+    fn mut bool remove(str x) {{ m.remove(x).is_some() }}
+
+    /// x があるか
+    fn bool has(str x) {{ m.contains(x) }}
+
+    fn i64 len() {{ m.len() }}
+
+    fn bool is_empty() {{ m.len() == 0 }}
+
+    /// 中の値のリスト（入れた順）
+    fn str[] items() {{ m.keys() }}
+
+    /// どちらかにあるもの（この集合の順、続けて other だけにあるもの）
+    fn StrSet union(ref StrSet other) {{
+        let mut s = StrSet {{ m: [] }};
+        for x in m.keys() {{ s.m[x] = true; }}
+        for x in other.m.keys() {{ s.m[x] = true; }}
+        s
+    }}
+
+    /// 両方にあるもの（この集合の順）
+    fn StrSet intersect(ref StrSet other) {{
+        let mut s = StrSet {{ m: [] }};
+        for x in m.keys() {{
+            if other.m.contains(x) {{ s.m[x] = true; }}
+        }}
+        s
+    }}
+
+    /// この集合にあって other にないもの（この集合の順）
+    fn StrSet minus(ref StrSet other) {{
+        let mut s = StrSet {{ m: [] }};
+        for x in m.keys() {{
+            if !other.m.contains(x) {{ s.m[x] = true; }}
+        }}
+        s
+    }}
+
+    /// other の値をすべて含むか
+    fn bool contains_all(ref StrSet other) {{
+        for x in other.m.keys() {{
+            if !m.contains(x) {{ return false; }}
+        }}
+        true
+    }}
+}}
+
+/// char の集合（同じ値は 1 つだけ。入れた順を覚える）
+pub struct CharSet {{
+    bool[char] m;
+
+    /// 空の集合
+    static fn CharSet new() {{ CharSet {{ m: [] }} }}
+
+    /// リストの値を入れた集合
+    static fn CharSet of(ref char[] xs) {{
+        let mut s = CharSet {{ m: [] }};
+        for x in xs {{ s.m[x] = true; }}
+        s
+    }}
+
+    /// 入れる。新しく入ったら true（もうあれば false）
+    fn mut bool add(char x) {{
+        if m.contains(x) {{ return false; }}
+        m[x] = true;
+        true
+    }}
+
+    /// 除く。あったら true
+    fn mut bool remove(char x) {{ m.remove(x).is_some() }}
+
+    /// x があるか
+    fn bool has(char x) {{ m.contains(x) }}
+
+    fn i64 len() {{ m.len() }}
+
+    fn bool is_empty() {{ m.len() == 0 }}
+
+    /// 中の値のリスト（入れた順）
+    fn char[] items() {{ m.keys() }}
+
+    /// どちらかにあるもの（この集合の順、続けて other だけにあるもの）
+    fn CharSet union(ref CharSet other) {{
+        let mut s = CharSet {{ m: [] }};
+        for x in m.keys() {{ s.m[x] = true; }}
+        for x in other.m.keys() {{ s.m[x] = true; }}
+        s
+    }}
+
+    /// 両方にあるもの（この集合の順）
+    fn CharSet intersect(ref CharSet other) {{
+        let mut s = CharSet {{ m: [] }};
+        for x in m.keys() {{
+            if other.m.contains(x) {{ s.m[x] = true; }}
+        }}
+        s
+    }}
+
+    /// この集合にあって other にないもの（この集合の順）
+    fn CharSet minus(ref CharSet other) {{
+        let mut s = CharSet {{ m: [] }};
+        for x in m.keys() {{
+            if !other.m.contains(x) {{ s.m[x] = true; }}
+        }}
+        s
+    }}
+
+    /// other の値をすべて含むか
+    fn bool contains_all(ref CharSet other) {{
+        for x in other.m.keys() {{
+            if !m.contains(x) {{ return false; }}
+        }}
+        true
+    }}
+}}
+""");
+    }
+    if name == "text" {
+        return Some("""
+// 標準ライブラリ std.text: 文字列の補助。`use std.text;` と書いて `text.pad_left("7", 3, "0")` のように使う
+// 長さと位置は文字単位（str のメソッドと同じ）
+
+/// 左を fill（1 文字）で埋めて width 文字にする。もとから width 文字以上ならそのまま
+pub fn str pad_left(str s, i64 width, str fill) {{
+    assert(fill.len() == 1);
+    if s.len() >= width {{ return s; }}
+    fill.repeat(width - s.len()) + s
+}}
+
+/// 右を fill（1 文字）で埋めて width 文字にする。もとから width 文字以上ならそのまま
+pub fn str pad_right(str s, i64 width, str fill) {{
+    assert(fill.len() == 1);
+    if s.len() >= width {{ return s; }}
+    s + fill.repeat(width - s.len())
+}}
+
+/// 文字を逆の順に並べる
+pub fn str reverse(str s) {{
+    let cs = s.chars();
+    let mut out = "";
+    let mut i = cs.len();
+    while i > 0 {{
+        i -= 1;
+        out += cs[i].to_str();
+    }}
+    out
+}}
+
+/// sub が重ならずに何回出てくるか（sub が空なら実行時エラー）
+pub fn i64 count(str s, str sub) {{
+    assert(sub != "");
+    let mut n = 0;
+    let mut rest = s;
+    loop {{
+        match rest.find(sub) {{
+            case Some(i) -> {{
+                n += 1;
+                rest = rest.slice(i + sub.len(), rest.len());
+            }}
+            case None -> break;
+        }}
+    }}
+    n
+}}
+
+/// 空でなく、すべて 0〜9 の文字か
+pub fn bool is_digits(str s) {{
+    if s == "" {{ return false; }}
+    for c in s.chars() {{
+        if !c.is_digit() {{ return false; }}
+    }}
+    true
+}}
+
+/// UTF-8 のバイトを文字列にする。正しい UTF-8 でなければ None（長すぎる形・サロゲート・0x10FFFF より上は不正）
+pub fn Option<str> from_utf8(ref u8[] b) {{
+    let mut out = "";
+    let mut i = 0;
+    let n = b.len();
+    while i < n {{
+        let c = b[i] as i64;
+        let mut k = 0;
+        let mut cp = 0;
+        let mut low = 0;
+        if c < 128 {{
+            out += chr(c);
+            i += 1;
+            continue;
+        }} else if c >= 194 && c <= 223 {{
+            k = 1;
+            cp = c - 192;
+            low = 128;
+        }} else if c >= 224 && c <= 239 {{
+            k = 2;
+            cp = c - 224;
+            low = 2048;
+        }} else if c >= 240 && c <= 244 {{
+            k = 3;
+            cp = c - 240;
+            low = 65536;
+        }} else {{
+            return None;
+        }}
+        if i + k >= n {{ return None; }}
+        for j in range(1, k + 1) {{
+            let d = b[i + j] as i64;
+            if d < 128 || d > 191 {{ return None; }}
+            cp = cp * 64 + (d - 128);
+        }}
+        if cp < low || cp > 1114111 || (cp >= 55296 && cp <= 57343) {{ return None; }}
+        out += chr(cp);
+        i += k + 1;
+    }}
+    Some(out)
+}}
+
+/// s を真ん中に置いて、左右を fill で埋める（割り切れないときは右を多くする）
+pub fn str center(str s, i64 width, str fill) {{
+    let n = s.len();
+    if n >= width {{ return s; }}
+    let left = (width - n) / 2;
+    fill.repeat(left) + s + fill.repeat(width - n - left)
+}}
+
+/// 左の空白を取る
+pub fn str trim_start(str s) {{
+    let cs = s.chars();
+    let mut i = 0;
+    while i < cs.len() && cs[i].is_space() {{ i += 1; }}
+    s.slice(i, cs.len())
+}}
+
+/// 右の空白を取る
+pub fn str trim_end(str s) {{
+    let cs = s.chars();
+    let mut j = cs.len();
+    while j > 0 && cs[j - 1].is_space() {{ j -= 1; }}
+    s.slice(0, j)
+}}
+
+/// 空白で区切った語（空の語は入れない）
+pub fn str[] words(str s) {{
+    let str[] mut out = [];
+    let mut cur = "";
+    for c in s.chars() {{
+        if c.is_space() {{
+            if cur.len() > 0 {{
+                out.push(cur);
+                cur = "";
+            }}
+        }} else {{
+            cur += c.to_str();
+        }}
+    }}
+    if cur.len() > 0 {{ out.push(cur); }}
+    out
+}}
+
+/// sub が最後に現れる位置
+pub fn Option<i64> rfind(str s, str sub) {{
+    let Option<i64> mut found = None;
+    let mut from = 0;
+    loop {{
+        match s.slice(from, s.len()).find(sub) {{
+            case Some(i) -> {{
+                found = Some(from + i);
+                from = from + i + 1;
+                if sub.len() == 0 || from > s.len() {{ break; }}
+            }}
+            case None -> break;
+        }}
+    }}
+    found
+}}
+
+/// 整数を base 進数（2〜36）の文字列にする。英字は小文字
+pub fn str to_base(i64 x, i64 base) {{
+    assert(base >= 2 && base <= 36);
+    let digits = "0123456789abcdefghijklmnopqrstuvwxyz";
+    if x == 0 {{ return "0"; }}
+    let neg = x < 0;
+    let mut out = "";
+    let mut v = x;
+    while v != 0 {{
+        let mut d = v % base;
+        if d < 0 {{ d = -d; }}
+        out = digits.slice(d, d + 1) + out;
+        v = v / base;
+    }}
+    if neg {{ "-" + out }} else {{ out }}
+}}
+
+/// 16 進数の文字列（`to_base(x, 16)`）
+pub fn str hex(i64 x) {{
+    to_base(x, 16)
+}}
+
+/// base 進数（2〜36）の文字列を読む。前に `-` を書ける。大文字も読む。読めなければ None
+pub fn Option<i64> parse_int(str s, i64 base) {{
+    assert(base >= 2 && base <= 36);
+    let cs = s.chars();
+    if cs.len() == 0 {{ return None; }}
+    let mut i = 0;
+    let neg = cs[0] == '-';
+    if neg || cs[0] == '+' {{ i = 1; }}
+    if i >= cs.len() {{ return None; }}
+    let mut v = 0;
+    while i < cs.len() {{
+        let k = cs[i] as i64;
+        let mut d = 99;
+        if k >= 48 && k <= 57 {{ d = k - 48; }}
+        if k >= 97 && k <= 122 {{ d = k - 97 + 10; }}
+        if k >= 65 && k <= 90 {{ d = k - 65 + 10; }}
+        if d >= base {{ return None; }}
+        if neg {{ v = v * base - d; }} else {{ v = v * base + d; }}
+        i += 1;
+    }}
+    Some(v)
+}}
+""");
+    }
+    if name == "time" {
+        return Some("""
+// 標準ライブラリ std.time: 単調な時計と待機。`use std.time;` と書いて使う
+//   let t = time.now();
+//   time.sleep(100);
+//   print(t.elapsed_ms() >= 100);
+// now の時計は壁時計の修正に影響されない（始まりの位置は決めないので、2 つの Instant の差だけに意味がある）。
+// 日時を残したいときは unix_ms（壁時計）を使う。暦（年月日）への直しは std.date、地域の時刻のずれは local_offset_ms。
+
+/// 時計の読み（ナノ秒）
+pub struct Instant {{
+    i64 ns;
+
+    /// これから今までのナノ秒
+    fn i64 elapsed_ns() {{ __time_now_ns() - ns }}
+
+    /// これから今までのミリ秒（切り捨て）
+    fn i64 elapsed_ms() {{ (__time_now_ns() - ns) / 1000000 }}
+}}
+
+/// 今の読み
+pub fn Instant now() {{ Instant {{ ns: __time_now_ns() }} }}
+
+/// ms ミリ秒待つ（負なら実行時エラー）。待つ前に print の出力を書き出す
+pub fn sleep(i64 ms) {{ __time_sleep_ms(ms); }}
+
+/// 壁時計: 1970-01-01 UTC からのミリ秒。時刻の修正で戻ることがあるので、かかった時間を測るには now を使う
+pub fn i64 unix_ms() {{ __time_unix_ms() }}
+
+/// 地域の時刻（OS に設定したタイムゾーン）が、t（unix_ms と同じミリ秒）の時点で UTC からどれだけずれているか（ミリ秒。東が正。日本なら 32400000）。
+/// 夏時間もその時点のもの。OS が答えなければ Err
+pub fn Result<i64, str> local_offset_ms(i64 t) {{ __time_local_offset(t) }}
+""");
+    }
+    if name == "tls" {
+        return Some("""
+// 標準ライブラリ std.tls: TLS のクライアント（証明書を確かめる）。`use std.tls;` と書いて使う
+//   let mut s = tls.connect("example.com", 443)?;
+//   s.write_text("GET / HTTP/1.1\\r\\nHost: example.com\\r\\nConnection: close\\r\\n\\r\\n")?;
+//   print(s.read(100)?.len());
+//   tls.close(s)?;
+// TLS そのものは作らず OS の部品を使う（Linux は OpenSSL の libssl.so.3、Windows は Schannel。macOS はまだ）。
+// 証明書は OS の信頼の置き場所で確かめ、接続先の名前（IP なら IP）と照らす。最低の版は TLS 1.2。確かめられなければ Err で、弱めて続ける道はない。
+// TlsStream は資源（ムーブだけ。ほかのスレッドへは渡せない。持ち主がいなくなると閉じる）。
+// メソッドは std.net の TcpStream と同じ: `read(n)`・`write(bytes)`・`write_text(s)`・`set_timeout(ms)`（持ち主が mut であること）。
+
+use std.net;
+
+pub resource TlsStream;
+
+/// すでにつないだ TcpStream（ムーブされる）の上で TLS を始める（PostgreSQL のように、平文で少しやりとりしてから TLS に切り替える手順のため）。
+/// host は証明書と照らす名前（または IP）。だめなら Err で、TcpStream は閉じる
+pub fn Result<TlsStream, str> upgrade(net.TcpStream s, str host) {{ __tls_upgrade(s, host) }}
+
+/// host の port へつなぎ、TLS を始める（証明書と名前を確かめる）
+pub fn Result<TlsStream, str> connect(str host, i64 port) {{ __tls_connect(host, port) }}
+
+/// 閉じる（終わりの知らせを 1 回送ってみる。返事は待たない）
+pub fn Result<(), str> close(TlsStream s) {{ __res_close(s) }}
+""");
+    }
+    if name == "url" {
+        return Some("""
+// 標準ライブラリ std.url: URL の分解と %エンコード。`use std.url;` と書いて使う
+//   let u = url.parse("http://example.com:8080/a/b?q=1#top")?;
+//   print(u.host);                 // example.com
+//   print(url.encode("a b&c"));    // a%20b%26c
+// 分けるのは scheme://host[:port]/path?query#fragment の形だけ。利用者情報（user@）は紛らわしいので受け付けない。
+
+use std.text;
+
+/// 分けた URL。port は書いていなければ http なら 80、https なら 443、ほかは 0
+pub struct Url {{
+    str scheme;
+    str host;
+    i64 port;
+    str path;
+    str query;
+    str fragment;
+
+    /// サーバーへ送る部分（path と、あれば ?query）
+    fn str target() {{ if query == "" {{ path }} else {{ path + "?" + query }} }}
+}}
+
+/// URL を分ける。scheme は小文字にする。path がなければ "/"
+pub fn Result<Url, str> parse(str s) {{
+    for c in [" ", "\\r", "\\n", "\\t"] {{
+        if s.contains(c) {{ return Err("URL に空白や改行があります"); }}
+    }}
+    let mut rest = s;
+    let mut scheme = "";
+    match s.find("://") {{
+        case Some(i) -> {{
+            scheme = s.slice(0, i).to_lower();
+            rest = s.slice(i + 3, s.len());
+        }}
+        case None -> return Err("scheme:// で始まる URL ではありません: " + s);
+    }}
+    if scheme == "" {{ return Err("scheme がありません: " + s); }}
+    let mut fragment = "";
+    match rest.find("#") {{
+        case Some(i) -> {{
+            fragment = rest.slice(i + 1, rest.len());
+            rest = rest.slice(0, i);
+        }}
+        case None -> {{}}
+    }}
+    let mut query = "";
+    match rest.find("?") {{
+        case Some(i) -> {{
+            query = rest.slice(i + 1, rest.len());
+            rest = rest.slice(0, i);
+        }}
+        case None -> {{}}
+    }}
+    let mut hostport = rest;
+    let mut path = "/";
+    match rest.find("/") {{
+        case Some(i) -> {{
+            hostport = rest.slice(0, i);
+            path = rest.slice(i, rest.len());
+        }}
+        case None -> {{}}
+    }}
+    if hostport.contains("@") {{ return Err("URL に利用者情報（@）は使えません: " + s); }}
+    let mut host = hostport;
+    let mut tail = "";
+    if hostport.starts_with("[") {{
+        // [::1]:8080 のような IPv6 の書き方
+        match hostport.find("]") {{
+            case Some(i) -> {{
+                host = hostport.slice(1, i);
+                tail = hostport.slice(i + 1, hostport.len());
+            }}
+            case None -> return Err("] がありません: " + s);
+        }}
+        if tail != "" && !tail.starts_with(":") {{ return Err("] のあとが読めません: " + s); }}
+    }} else {{
+        match hostport.find(":") {{
+            case Some(i) -> {{
+                host = hostport.slice(0, i);
+                tail = hostport.slice(i, hostport.len());
+            }}
+            case None -> {{}}
+        }}
+    }}
+    let mut port = if scheme == "http" {{ 80 }} else if scheme == "https" {{ 443 }} else {{ 0 }};
+    if tail != "" {{
+        let digits = tail.slice(1, tail.len());
+        if !text.is_digits(digits) || digits.len() > 5 {{ return Err("ポートの番号が読めません: " + s); }}
+        match digits.to_int() {{
+            case Some(p) -> port = p;
+            case None -> return Err("ポートの番号が読めません: " + s);
+        }}
+        if port > 65535 {{ return Err("ポートの番号が読めません: " + s); }}
+    }}
+    if host == "" {{ return Err("ホストの名前がありません: " + s); }}
+    Ok(Url {{ scheme: scheme, host: host, port: port, path: path, query: query, fragment: fragment }})
+}}
+
+/// %エンコード（英数字と - . _ ~ のほかは、UTF-8 のバイトごとに %XX にする）
+pub fn str encode(str s) {{
+    let hex = "0123456789ABCDEF";
+    let mut out = "";
+    for b in s.bytes() {{
+        let n = b as i64;
+        let plain = (n >= 48 && n <= 57) || (n >= 65 && n <= 90) || (n >= 97 && n <= 122) || n == 45 || n == 46 || n == 95 || n == 126;
+        if plain {{
+            out = out + chr(n);
+        }} else {{
+            out = out + "%" + hex.slice(n / 16, n / 16 + 1) + hex.slice(n % 16, n % 16 + 1);
+        }}
+    }}
+    out
+}}
+
+/// %XX を戻す。plus が true なら + を空白にする（フォームの書き方）。%XX が壊れているか、UTF-8 にならなければ Err
+pub fn Result<str, str> decode(str s, bool plus) {{
+    let b = s.bytes();
+    let u8[] mut out = [];
+    let mut i = 0;
+    while i < b.len() {{
+        let n = b[i] as i64;
+        if n == 37 {{
+            if i + 2 >= b.len() {{ return Err("% のあとに 2 桁の 16 進数がありません: " + s); }}
+            let hi = digit(b[i + 1] as i64);
+            let lo = digit(b[i + 2] as i64);
+            if hi < 0 || lo < 0 {{ return Err("% のあとに 2 桁の 16 進数がありません: " + s); }}
+            out.push((hi * 16 + lo) as u8);
+            i = i + 3;
+        }} else {{
+            if plus && n == 43 {{ out.push(32 as u8); }} else {{ out.push(b[i]); }}
+            i = i + 1;
+        }}
+    }}
+    match text.from_utf8(ref out) {{
+        case Some(t) -> return Ok(t);
+        case None -> return Err("戻した結果が UTF-8 になりません: " + s);
+    }}
+}}
+
+fn i64 digit(i64 n) {{
+    if n >= 48 && n <= 57 {{ return n - 48; }}
+    if n >= 65 && n <= 70 {{ return n - 55; }}
+    if n >= 97 && n <= 102 {{ return n - 87; }}
+    -1
+}}
+""");
+    }
+    None
+}
