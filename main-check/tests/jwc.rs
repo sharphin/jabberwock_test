@@ -2500,22 +2500,31 @@ fn jwc_folder_modules_in_packages() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
-// std.process.start_env: 子のプロセスにだけ環境変数を渡す（jwc だけ。sh を使うので unix だけ）
-#[cfg(unix)]
+// std.process.start_env: 子のプロセスにだけ環境変数を渡す（jwc だけ）。unix は sh、Windows は cmd で確かめる
 #[test]
 fn jwc_std_process_start_env() {
     if !have_clang() { return; }
     let dir = std::env::temp_dir().join(format!("jw-jwc-procenv-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("main.jw");
-    std::fs::write(&path, PROC_ENV_SRC).unwrap();
+    // Windows の環境変数の名前は大文字と小文字を区別しないので、jw_a で親の JW_A を置き換える
+    let src = if cfg!(windows) {
+        PROC_ENV_SRC.replace("\"sh\", [\"-c\", \"echo \\\"$JW_A|$(test -n \\\"$PATH\\\" && echo path)\\\"; printenv JW_B\"], [\"JW_A\"",
+            "\"cmd\", [\"/d\", \"/c\", \"echo\", \"%jw_a%:&if\", \"defined\", \"PATH\", \"echo\", \"path&echo\", \"%JW_B%\"], [\"jw_a\"")
+    } else {
+        PROC_ENV_SRC.to_string()
+    };
+    assert!(cfg!(unix) || src.contains("cmd"));
+    std::fs::write(&path, src).unwrap();
     let exe = dir.join("main");
     let out = Command::new(jwc()).args(["build", "--clang", &native::clang(), "-o"]).arg(&exe).arg(&path).output().unwrap();
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     // 親の JW_A は子では置き換わり、親の PATH は受け継ぐ
     let got = Command::new(&exe).env("JW_A", "parent").output().unwrap();
     let _ = std::fs::remove_dir_all(dir);
-    assert_eq!(String::from_utf8_lossy(&got.stdout), "one|path\ntwo=2\n\nOk(0)\n環境変数の名前が正しくありません: A=B\n");
+    let out = String::from_utf8_lossy(&got.stdout).replace("\r\n", "\n");
+    let want = if cfg!(windows) { "one:\npath\ntwo=2\n\nOk(0)\n環境変数の名前が正しくありません: A=B\n" } else { "one|path\ntwo=2\n\nOk(0)\n環境変数の名前が正しくありません: A=B\n" };
+    assert_eq!(out, want);
 }
 
 const PROC_ENV_SRC: &str = r#"use std.process;
