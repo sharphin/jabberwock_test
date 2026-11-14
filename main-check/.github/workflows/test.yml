@@ -1,0 +1,29 @@
+# Linux と Windows で全テストを走らせる。JW_NATIVE=1 で、実行ファイル（clang）とも突き合わせる
+name: test
+
+on:
+  workflow_dispatch:
+
+
+jobs:
+  test:
+    env:
+      JW_REQUIRE_RETIREMENT_TESTS: "1"
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - name: clang の版
+        run: clang --version
+      - name: テスト
+        run: cargo test --no-fail-fast
+      - name: テスト（実行ファイルとも突き合わせる）
+        env:
+          JW_NATIVE: "1"
+        run: cargo test --no-fail-fast

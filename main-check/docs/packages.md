@@ -1,7 +1,7 @@
 # パッケージ（alice）
 
 ライブラリ全体の現状・既存設計・jwc対応の順序は [ライブラリシステム](library-system.md) を参照。
-このページは現在のaliceの使い方を記す。現行のbuild/run/testはRust実装を使用し、jwcとのパッケージ連携は未対応。
+このページは現在のaliceの使い方を記す。build/run/testは既定でRust実装を使い、`--compiler jwc` でjwcを使う（[下](#aliceからjwcを使う)）。
 
 パッケージの道具 `alice`（jabberwock の cargo にあたるもの。コンパイラ `jabberwock` とは別のコマンド）。今は手元のフォルダの依存先だけを扱う（ネットからの取得・版の指定はまだ）。
 
@@ -59,6 +59,7 @@ mathx = { path = "../mathx" }   # 手元のフォルダ（alice.toml からの�
 | `alice run [-- 引数...]` | src/main.jw をインタプリタで動かす（clang がいらない） |
 | `alice run --native [-- 引数...]` | build してから実行ファイルを動かす（`--release` も使える） |
 | `alice test [名前の一部]` | tests/*.jw を名前の順にインタプリタで動かす（下の「テスト」）。名前の一部を書くと、その文字を含むテストだけ |
+| `alice test --native [名前の一部]` | テストを 1 本ずつ実行ファイルにして動かす（target/alice-test に作る。clang が要る） |
 | `alice package-map [-o ファイル] [入口.jw]` | 現在のパッケージとpath依存を解決し、jwc用の情報を書き出す。省略時の入口はsrc/main.jw、出力は標準出力 |
 
 どれも、今のフォルダから上へたどって alice.toml を探す。パッケージを使わないときは今までどおり `jabberwock ファイル.jw` / `jabberwock build ファイル.jw`。
@@ -78,7 +79,7 @@ jwc build --package-map packages.map -o app
 `--package-map` は入口のファイルも指定するので、`.jw` ファイルを別に渡さない。
 `--ast` / `--typed` / `--ir-raw` / `--ir` / `--ll` / `--ll-checked` とbuildで使える。
 別の入口を使う場合は `alice package-map -o packages.map tests/example.jw` のように指定する。
-入口は現在のパッケージ内の実在する `.jw` ファイル。mainのないテスト関数の実行は、まだalice側でjwcへ接続していない。
+入口は現在のパッケージ内の実在する `.jw` ファイル。mainのないテスト関数は `alice test --native --compiler jwc` で動かせる。
 
 依存先の探索、名前の重複、パスの正規化には既存の `Project::load` を使う。
 jwcは、パッケージ内のモジュールを先に探し、なければそのパッケージの**直接依存**を探す。
@@ -93,8 +94,27 @@ jwcは、パッケージ内のモジュールを先に探し、なければそ�
 ファイル追加・移動、manifest・依存変更時にはマップを作り直す。ソース本体は毎回jwcが読む。
 絶対パスを含むので配布物としてコミットせず、移動先で再生成する。
 
-現段階では、aliceのbuild/run/testは従来どおりRust実装を使う。
-上記はjwcによるコンパイルの接続であり、aliceの自動選択・実行・テストへの接続は次の段階。
+マップには各パッケージの src のフォルダ（`src` の行）も入る。入口が tests にあっても、フォルダ分けのモジュール（`use a.b;`）は src から探す。
+
+## aliceからjwcを使う
+
+build・run・test に `--compiler jwc` をつけると、alice が上のマップを作って `jwc build --package-map` を呼ぶ:
+
+```sh
+alice build --compiler jwc --jwc /path/to/jwc
+alice run --native --compiler jwc --jwc /path/to/jwc
+alice test --native --compiler jwc --jwc /path/to/jwc
+```
+
+- `--jwc` を省くと、alice と同じフォルダの `jwc`（Windows は `jwc.exe`）を使う。道筋のない名前なら PATH から探す。
+  `--jwc` は `--compiler jwc` のときだけ書ける。clang は `JW_CLANG`（なければ `clang`）を jwc に渡す。
+- jwc は実行ファイルを作るだけ（インタプリタがない）なので、run と test には `--native` が要る。ないときは止め、Rust 版に黙って替えない。
+- 出力は target/jwc/debug（release）。Rust 版の target/debug とは分ける。作り直しの判断は Rust 版と同じ入力（src の下のフォルダの .jw も含む）に、jwc の実体の更新時刻を足したもの。
+- エラーの位置はパッケージからの道筋で出す（jwc の出力の、パッケージのフォルダの絶対パスを外す）。関数ごとのテストは main を足した写しを target/alice-test に作ってコンパイルし、位置は元のファイルの名前で出す。
+- テストは、エラー（コンパイルのエラー・実行時エラー）・stderr への出力・0 でない終わり方のどれかで失敗。
+- いまの接続は `alice package-map` と `jwc build` をつないだもの。設計の連携プロトコル（`--compiler-info`、snapshot、request.json など。[compiler連携][compiler]）はまだ作っていない。
+
+[compiler]: https://github.com/sharphin/jabberwock/blob/68e5977df5dda141423233fab7982068949edaa7/docs/compiler-integration.md
 
 ## テスト
 
@@ -131,4 +151,4 @@ fn main() {
 詳細と現在のローカル依存との関係は [ライブラリ配布・管理の方針](library-system.md#ライブラリ配布管理の方針) を参照。
 
 - git やネット上の置き場からの取得、版の指定と依存の解決、lockfile
-- aliceのbuild/run/testからjwcを選択する接続
+- aliceとjwcの連携プロトコル（compiler情報・snapshot。いまは package-map と jwc build をつないだだけ）、alice の設定ファイルでのコンパイラの選択

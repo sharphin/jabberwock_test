@@ -1,0 +1,43 @@
+name: formal-spec
+
+on:
+  workflow_dispatch:
+
+
+permissions:
+  contents: read
+
+jobs:
+  bounded-generation-and-moves:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install pinned Lean 4 release
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/lean-4.24.0-linux.tar.zst"
+          lean_root="$RUNNER_TEMP/jabberwock-lean4"
+          curl --fail --location --silent --show-error --retry 3 --max-time 300 \
+            -o "$archive" https://github.com/leanprover/lean4/releases/download/v4.24.0/lean-4.24.0-linux.tar.zst
+          printf '%s  %s\n' b14f5e5159219dd1a1956c3b806813319f5e94ccd5bdfd56f54520609a5bb5ec "$archive" | sha256sum -c -
+          mkdir -p "$lean_root"
+          tar --zstd -xf "$archive" -C "$lean_root" --strip-components=1
+          printf '%s\n' "$lean_root/bin" >> "$GITHUB_PATH"
+      - name: Validate report unit tests
+        run: python -m unittest discover -s scripts -p test_formal_report.py
+      - name: Check proofs and audit theorem axioms
+        run: python scripts/check_formal.py
+      - name: Audit jwc and Rust proof obligations independently
+        run: python scripts/formal_report.py --compiler all --output target/formal-report.json
+      - name: Upload formal proof audit even if incomplete
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: formal-proof-audit
+          path: target/formal-report.json
+          if-no-files-found: warn

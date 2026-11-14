@@ -1,7 +1,7 @@
 {
   "proof_engine_and_axiom_audit": {
     "state": "IMPLEMENTED",
-    "evidence": "Code audit: scripts/check_formal.py discovers theorem declarations across formal/JabberwockFormal, rejects proof escapes and requires warningAsError, then builds Lean and audits theorem axioms. scripts/lean_evidence_engine.py pins Lean 4.24.0 and checks proof/source closure plus registered expected proposition types. Runtime execution not performed in this review."
+    "evidence": "Code audit: scripts/check_formal.py discovers theorem declarations across formal/JabberwockFormal, rejects proof escapes and requires warningAsError, then builds Lean and audits theorem axioms. scripts/lean_evidence_engine.py pins Lean 4.24.0 and checks proof/source closure plus registered expected proposition types. Runtime execution not performed in this review. Update 2026-11-14: executed on Linux with Lean 4.24.0 (scripts/formal_tool.py): infrastructure OPERATIONAL, log integrity MATCHED, final NOT_PROVEN (refinement 0/250, no proof artifact)."
   },
   "proof_obligation_inventory": {
     "state": "IMPLEMENTED",

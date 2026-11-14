@@ -1,0 +1,35 @@
+# 既存1〜7と分けて、未解決の8/9を機械判定する。再現する間は成功へ変換しない。
+name: safety-edges-8-9
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  remaining-resource-cases:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Build Rust compiler and jwc
+        shell: bash
+        run: |
+          set -euo pipefail
+          clang --version
+          cargo build --release
+          ./target/release/jabberwock build -o "$RUNNER_TEMP/remaining-jwc" jwc/main.jw
+      - name: Retest resource failure and expanded array limits
+        shell: bash
+        run: python3 scripts/retest_safety_edges.py --compiler target/release/jabberwock --jwc "$RUNNER_TEMP/remaining-jwc" --output safety-8-9.json
+      - name: Preserve case results including failures
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: safety-8-9-results
+          path: safety-8-9.json
+          if-no-files-found: warn

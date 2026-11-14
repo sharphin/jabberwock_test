@@ -17,8 +17,8 @@
 | 標準ライブラリ（jwcのみ） | `use std.math;` / `use std.text;` / `use std.fs;` / `use std.net;` / `use std.http;` / `use std.env;` / `use std.time;` / `use std.json;` / `use std.url;` / `use std.browser;`（エンジンは `jwc build --link`）。jwc に埋め込む。資源型は File・TcpStream・TcpListener（[1.3](spec.md#13-資源と-stdfsjwc-だけ)、[1.4](spec.md#14-stdnetjwc-だけ)）。std.http は http:// のクライアントだけ。カタログ・`as`・TLS・PostgreSQL は未実装 | [言語仕様 1.2](spec.md#12-標準ライブラリ)、`std/`、`jwc/stdlib.jw` |
 
 `alice package-map`からjwcへのローカル依存の受け渡しを実装した（[手順](packages.md#jwcでローカルライブラリを使う)）。
-aliceのbuild/run/testがjwcを呼ぶ接続は未実装。マップを生成してjwcで直接コンパイルすることと、
-aliceから実行・テストできることは区別する。
+aliceのbuild/run/testから `--compiler jwc` でjwcを呼べる（2026-11-14。[手順](packages.md#aliceからjwcを使う)）。
+いまは package-map と `jwc build` をつないだもので、設計の連携プロトコル（compiler情報・snapshot）は未実装。
 
 ## 既存の詳細設計を読む順序
 

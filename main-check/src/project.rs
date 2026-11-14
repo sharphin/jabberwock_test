@@ -270,6 +270,14 @@ impl Project {
         for (space, deps) in &self.direct {
             for dep in deps { out.push_str(&format!("allow\t{}\t{}\n", space, dep)); }
         }
+        // src のフォルダ（jwc のフォルダ分けのモジュールを探す場所。入口が tests にあっても src から探す）
+        let mut srcs = vec![(String::new(), self.root.join("src"))];
+        srcs.extend(self.deps.iter().map(|(n, d)| (n.clone(), d.join("src"))));
+        for (space, dir) in srcs {
+            if dir.is_dir() {
+                out.push_str(&format!("src\t{}\t{}\n", space, path_text(&dir)?));
+            }
+        }
         Ok(out)
     }
 
@@ -286,10 +294,32 @@ impl Project {
 
     /// 作り直しが要るか（実行ファイルが、ソース・依存先・alice.toml のどれよりも古いか）
     pub fn stale(&self, exe: &Path) -> bool {
+        self.stale_with(exe, &[])
+    }
+
+    /// `stale` に、ほかの入力（jwc の実体など）を足したもの。
+    /// src の下のフォルダの .jw も見る（jwc のフォルダ分けのモジュール。Rust 版は読まないが、作り直しが増えるだけで安全側）
+    pub fn stale_with(&self, exe: &Path, extra: &[PathBuf]) -> bool {
+        fn jw_files(dir: &Path, out: &mut Vec<PathBuf>) {
+            let Ok(rd) = fs::read_dir(dir) else { return };
+            for e in rd.flatten() {
+                let f = e.path();
+                if f.is_dir() {
+                    jw_files(&f, out);
+                } else if f.extension().and_then(|e| e.to_str()) == Some("jw") {
+                    out.push(f);
+                }
+            }
+        }
         let Ok(built) = fs::metadata(exe).and_then(|m| m.modified()) else { return true };
         let mut inputs = vec![self.root.join(MANIFEST), self.main_file()];
         inputs.extend(self.modules.values().cloned());
         inputs.extend(self.deps.iter().map(|(_, d)| d.join(MANIFEST)));
+        jw_files(&self.root.join("src"), &mut inputs);
+        for (_, d) in &self.deps {
+            jw_files(&d.join("src"), &mut inputs);
+        }
+        inputs.extend(extra.iter().cloned());
         inputs.iter().any(|f| match fs::metadata(f).and_then(|m| m.modified()) {
             Ok(t) => t > built,
             Err(_) => true,

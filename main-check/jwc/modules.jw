@@ -151,6 +151,7 @@ pub struct Loader {
     bool packaged;
     str[str] package_paths;
     str[] allows;
+    str[str] package_srcs;
     str[] libs;
     // 読み終わったモジュール
     str[] done;
@@ -161,8 +162,13 @@ pub struct Loader {
     str[] loading;
     ast.Program[] parts;
 
-    /// パッケージの src のフォルダ（最後に `/` つき。分からなければ ""）。最初のパッケージ（""）でモジュールがほかになければ入口のフォルダ
+    /// パッケージの src のフォルダ（最後に `/` つき。分からなければ ""）。マップに src の行があればそれ。
+    /// なければモジュールのパスから決め、最初のパッケージ（""）でモジュールがほかになければ入口のフォルダ
     fn str package_src(str space) {
+        match package_srcs.get(space) {
+            case Some(s) -> return if s.ends_with("/") || s.ends_with("\\") { s } else if s.contains("\\") { s + "\\" } else { s + "/" };
+            case None -> {}
+        }
         let mut found = "";
         if space != "" {
             match package_paths.get("*" + space) {
@@ -302,7 +308,9 @@ pub struct Loader {
                     if root == "" {
                         return Err(diag.error("パッケージ `{space}` のフォルダが分かりません", use_spans[i], "パッケージマップを作り直してください"));
                     }
-                    path = root + folders[i] + "/" + u + ".jw";
+                    // マップのパスは Windows では `\\?\` つき（区切りの `/` を直さない形）なので、そのときは `\` でつなぐ
+                    let sep = if root.contains("\\") { "\\" } else { "/" };
+                    path = root + folders[i].replace("/", sep) + sep + u + ".jw";
                     if space != "" { key = space + "/" + key; }
                 }
             } else if packaged {
@@ -402,8 +410,10 @@ pub fn Loader new_loader(str dir) {
 pub fn Loader new_package_loader(str dir, ref packages.Map package) {
     let str[str] mut paths = [];
     for (k, v) in package.paths { paths[k] = v; }
+    let str[str] mut srcs = [];
+    for (k, v) in package.srcs { srcs[k] = v; }
     Loader { dir: dir, names: [], srcs: [], paths: [], packaged: package.entry != "", package_paths: paths,
-        allows: strs(package.allows), libs: [], done: [], uses_of: [], infos: [], loading: [], parts: [] }
+        allows: strs(package.allows), package_srcs: srcs, libs: [], done: [], uses_of: [], infos: [], loading: [], parts: [] }
 }
 
 // ---------------------------------------------------------------- モジュールの中の名前の書き換え

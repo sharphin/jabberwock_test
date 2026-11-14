@@ -4,9 +4,11 @@ pub struct Map {
     str entry;
     str[str] paths;
     str[] allows;
+    // パッケージ（最初のパッケージは ""）→ src のフォルダ。フォルダ分けのモジュールを探す場所
+    str[str] srcs;
 }
 
-pub fn Map empty() { Map { entry: "", paths: [], allows: [] } }
+pub fn Map empty() { Map { entry: "", paths: [], allows: [], srcs: [] } }
 
 fn bool name(str s) {
     if s == "" { return false; }
@@ -43,6 +45,9 @@ pub fn Result<Map, str> read(str path) {
             m.paths[xs[1]] = xs[2];
         } else if xs.len() == 3 && xs[0] == "allow" && (xs[1] == "" || name(xs[1])) && name(xs[2]) {
             m.allows.push(xs[1] + "*" + xs[2]);
+        } else if xs.len() == 3 && xs[0] == "src" && (xs[1] == "" || name(xs[1])) && xs[2] != "" {
+            if m.srcs.contains(xs[1]) { return Err("パッケージマップの src が重複しています: " + xs[1]); }
+            m.srcs[xs[1]] = xs[2];
         } else {
             return Err("パッケージマップの不正な行: {path}:{i + 1}");
         }

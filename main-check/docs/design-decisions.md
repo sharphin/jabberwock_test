@@ -1057,3 +1057,16 @@ let x = pick(true, 1, 2);
 - 同じ用途（子に LANG などを渡す）は `process.start_env(cmd, argv, ref env)` で満たす。親の environ を写し、同じ名前を置き換え・足したものを posix_spawnp に渡す。
   Windows は GetEnvironmentStringsW に重ねたブロックを CreateProcessW に渡す（CREATE_UNICODE_ENVIRONMENT）。Windows では試していない（Windows の確認は後回し中）。
 - spec.md の変更は std の節（1.6・1.14）だけなので、決めごと（2026-10-30）どおり safety-scope-policy の spec.md のハッシュを更新した。
+
+## alice から jwc を呼ぶ（2026-11-14、オーナーの選択: alice だけ凍結の例外にする）
+
+- Rust 版は凍結のままだが、alice（src/alice.rs・src/project.rs）は例外として直す。jwc の新しい機能をパッケージで使うには、alice から jwc を呼ぶしかないため。
+- 選び方は設計（docs/stdlib-v1-design の alice-configuration.md）の CLI に合わせた: `--compiler rust|jwc`（既定 rust）と `--jwc 実体`（既定は alice と同じフォルダの jwc）。
+  設定ファイル（.alice/machine.toml など）での選択はまだ作らない。
+- jwc にはインタプリタがないので、jwc の run・test は `--native` を要る形にした（設計のとおり。黙って Rust 版に替えない）。test にも `--native` を足した（Rust 版でも使える）。
+- つなぎ方は設計の連携プロトコル（`--compiler-info`・snapshot・request.json）ではなく、今ある `alice package-map` と `jwc build --package-map` をそのまま使う。
+  プロトコルは大きく、まず使えることを先にした。出力は target/jwc（Rust 版の target/debug と混ぜない）。
+- 作り直しの判断に、src の下のフォルダの .jw（jwc のフォルダ分けのモジュール）と、jwc の実体の更新時刻を足した（11/13 の「つなぐときに直す」）。
+- テストの入口が tests にあると、jwc はフォルダ分けのモジュールを入口のフォルダから探してしまう（最初のパッケージにモジュールがないとき）。
+  パッケージマップに `src\t空間\tフォルダ` の行を足し、jwc はそれがあればそこから探す。版は v1 のまま（足した行を知らない古い jwc は「不正な行」で止まるので安全側）。
+- jwc のエラーの文に出るパッケージのフォルダの絶対パスは外して、Rust 版と同じくパッケージからの道筋で見せる。関数ごとのテストの写しの名前は元のファイルの名前に戻す。

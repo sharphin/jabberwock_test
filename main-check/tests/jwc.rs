@@ -357,6 +357,51 @@ fn main() {
     }
 }
 
+/// alice の build・run・test から jwc を呼ぶ（`--compiler jwc`）。tests からもフォルダ分けのモジュールを src から探す
+#[test]
+fn alice_with_jwc() {
+    if !have_clang() { return; }
+    let dir = std::env::temp_dir().join(format!("jw-alice-jwc-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let write = |path: &str, text: &str| {
+        let p = dir.join(path);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, text).unwrap();
+    };
+    write("app/alice.toml", "[package]\nname = \"app\"\n[dependencies]\nmathx = { path = \"../mathx\" }\n");
+    write("mathx/alice.toml", "[package]\nname = \"mathx\"\n");
+    write("mathx/src/lib.jw", "pub fn i64 add(i64 a, i64 b) { a + b }");
+    write("app/src/geo/pt.jw", "pub fn f32 half(f32 x) { x / 2.0 }");
+    write("app/src/main.jw", "use mathx;\nuse geo.pt;\nfn main() { print(mathx.add(2, 3), pt.half(3.0)); }");
+    write("app/tests/t.jw", "use mathx;\nuse geo.pt;\nfn test_ok() { assert(pt.half(4.0) == 2.0); }\nfn test_bad() { assert(mathx.add(1, 1) == 3); }");
+    let jwc = jwc();
+    let alice = |args: &[&str]| {
+        let o = Command::new(env!("CARGO_BIN_EXE_alice")).args(args).args(["--compiler", "jwc", "--jwc"]).arg(&jwc)
+            .env("JW_CLANG", native::clang()).current_dir(dir.join("app")).output().unwrap();
+        (o.status.code(), String::from_utf8_lossy(&o.stdout).to_string(), String::from_utf8_lossy(&o.stderr).to_string())
+    };
+    let (code, _, err) = alice(&["build"]);
+    assert_eq!(code, Some(0), "{}", err);
+    assert!(err.contains("作りました: target"), "{}", err);
+    let (code, _, err) = alice(&["build"]);
+    assert_eq!(code, Some(0), "{}", err);
+    assert!(err.contains("最新です"), "{}", err);
+    let (code, out, err) = alice(&["run", "--native"]);
+    assert_eq!((code, out.as_str()), (Some(0), "5 1.5\n"), "{}", err);
+    // jwc にはインタプリタがないので、黙って Rust 版に替えずに止める
+    let (code, _, err) = alice(&["run"]);
+    assert_eq!(code, Some(2));
+    assert!(err.contains("--native が要ります"), "{}", err);
+    let (code, out, _) = alice(&["test", "--native"]);
+    assert_eq!(code, Some(1));
+    assert!(out.contains("test tests/t.jw::test_ok ... ok"), "{}", out);
+    assert!(out.contains("test tests/t.jw::test_bad ... 失敗"), "{}", out);
+    // エラーの位置は元のテストのファイルで出す
+    assert!(out.contains("--> tests/t.jw:4:"), "{}", out);
+    assert!(out.contains("結果: 1 本成功・1 本失敗"), "{}", out);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 /// 解決済みの依存をjwcが読み、空間・pub・直接依存をキャッシュ後も守る。
 #[test]
 fn local_packages_with_jwc() {

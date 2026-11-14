@@ -14,7 +14,7 @@
 - テストケースや形式証明のケースを頼まれずに量産しない。既存テストの実行・検証器の実行・新しいケースの作成は別のこととして扱う。
 - 安全性の合格は、合意した基準（定めた仕様・条件の下で全テスト合格。jwc 版を優先、jwc と Rust・Windows と Linux の結果は混ぜない）で判定する。
   別の証明要求を勝手に足さない。未証明は `NOT_PROVEN`、検証器の故障は `TOOL_ERROR` / `INVALID_EVIDENCE`。
-- Rust 版（src/）は凍結。新しい機能は jwc にだけ足す。Rust 版は jwc を最初にコンパイルする役と突き合わせの正解の役（詳しくは docs/design-decisions.md）。
+- Rust 版（src/）は凍結（alice は例外。2026-11-14、オーナーの選択）。新しい機能は jwc にだけ足す。Rust 版は jwc を最初にコンパイルする役と突き合わせの正解の役（詳しくは docs/design-decisions.md）。
 - 仕様を変えたら同じコミットで `docs/spec.md` を直す。決めたことは `docs/design-decisions.md` に書く。
 
 ## よく使うコマンド
