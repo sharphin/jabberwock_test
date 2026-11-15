@@ -847,6 +847,7 @@ let m = if a > b { a } else { b };
 
 - 条件は `( )` で囲まない。`{ }` は必須。条件は bool。
 - 値として使うときは `else` が必須。値は各ブロックの最後の `;` のない式。
+- 入れる先の型が書いてなく、then の値がリストなら、else の `[...]` もリストにする（`if d { fs.walk(p)? } else { [p] }`。jwc だけ）。
 - 値として使う if の中でも `return` は書ける（ブロックの最後の文にすれば、そのブロックは値を持たなくてよい）。`exit(..);` も同じ（`case Err(e) -> { eprint(e); exit(2); }`）。外のループへの `break` / `continue` は使えない。
 - 条件の中に構造体リテラルを直接は書けない（括弧で囲めば書ける）。三項演算子はない。
 
@@ -1049,10 +1050,12 @@ let Option<i64> y = None;
 | `o.unwrap_or(d)` | `T` | `Some(x)` なら x、`None` なら d。o はムーブ |
 | `o.ok_or(e)` | `Result<T, E>` | `Some(x)` → `Ok(x)`、`None` → `Err(e)`。o はムーブ |
 | `o.map(f)` | `Option<U>` | `Some(x)` → `Some(f(x))`。o はムーブ |
+| `o.unwrap()` / `o.expect(msg)` | `T` | `Some(x)` なら x。`None` なら実行時エラー（`None の値を unwrap しました`。expect なら見出しが msg）。o はムーブ（jwc だけ） |
 | `r.is_ok()` / `r.is_err()` | `bool` | 中身は動かさない |
 | `r.unwrap_or(d)` | `T` | `Ok(x)` なら x、`Err` なら d。r はムーブ |
 | `r.ok()` | `Option<T>` | `Ok(x)` → `Some(x)`、`Err` → `None`。r はムーブ |
 | `r.map(f)` | `Result<U, E>` | `Ok(x)` → `Ok(f(x))`。r はムーブ |
+| `r.unwrap()` / `r.expect(msg)` | `T` | `Ok(x)` なら x。`Err(e)` なら実行時エラー（`Err の値を unwrap しました`。expect なら見出しが msg。注に e を print と同じ形で出す）。r はムーブ（jwc だけ） |
 
   ```
   let n = "12".to_int().unwrap_or(0);

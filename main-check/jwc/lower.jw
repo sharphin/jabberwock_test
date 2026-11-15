@@ -1145,6 +1145,50 @@ pub struct Lower {
         Ok(r)
     }
 
+    /// `x.unwrap()`・`x.expect(文)`（Option / Result。jwc だけ）。`?` と同じく種類で分け、None / Err なら呼んだ位置で実行時エラー。
+    /// 見出しは expect の文（unwrap は決まった文）、注は Err なら中身を表示したもの
+    fn mut Result<ir.Operand, str> unwrap_expr(ref ast.Expr recv, str name, ref ast.Expr[] argv, i64 sp) {
+        let it = ty_of(recv);
+        let is_result = ty.name_of(it) == "Result";
+        let ok = if is_result { "Ok" } else { "Some" };
+        let v = expr(recv)?;
+        let t = ir.moved_local(v);
+        if t < 0 { return Err("unwrap に定数"); }
+        let title = if name == "expect" { expr(argv[0])? } else if is_result { str_op("Err の値を unwrap しました") } else { str_op("None の値を unwrap しました") };
+        let ok_bb = new_block();
+        let err_bb = new_block();
+        set_term(cur, ir.Term.Switch(own ir.local(t, sp), own [ok], own [ok_bb], err_bb));
+        cur = err_bb;
+        let mut label = str_op("この値が None でした");
+        if is_result {
+            let mut efs = variant_fields(it, "Err")?;
+            let ety = match efs.pop() {
+                case Some(x) -> x;
+                case None -> ty.Ty.Unit;
+            };
+            let mut ep = ir.local(t, sp);
+            ep.proj.push(ir.Proj.Variant("Err", 0));
+            let eo = temp_of(ety, ir.Rvalue.Take(own ep), sp);
+            let shown = temp_of(ty.Ty.Str, ir.Rvalue.Show(own eo, true, sp), sp);
+            label = temp_of(ty.Ty.Str, ir.Rvalue.Builtin("concat", own [str_op("この値が Err("), shown, str_op(") でした")], sp), sp);
+        }
+        let ignored = temp_of(ty.Ty.Unit, ir.Rvalue.Builtin("unwrap.fail", own [ir.clone_op(title), label], sp), sp);
+        terminate(ir.Term.Unreachable);
+        cur = ok_bb;
+        let tl = ir.moved_local(title);
+        if tl >= 0 { emit(ir.Inst.Drop(tl, sp, "expect の文を使わなかった")); }
+        let mut ofs = variant_fields(it, ok)?;
+        let fty = match ofs.pop() {
+            case Some(x) -> x;
+            case None -> ty.Ty.Unit;
+        };
+        let mut fp = ir.local(t, sp);
+        fp.proj.push(ir.Proj.Variant(ok, 0));
+        let r = temp_of(fty, ir.Rvalue.Take(own fp), sp);
+        emit(ir.Inst.Drop(t, sp, "unwrap で中身を取り出した"));
+        Ok(r)
+    }
+
     /// enum の種類の中身の型（型の引数は置き換え済み）
     fn Result<ty.Ty[], str> variant_fields(ref ty.Ty t, str variant) {
         if !ty.is(t, "Enum") { return Err("enum でない"); }
@@ -1621,6 +1665,9 @@ pub struct Lower {
         let rt = ty_of(recv);
         let ptr = ty.has_pointee(rt);
         let inner = if ptr { ty.inner(rt) } else { ty.cl(rt) };
+        if !ptr && ty.is(inner, "Enum") && (name == "unwrap" || name == "expect") && (ty.name_of(inner) == "Option" || ty.name_of(inner) == "Result") {
+            return unwrap_expr(recv, name, argv, sp);
+        }
         // `fn take` のメソッドは receiver を値として先に読む（ムーブ）
         let take = ck.info.mtakes[e.id];
         let has_temp = !is_place(recv) || take;

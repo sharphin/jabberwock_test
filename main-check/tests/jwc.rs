@@ -2552,3 +2552,30 @@ fn main() {
     }
 }
 "#;
+
+// Option / Result の unwrap・expect（jwc だけ）。失敗は呼んだ位置の実行時エラーで、Err なら中身も出す。
+// if の then がリストなら else の `[...]` もリストにする
+#[test]
+fn jwc_unwrap_expect() {
+    if !have_clang() { return; }
+    let dir = std::env::temp_dir().join(format!("jw-jwc-unwrap-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let src = "struct E { i64 c; }\nfn Result<i64, E> half(i64 n) { if n % 2 == 0 { Ok(n / 2) } else { Err(E { c: n }) } }\n\
+fn main() {\n    let own E b = own E { c: 7 };\n    let x = Some(b).unwrap();\n    print(Some(5).unwrap(), \"12\".to_int().expect(\"数\"), half(8).unwrap(), x.c);\n\
+    let p = \"a\";\n    let mut l = if x.c > 0 { p.split(\",\") } else { [p] };\n    l.push(\"b\");\n    print(l);\n    print(half(3).unwrap());\n}\n";
+    let (ok, out, err) = jwc_build_run(&dir, src);
+    assert!(ok, "{}", err);
+    assert_eq!(out, "5 12 4 7\n[a, b]\n");
+    let got = Command::new(dir.join("main")).output().unwrap();
+    let err = String::from_utf8_lossy(&got.stderr);
+    assert!(err.starts_with("error: Err の値を unwrap しました\n"), "{}", err);
+    assert!(err.contains("main.jw:11:11") && err.contains("この値が Err(E { c: 3 }) でした"), "{}", err);
+    let (ok, _, _) = jwc_build_run(&dir, "fn main() {\n    let Option<i64> n = None;\n    print(n.expect(\"設定がありません\"));\n}\n");
+    assert!(ok);
+    let got = Command::new(dir.join("main")).output().unwrap();
+    let err = String::from_utf8_lossy(&got.stderr);
+    assert!(err.starts_with("error: 設定がありません\n") && err.contains("この値が None でした"), "{}", err);
+    let (ok, _, err) = jwc_build_run(&dir, "fn main() { print(Some(1).expect(2)); }\n");
+    assert!(!ok && err.contains("型が合いません"), "{}", err);
+    let _ = std::fs::remove_dir_all(dir);
+}

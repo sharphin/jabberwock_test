@@ -2304,6 +2304,12 @@ struct FnGen {
             return result_of(m, want, rok, rout, "str", rtext);
         }
         // 等しくなければ両方を表示して止まる（比べ方は `a == b` と同じ）
+        // Option / Result の unwrap・expect で None / Err だった（見出しと注は文字列）
+        if name == "unwrap.fail" {
+            let usite = m.site(span, "");
+            b.op("call void @jw_unwrap_fail(ptr " + vals[0].v + ", ptr " + vals[1].v + ", ptr " + usite + ")");
+            return Ok(llvm.vt("0", ty.Ty.Unit));
+        }
         if name == "assert_eq" {
             let eqv = binary_vals(m, "Eq", vals[0], vals[1], span)?;
             let bad = b.val("xor i1 " + eqv.v + ", true");

@@ -1756,6 +1756,21 @@ void jw_assert_eq_fail(WStr *a, WStr *b, const WSite *at) {
     finish_error(at, label, NULL);
 }
 
+// Option / Result の unwrap・expect の失敗（jwc だけ）。見出し（expect の文）と注は実行時の文字列
+static char *cstr_of(WStr *s) {
+    char *c = malloc((size_t)s->len + 1);
+    if (!c) jw_oom();
+    memcpy(c, s->data, (size_t)s->len);
+    c[s->len] = 0;
+    return c;
+}
+_Noreturn void jw_unwrap_fail(WStr *title, WStr *label, const WSite *at) {
+    char *t = cstr_of(title);
+    char *l = cstr_of(label);
+    begin_error(t);
+    finish_error(at, l, NULL);
+}
+
 // x.fixed(n): 小数点以下 n 桁（printf の丸め。interp の fixed と同じ）。inf と NaN は print と同じ形
 WStr *jw_f64_fixed(double x, int64_t n, const WSite *at) {
     if (n < 0 || n > 100) {

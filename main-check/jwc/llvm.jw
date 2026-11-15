@@ -563,6 +563,7 @@ pub struct Module {
         // f32（jwc だけ）
         if body.contains("@jw_sb_f32(") { only += "declare void @jw_sb_f32(ptr, float)\n"; }
         if body.contains("@jw_process_start_env(") { only += "declare i32 @jw_process_start_env(ptr, ptr, ptr, ptr, ptr)\n"; }
+        if body.contains("@jw_unwrap_fail(") { only += "declare void @jw_unwrap_fail(ptr, ptr, ptr)\n"; }
         if body.contains("@jw_list_find_f32(") { only += "declare i64 @jw_list_find_f32(ptr, float)\n"; }
         PRELUDE + res + only + types.join("") + "\n" + globals.join("") + "\n" + body + TBAA
     }

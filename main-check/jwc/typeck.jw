@@ -2208,6 +2208,8 @@ pub struct Checker {
                 // `if c { Some(1) } else { None }` の None の型を then から決める
                 let mut eh = copy_hint(hint);
                 if !hint.some && ty.is(a, "Enum") && ty.args_of(a).len() > 0 { eh = hint_of(ty.cl(a)); }
+                // `if c { fs.walk(p)? } else { [p] }` の `[p]` を then に合わせてリストにする（jwc だけ）
+                if !hint.some && ty.is(a, "List") { eh = hint_of(ty.cl(a)); }
                 let ty.Ty[] mut tys = [a];
                 let i64[] mut spans = [tail_span(then)];
                 let i64[] mut tails = [tail_id(then)];
@@ -3501,11 +3503,19 @@ pub struct Checker {
                 }
             }
         }
+        let builtin_unwrap = sname == "Option" || sname == "Result";
+        if builtin_unwrap && (name == "unwrap" || name == "expect") && !is_fn(full) {
+            return unwrap_method(e, recv, rt, rk, st, name, argv, span);
+        }
         if !is_fn(full) {
             let prefix = sname + ".";
             let str[] mut names = [];
             for s in sigs {
                 if s.name.starts_with(prefix) { names.push(s.name.slice(prefix.len(), s.name.len())); }
+            }
+            if builtin_unwrap {
+                names.push("unwrap");
+                names.push("expect");
             }
             names.sort();
             let d = diag.make("`{sname}` にメソッド `{name}` はありません").at(span, "このメソッドは定義されていません");
@@ -3562,6 +3572,23 @@ pub struct Checker {
         let bounds = sigs[si].bounds.map((x) -> x);
         check_bounds(tparams, bounds, m, span)?;
         Ok(ty.subst(ret, m))
+    }
+
+    /// Option / Result の `unwrap()`・`expect(文)`（jwc だけ）。中身を取り出し、None / Err なら実行時エラー（位置は呼んだところ）。
+    /// `fn take` のメソッドと同じく receiver はムーブ。下げ方は lower の `unwrap_expr`
+    fn mut Result<ty.Ty, diag.Diag> unwrap_method(ref ast.Expr e, ref ast.Expr recv, ref ty.Ty rt, str rk, ref ty.Ty st, str name, ref ast.Expr[] argv, i64 span) {
+        let sname = ty.name_of(st);
+        let want = if name == "expect" { 1 } else { 0 };
+        if argv.len() != want { return Err(arity_error(sname + "." + name, want, argv.len(), span)); }
+        if name == "expect" { expect(argv[0], ty.Ty.Str)?; }
+        if rk != "Enum" {
+            return Err(diag.make("`{sname}.{name}` は this を値で受け取るメソッドです")
+                .at(recv.span, "これは `{ty.show(rt)}` なので、中身を取り出せない")
+                .with_note("own や ref の先の値には呼べません（構造体のフィールドから値を取り出せないのと同じ）"));
+        }
+        info.mtakes[e.id] = true;
+        let targs = ty.args_of(st);
+        Ok(ty.cl(targs[0]))
     }
 
     // ------------------------------------------------ 整数
