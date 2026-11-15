@@ -93,9 +93,8 @@ fn jwc_build(p: &jabberwock::project::Project, jwc: &Path, entry: &Path, exe: &P
     fs::write(&map, map_text).map_err(|e| format!("{}: {}", map.display(), e))?;
     let mut cmd = process::Command::new(jwc);
     cmd.arg("build");
-    if release {
-        cmd.arg("--release");
-    }
+    // Rust 版の alice と同じく、debug は最適化なし（大きいプログラムでも速く作れる）、release は -O2
+    cmd.arg(if release { "--release" } else { "-O0" });
     cmd.arg("--package-map").arg(&map).arg("--clang").arg(jabberwock::native::clang()).arg("-o").arg(exe);
     let o = cmd.stdin(process::Stdio::null()).output().map_err(|e| format!("jwc を起動できません: {}: {}", jwc.display(), e))?;
     let err = relative_in(p, &String::from_utf8_lossy(&o.stderr));

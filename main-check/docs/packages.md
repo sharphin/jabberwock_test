@@ -109,6 +109,7 @@ alice test --native --compiler jwc --jwc /path/to/jwc
 - `--jwc` を省くと、alice と同じフォルダの `jwc`（Windows は `jwc.exe`）を使う。道筋のない名前なら PATH から探す。
   `--jwc` は `--compiler jwc` のときだけ書ける。clang は `JW_CLANG`（なければ `clang`）を jwc に渡す。
 - jwc は実行ファイルを作るだけ（インタプリタがない）なので、run と test には `--native` が要る。ないときは止め、Rust 版に黙って替えない。
+- debug は `jwc build -O0`（最適化なし。Rust 版の alice の debug と同じ）、`--release` は `jwc build --release`（-O2 と LTO）。
 - 出力は target/jwc/debug（release）。Rust 版の target/debug とは分ける。作り直しの判断は Rust 版と同じ入力（src の下のフォルダの .jw も含む）に、jwc の実体の更新時刻を足したもの。
 - エラーの位置はパッケージからの道筋で出す（jwc の出力の、パッケージのフォルダの絶対パスを外す）。関数ごとのテストは main を足した写しを target/alice-test に作ってコンパイルし、位置は元のファイルの名前で出す。
 - テストは、エラー（コンパイルのエラー・実行時エラー）・stderr への出力・0 でない終わり方のどれかで失敗。

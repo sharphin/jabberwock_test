@@ -184,8 +184,9 @@ fn bool run_clang(str clang, str[] argv) {
 /// `jwc build`: LLVM に書き出し、実行時ライブラリと一緒に clang で実行ファイルを作る（Rust 版の `jabberwock build` と同じ手順）。
 /// 途中のファイル（`出力.ll` と `出力.jw_rt.c`）は出力と同じフォルダに残す（jabberwock にはファイルを消す関数がまだないため）
 fn build(ref str[] a, ref packages.Map package) {
-    let usage = "使い方: jwc build [--release] [-o 出力] [--clang clang] [--link 部品]... <file.jw>";
+    let usage = "使い方: jwc build [--release] [-O0|-O1|-O2] [-o 出力] [--clang clang] [--link 部品]... <file.jw>";
     let mut release = false;
+    let mut opt = "-O2";
     let mut out = "";
     let mut path = "";
     let mut clang = "clang";
@@ -195,6 +196,8 @@ fn build(ref str[] a, ref packages.Map package) {
         let x = a[i];
         if x == "--release" {
             release = true;
+        } else if x == "-O0" || x == "-O1" || x == "-O2" {
+            opt = x;
         } else if x == "-o" || x == "--clang" || x == "--link" {
             if i + 1 >= a.len() {
                 eprint(usage);
@@ -205,6 +208,7 @@ fn build(ref str[] a, ref packages.Map package) {
         } else if x == "-h" || x == "--help" {
             eprint(usage);
             eprint("  --release     実行時エラーは使った位置だけ出す（ソースを実行ファイルに入れない）");
+            eprint("  -O0 / -O1 / -O2  clang の最適化（なければ -O2。-O0・-O1 は LTO なしで、大きいプログラムを速く作れる。検査は同じ）");
             eprint("  -o 出力        実行ファイルの名前（なければファイル名から .jw を除いたもの）");
             eprint("  --clang clang  使う clang（なければ clang）");
             eprint("  --link 部品    一緒にリンクするもの（std.browser のエンジンの .c / .o や -lole32 など。何度でも書ける）");
@@ -253,7 +257,7 @@ fn build(ref str[] a, ref packages.Map package) {
     };
     let windows = platform.starts_with("windows");
     if windows && !out.ends_with(".exe") { out += ".exe"; }
-    let str[] mut flags = ["-O2", llp, rt, "-o", out, "-Wno-override-module"];
+    let str[] mut flags = [opt, llp, rt, "-o", out, "-Wno-override-module"];
     // 命令の形（` = call`）で探す。探す字面は 2 つに分けて組み立てる
     // （jwc 自身のように、文字列の定数に同じ字面があるだけのプログラムを取り違えない）
     let opens = " = call i32 @jw_" + "browser_open(";
@@ -277,8 +281,8 @@ fn build(ref str[] a, ref packages.Map package) {
     let mut lto = flags.map((flag) -> flag);
     lto.push("-flto");
     lto.push("-fuse-ld=lld");
-    // lld がない環境では LTO なしで作り直す。
-    let ok = run_clang(clang, lto) || run_clang(clang, flags);
+    // lld がない環境では LTO なしで作り直す。-O0・-O1 は速く作るためなので LTO を使わない（Rust 版の native.rs と同じ）
+    let ok = if opt != "-O2" { run_clang(clang, flags) } else { run_clang(clang, lto) || run_clang(clang, flags) };
     if !ok {
         eprint("clang が失敗しました");
         exit(1);
