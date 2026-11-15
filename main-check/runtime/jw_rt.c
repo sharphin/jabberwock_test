@@ -89,6 +89,10 @@ static int thread_new(WThread *t, void *arg) {
 static void thread_join(WThread t) { pthread_join(t, NULL); }
 #endif
 
+// スタックを使い切ったときの知らせ（main の近くで定める）。256 MiB のスタックで動くスレッドの始めと終わりに呼ぶ
+static void stack_guard_enter(size_t size);
+static void stack_guard_leave(void);
+
 // spawn したことがあるか（なければ出力の錠を取らない）。最初の spawn の前に立てる。
 // 複数スレッドで spawn と出力が重なるため、同じ 1 の書き込みでも不可分の操作にする。
 static int g_threaded;
@@ -2252,7 +2256,9 @@ static void *thread_start(void *arg) {
 #endif
     WTask *t = arg;
     g_is_worker = 1;
+    stack_guard_enter((size_t)256 << 20);
     t->thunk(t->args, t->result);
+    stack_guard_leave();
     free(t->args);
     lock(&g_lock);
     t->done = 1;
@@ -6127,12 +6133,119 @@ static void win_setup(int *argc, char ***argv) {
 }
 #endif
 
+static const char stack_msg[] = "error: スタックを使い切りました\n  = 関数のフレームが大きすぎるか、呼び出しが深すぎます\n";
+
+#ifdef _WIN32
+// Windows: スタックを使い切ると EXCEPTION_STACK_OVERFLOW。見張り（vectored exception handler）が動くぶんのスタックを
+// スレッドごとに SetThreadStackGuarantee で残しておき、エラーの文を出して終わる
+typedef struct { unsigned long code; } WExcRecord;
+typedef struct { WExcRecord *rec; void *ctx; } WExcPointers;
+__declspec(dllimport) void *__stdcall AddVectoredExceptionHandler(unsigned long, long(__stdcall *)(WExcPointers *));
+__declspec(dllimport) int __stdcall SetThreadStackGuarantee(unsigned long *);
+__declspec(dllimport) void *__stdcall GetStdHandle(unsigned long);
+__declspec(dllimport) int __stdcall WriteFile(void *, const void *, unsigned long, unsigned long *, void *);
+__declspec(dllimport) int __stdcall TerminateProcess(void *, unsigned);
+__declspec(dllimport) void *__stdcall GetCurrentProcess(void);
+
+static void stack_guard_enter(size_t size) {
+    (void)size;
+    unsigned long g = 64 << 10;
+    SetThreadStackGuarantee(&g);
+}
+static void stack_guard_leave(void) {}
+
+static long __stdcall on_overflow(WExcPointers *e) {
+    if (e->rec->code != 0xC00000FDul) return 0; // EXCEPTION_STACK_OVERFLOW でなければ次へ（EXCEPTION_CONTINUE_SEARCH）
+    unsigned long w;
+    // 出力の途中でなければ、ためた出力を先に出す（ここでは錠を取れないので、スレッドが 1 つのときだけ）
+    if (!__atomic_load_n(&g_threaded, __ATOMIC_RELAXED) && !out_owned && out_len) {
+        WriteFile(GetStdHandle((unsigned long)-11), out_buf, (unsigned long)out_len, &w, NULL);
+    }
+    WriteFile(GetStdHandle((unsigned long)-12), stack_msg, (unsigned long)(sizeof stack_msg - 1), &w, NULL);
+    TerminateProcess(GetCurrentProcess(), 1);
+    return 0;
+}
+#endif
+
 #ifndef _WIN32
 // unix では main を 256 MiB のスタックのスレッドで動かす（Windows はリンクの指定で main のスタックが 256 MiB。spawn のスレッドも同じ大きさ）。
 // main のスタックは ulimit（ふつう 8 MiB）なので、フレームの大きい関数の深い再帰が、深さの検査（5000）より先にスタックを使い切らないように
+#if defined(__SANITIZE_ADDRESS__)
+#define JW_ASAN 1
+#elif defined(__has_feature)
+#if __has_feature(address_sanitizer)
+#define JW_ASAN 1
+#endif
+#endif
+
+// スタックを使い切ると、スタックの下の見張りのページに触れて SIGSEGV（macOS は SIGBUS）になる。
+// 触れた番地がこのスレッドのスタックの下の端の近くなら、エラーの文を出して終わる。ほかの理由なら、元のとおり落ちる。
+// 見張りは別のスタック（sigaltstack）で動かす。スレッドごとに要る。AddressSanitizer のときは、その見張りに任せる
+static _Thread_local char *stack_lo; // このスレッドのスタックの下の端（おおよそ）。0 なら見ない
+static _Thread_local void *alt_stack;
+#define ALT_STACK_SIZE (64 << 10)
+
+static void stack_guard_enter(size_t size) {
+#ifndef JW_ASAN
+    char here;
+    stack_t ss;
+    ss.ss_sp = malloc(ALT_STACK_SIZE);
+    ss.ss_size = ALT_STACK_SIZE;
+    ss.ss_flags = 0;
+    if (ss.ss_sp && sigaltstack(&ss, NULL) == 0) {
+        alt_stack = ss.ss_sp;
+        stack_lo = &here - size;
+    } else {
+        free(ss.ss_sp);
+    }
+#else
+    (void)size;
+#endif
+}
+
+static void stack_guard_leave(void) {
+    if (!alt_stack) return;
+    stack_t ss;
+    memset(&ss, 0, sizeof ss);
+    ss.ss_flags = SS_DISABLE;
+    stack_lo = NULL;
+    if (sigaltstack(&ss, NULL) == 0) free(alt_stack);
+    alt_stack = NULL;
+}
+
+static void on_fault(int sig, siginfo_t *si, void *uc) {
+    (void)uc;
+    char *a = si->si_addr, *lo = stack_lo;
+    if (lo && a >= lo - (1 << 20) && a < lo + (1 << 20)) {
+        // 出力の途中でなければ、ためた出力を先に出す（ここでは錠を取れないので、スレッドが 1 つのときだけ）
+        if (!__atomic_load_n(&g_threaded, __ATOMIC_RELAXED) && !out_owned && out_len) {
+            ssize_t w = write(1, out_buf, out_len);
+            (void)w;
+        }
+        ssize_t w = write(2, stack_msg, sizeof stack_msg - 1);
+        (void)w;
+        _exit(1);
+    }
+    signal(sig, SIG_DFL);
+}
+
+static void stack_guard_install(void) {
+#ifndef JW_ASAN
+    struct sigaction sa;
+    memset(&sa, 0, sizeof sa);
+    sa.sa_sigaction = on_fault;
+    sa.sa_flags = SA_SIGINFO | SA_ONSTACK;
+    sigemptyset(&sa.sa_mask);
+    sigaction(SIGSEGV, &sa, NULL);
+    sigaction(SIGBUS, &sa, NULL);
+#endif
+}
+
 static void *main_thread(void *arg) {
     (void)arg;
+    stack_guard_enter((size_t)256 << 20);
     jw_main();
+    stack_guard_leave();
     // jw_live はスレッドごとなので、このスレッドの分を残りの数へ足しておく（OS の main が join のあとで報告する）
     lock(&g_lock);
     g_live_done += jw_live;
@@ -6149,8 +6262,11 @@ int main(int argc, char **argv) {
     g_argc = argc;
     g_argv = argv;
 #ifdef _WIN32
+    AddVectoredExceptionHandler(1, on_overflow);
+    stack_guard_enter(0);
     jw_main();
 #else
+    stack_guard_install();
     WThread mt;
     pthread_attr_t ma;
     pthread_attr_init(&ma);

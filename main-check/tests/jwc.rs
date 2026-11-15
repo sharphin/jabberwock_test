@@ -2579,3 +2579,28 @@ fn main() {\n    let own E b = own E { c: 7 };\n    let x = Some(b).unwrap();\n 
     assert!(!ok && err.contains("型が合いません"), "{}", err);
     let _ = std::fs::remove_dir_all(dir);
 }
+
+// フレームの大きい関数の深い再帰でスタックを使い切ると、落ちずにエラーの文を出して終わる（深さの検査の 5000 より先に尽きる場合。実行ファイルだけ）
+#[test]
+fn jwc_stack_exhaustion_reports() {
+    if !have_clang() { return; }
+    let dir = std::env::temp_dir().join(format!("jw-jwc-stack-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    // 2 KiB の配列を 40 個持つ関数（1 段 80 KiB ほど）を 4900 段。256 MiB のスタックを超える
+    let row = vec!["n"; 256].join(", ");
+    let mut src = String::from("fn i64 f(i64 n) {\n");
+    for i in 0..40 { src += &format!("    let a{} = [{}];\n", i, row); }
+    src += "    if n == 0 { return a0[3]; }\n    f(n - 1) + ";
+    src += &(0..40).map(|i| format!("a{}[n % 256]", i)).collect::<Vec<_>>().join(" + ");
+    src += " - 40 * n\n}\nfn main() { print(\"始め\"); print(f(4900)); }\n";
+    // -O2 ではこの大きな配列の式の最適化に数分かかるので -O0 で作る
+    let (path, exe) = (dir.join("main.jw"), dir.join("main"));
+    std::fs::write(&path, &src).unwrap();
+    let b = Command::new(jwc()).args(["build", "-O0", "--clang", &native::clang(), "-o"]).arg(&exe).arg(&path).output().unwrap();
+    assert!(b.status.success(), "{}", String::from_utf8_lossy(&b.stderr));
+    let got = Command::new(&exe).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&got.stdout), "始め\n");
+    assert_eq!(got.status.code(), Some(1));
+    assert_eq!(String::from_utf8_lossy(&got.stderr), "error: スタックを使い切りました\n  = 関数のフレームが大きすぎるか、呼び出しが深すぎます\n");
+    let _ = std::fs::remove_dir_all(dir);
+}
