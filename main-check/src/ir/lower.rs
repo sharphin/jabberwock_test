@@ -151,6 +151,9 @@ struct FnLower<'a, 'p> {
     /// スコープごとの変数（名前, 番号）。名前が空なのは書き出しのために置いた隠れた変数
     scopes: Vec<Vec<(String, Local)>>,
     loops: Vec<Loop>,
+    /// 今の文（入れ子なら外の文も）で作った一時的な変数。`?` と return で、まだ使われていないものを drop する候補。
+    /// 文が終わったら、その文で作ったものを外す（終わった文の一時的な値は使い終わっているので、抜け口ごとに並べない）
+    pending: Vec<Local>,
     /// 書き出している関数の戻り値の型（`?` で返す Err / None を作り直す）
     ret: Ty,
 }
@@ -178,6 +181,7 @@ impl<'a, 'p> FnLower<'a, 'p> {
             cur: 0,
             scopes: Vec::new(),
             loops: Vec::new(),
+            pending: Vec::new(),
             ret: Ty::Unit,
         }
     }
@@ -298,7 +302,9 @@ impl<'a, 'p> FnLower<'a, 'p> {
     }
 
     fn temp(&mut self, ty: Ty, span: Span) -> Local {
-        self.new_local("", ty, true, span)
+        let l = self.new_local("", ty, true, span);
+        self.pending.push(l);
+        l
     }
 
     /// 今のスコープに変数を置く（値は `Assign` で入れる）
@@ -389,7 +395,15 @@ impl<'a, 'p> FnLower<'a, 'p> {
         Ok(())
     }
 
+    /// 文を書き出す。文で作った一時的な変数は、終わったら `pending` から外す
     fn stmt(&mut self, s: &Stmt) -> L<()> {
+        let mark = self.pending.len();
+        let r = self.stmt_inner(s);
+        self.pending.truncate(mark);
+        r
+    }
+
+    fn stmt_inner(&mut self, s: &Stmt) -> L<()> {
         match s {
             Stmt::Let { name, mutable, span, init, .. } => {
                 let v = self.expr(init)?;
@@ -1112,7 +1126,8 @@ impl<'a, 'p> FnLower<'a, 'p> {
     /// （`f(own 1, g()?)` の `own 1`）を drop する。使い終わったものは空なので、drop しても何もしない
     fn drop_pending(&mut self, keep: Option<Local>, sp: Span, why: &str) {
         let in_scope: Vec<Local> = self.scopes.iter().flatten().map(|(_, l)| *l).collect();
-        for l in (0..self.locals.len()).rev() {
+        let pending: Vec<Local> = self.pending.iter().rev().copied().collect();
+        for l in pending {
             if Some(l) != keep && self.locals[l].name.is_empty() && !in_scope.contains(&l) {
                 self.emit(Inst::Drop { local: l, span: sp, why: why.to_string() });
             }

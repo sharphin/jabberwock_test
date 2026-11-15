@@ -144,6 +144,9 @@ pub struct Lower {
     Scope[] scopes;
     Loop[] loops;
     ty.Ty fret;
+    // 今の文（入れ子なら外の文も）で作った一時的な変数。`?` と return で、まだ使われていないものを drop する候補。
+    // 文が終わったら、その文で作ったものを外す（終わった文の一時的な値は使い終わっているので、抜け口ごとに並べない）
+    i64[] pending;
 
     // ------------------------------------------------ 呼ばれた関数
 
@@ -193,6 +196,7 @@ pub struct Lower {
         scopes = [];
         loops = [];
         fret = ty.Ty.Unit;
+        pending = [];
     }
 
     // ------------------------------------------------ 関数
@@ -302,7 +306,11 @@ pub struct Lower {
         locals.len() - 1
     }
 
-    fn mut i64 temp(ty.Ty t, i64 span) { new_local("", t, true, span) }
+    fn mut i64 temp(ty.Ty t, i64 span) {
+        let l = new_local("", t, true, span);
+        pending.push(l);
+        l
+    }
 
     /// 今のスコープに変数を置く（値は `Assign` で入れる）
     fn mut i64 declare(str name, ty.Ty t, bool m, i64 span) {
@@ -422,7 +430,15 @@ pub struct Lower {
         Ok(())
     }
 
+    /// 文を書き出す。文で作った一時的な変数は、終わったら `pending` から外す
     fn mut Result<(), str> stmt(ref ast.Stmt s) {
+        let mark = pending.len();
+        let r = stmt_inner(s);
+        while pending.len() > mark { pending.pop(); }
+        r
+    }
+
+    fn mut Result<(), str> stmt_inner(ref ast.Stmt s) {
         match ref s {
             case Let(name, has_ty, te, m, span, init) -> {
                 let v = expr(init)?;
@@ -1087,12 +1103,13 @@ pub struct Lower {
         for sc in scopes {
             for l in sc.ls { in_scope.push(l); }
         }
-        let mut l = locals.len() - 1;
-        while l >= 0 {
+        let mut k = pending.len() - 1;
+        while k >= 0 {
+            let l = pending[k];
             if l != keep && locals[l].name == "" && !has_i(in_scope, l) {
                 emit(ir.Inst.Drop(l, sp, why));
             }
-            l -= 1;
+            k -= 1;
         }
     }
 
@@ -2110,7 +2127,7 @@ pub fn Result<ir.Program, str> lower(ref ast.Program prog, ref typeck.Checker ck
     let mut lw = Lower {
         prog: prog, ck: ck, defs: [], by_name: [], fn_names: [], queue: [], qhead: 0, lams: [], lam_ids: [],
         subst: ty.tmap(), fname: "", caps_l: [], spawning: false, in_value: 0, lent: [], locals: [], blocks: [], cur: 0, scopes: [],
-        loops: [], fret: ty.Ty.Unit,
+        loops: [], fret: ty.Ty.Unit, pending: [],
     };
     for (i, f) in prog.fns {
         if is_builtin(f.name) || lw.defs.contains(f.name) { return Err("関数 `{f.name}` の名前が使えない"); }

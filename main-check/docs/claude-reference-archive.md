@@ -127,7 +127,7 @@ native専用の退役検査はclang必須・`JW_REQUIRE_RETIREMENT_TESTS=1`と�
 - `if` / `match` は式（`ExprKind::If` / `ExprKind::Match`）。文として使うときは `Stmt::Expr` に入り、中の return / break を `Flow` で外へ伝える（`eval_flow`）。
   値として使うときの外への break / continue はパーサが禁止している（`value_context`）。return は書ける: interp の `eval` が If / Match で
   `Flow::Return` を受けたら、`unwinding` に返す値を入れ `returning` を立てて `Err` で抜け（`?` と同じ道）、`call_fn` が return にする。
-  lower は値の中の深さ `in_value` を数え、そこでの return はまだ使っていない一時的な値を `drop_pending` で捨ててから抜ける。
+  lower は値の中の深さ `in_value` を数え、そこでの return はまだ使っていない一時的な値を `drop_pending` で捨ててから抜ける（候補は今の文（と外の文）で作った一時的な値だけ。`pending`。2026-11-15）。
 - 書き換えの可否は `Access`（Write / ImmutVar / ReadOnlyRef）で表す。`place()` が持ち主から順にたどって決め、
   `ref mut` を通ると Write のまま、`ref` を通ると ReadOnlyRef になる。`RefVal.mutable` が「ref mut か」。
   同じ規則を `types.rs` が型から静的に決める（`Access::through` に型を渡す）。実行時の検査は念のため残している。
