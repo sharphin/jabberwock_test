@@ -6131,13 +6131,39 @@ static void win_setup(int *argc, char ***argv) {{
 }}
 #endif
 
+#ifndef _WIN32
+// unix では main を 256 MiB のスタックのスレッドで動かす（Windows はリンクの指定で main のスタックが 256 MiB。spawn のスレッドも同じ大きさ）。
+// main のスタックは ulimit（ふつう 8 MiB）なので、フレームの大きい関数の深い再帰が、深さの検査（5000）より先にスタックを使い切らないように
+static void *main_thread(void *arg) {{
+    (void)arg;
+    jw_main();
+    // jw_live はスレッドごとなので、このスレッドの分を残りの数へ足しておく（OS の main が join のあとで報告する）
+    lock(&g_lock);
+    g_live_done += jw_live;
+    jw_live = 0;
+    unlock(&g_lock);
+    return NULL;
+}}
+#endif
+
 int main(int argc, char **argv) {{
 #ifdef _WIN32
     win_setup(&argc, &argv);
 #endif
     g_argc = argc;
     g_argv = argv;
+#ifdef _WIN32
     jw_main();
+#else
+    WThread mt;
+    pthread_attr_t ma;
+    pthread_attr_init(&ma);
+    pthread_attr_setstacksize(&ma, (size_t)256 << 20);
+    int started = pthread_create(&mt, &ma, main_thread, NULL) == 0;
+    pthread_attr_destroy(&ma);
+    // スレッドを作れなければ、今までどおりこのスタックで動かす
+    if (started) thread_join(mt); else jw_main();
+#endif
     jw_flush();
     if (getenv("JW_LEAKS")) fprintf(stderr, "[live] %lld\\n", (long long)(jw_live + g_live_done));
     if (getenv("JW_RETIREMENTS")) fprintf(stderr, "[retired] %llu\\n", (unsigned long long)retired_count());

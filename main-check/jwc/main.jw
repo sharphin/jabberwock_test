@@ -243,7 +243,6 @@ fn build(ref str[] a, ref packages.Map package) {
     if out == "" { out = stem_of(path); }
     let llp = out + ".ll";
     let rt = out + ".jw_rt.c";
-    save(llp, ll);
     save(rt, runtime.source());
     // 実行時ライブラリの関数を書き出したコードの中に展開させるため、まず LTO（リンクのときに 2 つをまとめて最適化する）で作る。
     // clang のプリプロセッサで対象 OS を調べる（MSVC 版 Windows に libm はない）。
@@ -257,6 +256,9 @@ fn build(ref str[] a, ref packages.Map package) {
     };
     let windows = platform.starts_with("windows");
     if windows && !out.ends_with(".exe") { out += ".exe"; }
+    // unix では関数の入口でスタックを 1 ページずつ触らせる（大きいフレームがガードのページを飛び越えて、ほかの場所を書き換えないように。
+    // スタックが尽きれば必ずガードのページで止まる）。Windows は clang がいつも __chkstk で触る。Rust 版の native.rs と同じ
+    if windows { save(llp, ll); } else { save(llp, ll.replace(") {{\nentry:", ") \"probe-stack\"=\"inline-asm\" {{\nentry:")); }
     let str[] mut flags = [opt, llp, rt, "-o", out, "-Wno-override-module"];
     // 命令の形（` = call`）で探す。探す字面は 2 つに分けて組み立てる
     // （jwc 自身のように、文字列の定数に同じ字面があるだけのプログラムを取り違えない）

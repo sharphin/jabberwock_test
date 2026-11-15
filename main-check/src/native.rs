@@ -37,6 +37,12 @@ fn instrument(ll: &str) -> std::borrow::Cow<'_, str> {
         .filter(|(k, _)| flags.iter().any(|f| f.starts_with("-fsanitize=") && f[11..].split(',').any(|x| x == *k)))
         .map(|(_, a)| *a)
         .collect();
+    // unix では関数の入口でスタックを 1 ページずつ触らせる（大きいフレームがガードのページを飛び越えて、ほかの場所を書き換えないように。
+    // スタックが尽きれば必ずガードのページで止まる）。Windows は clang がいつも __chkstk で触る。jwc の build と同じ
+    let mut attrs = attrs;
+    if !cfg!(windows) {
+        attrs.insert(0, "\"probe-stack\"=\"inline-asm\"");
+    }
     if attrs.is_empty() {
         std::borrow::Cow::Borrowed(ll)
     } else {
